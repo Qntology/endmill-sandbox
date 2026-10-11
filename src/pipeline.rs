@@ -132,6 +132,25 @@ pub fn calibrated_context(p: &MachiningProfile, sds: Option<&SdsStore>) -> (CutC
             }
         }
     }
+    // 물리(MPM) 교차검증 보정: 사용자가 켠 기록만, 실측 원장 보정이 없는 축에만 곱한다 (src/physcal.rs).
+    // 원장에 기록할 때는 `applied_factor` 로 이 계수를 나누어 보정 전 예측을 얻으므로 학습 기준이 어긋나지 않는다.
+    for f in crate::physcal::factors_for(p, &ctx) {
+        if applied.iter().any(|a| a.axis == f.axis) {
+            continue;
+        }
+        match f.axis {
+            "power" => ctx.calib.power = f.factor,
+            "temperature" => ctx.calib.temperature = f.factor,
+            _ => continue,
+        }
+        applied.push(CalibrationApplied {
+            axis: f.axis.into(),
+            factor: f.factor,
+            n: 0,
+            drift_z: 0.0,
+            scope: f.scope_label(),
+        });
+    }
     (ctx, applied)
 }
 

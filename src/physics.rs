@@ -1244,6 +1244,25 @@ pub struct ForceResult {
     pub flank_power_share: f64,
 }
 
+/// 슬라이스 하나(칩 두께 `h` mm, 폭 `db` mm)의 절삭 방향 힘 `dft` 와 반경 방향 힘 `dfr` (N).
+/// 비절삭저항(Kienzle) × 가공경화 × 날끝 최소 칩두께 램프에 날끝 밀림(kte, kre) 과 플랭크 마모 접촉 항
+/// (`flank_t`, `flank_r`)을 더한다. `mechanistic_forces` 가 쓰는 식을 그대로 꺼낸 것이며,
+/// 물리 교차검증(`physcal`)이 같은 식으로 직교절삭의 힘을 비교하도록 공개한다.
+#[inline]
+pub fn slice_forces(co: &CuttingCoeffs, h: f64, db: f64, flank_t: f64, flank_r: f64) -> (f64, f64) {
+    let wh = 1.0 + co.work_hardening * co.hardened_depth_mm / (h + co.hardened_depth_mm).max(1e-9);
+    let ramp = if co.h_min_mm > 0.0 {
+        let q = ((h - 0.5 * co.h_min_mm) / (0.5 * co.h_min_mm)).clamp(0.0, 1.0);
+        q * q * (3.0 - 2.0 * q)
+    } else {
+        1.0
+    };
+    let shear = co.kc11 * wh * h.powf(1.0 - co.mc) * db * ramp;
+    let dft = shear + co.kte * db + flank_t;
+    let dfr = co.kr * shear + co.kre * db + flank_r;
+    (dft, dfr)
+}
+
 pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: &Engagement, steps: usize, slices: usize) -> ForceResult {
     let mut out = ForceResult::default();
     if eng.ap_mm <= 0.0 || eng.span() <= 0.0 || fz <= 0.0 {
@@ -1315,18 +1334,9 @@ pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm:
                         continue;
                     }
                     teeth[c * z + j] = true;
-                    let wh = 1.0 + co.work_hardening * co.hardened_depth_mm / (h + co.hardened_depth_mm).max(1e-9);
-                    let ramp = if co.h_min_mm > 0.0 {
-                        let q = ((h - 0.5 * co.h_min_mm) / (0.5 * co.h_min_mm)).clamp(0.0, 1.0);
-                        q * q * (3.0 - 2.0 * q)
-                    } else {
-                        1.0
-                    };
-                    let shear = co.kc11 * wh * h.powf(1.0 - co.mc) * db * ramp;
                     let dfr_w = co.sigma_flank * tool.flank_wear_mm * db;
                     let dft_w = mu_flank * dfr_w;
-                    let dft = shear + co.kte * db + dft_w;
-                    let dfr = co.kr * shear + co.kre * db + dfr_w;
+                    let (dft, dfr) = slice_forces(co, h, db, dft_w, dfr_w);
                     if h < co.h_min_mm {
                         plough_len += db * wt;
                     }

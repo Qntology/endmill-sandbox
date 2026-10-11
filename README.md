@@ -255,6 +255,12 @@ cargo test                                   # CPU
 ```
 
 On Windows use `test_vulkan.bat` / `test_rocm.bat` (extra arguments are passed to `cargo test`).
+
+```bash
+cargo test --test physcal_flow              # MPM cross-check → calibration channel (does not run the solver)
+cargo test --lib physcal                    # record / envelope / reliability unit tests
+(cd crates/endmill_mpm && cargo test --release)   # solver unit tests
+```
 `tests/vulkan_backend.rs` (compiled only with `--features vulkan`) runs every op pattern the models use
 — masked attention with `-inf` sliding-window masks, LayerNorm (with/without bias), GeGLU/`gelu_erf`,
 RoPE, `index_select`, SigLIP `conv2d` patch embedding and `interpolate2d`, a tiny ModernBERT forward pass,
@@ -327,6 +333,39 @@ Expected folder naming (keyword search):
 * Thin-wall compliance (plate bending, thickness search)
 * G00 collision & G01 LOC-exceed warnings
 
+### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
+
+`crates/endmill_mpm` is a small 2D plane-strain orthogonal-cutting solver (MLS-MPM / APIC particles,
+Hencky elasticity with von Mises return mapping, Johnson–Cook flow stress, Taylor–Quinney plastic heating,
+heat conduction on the grid, a rigid wedge with a rounded edge and Coulomb friction, mass scaling, rayon threads).
+`src/physcal.rs` runs it with the active profile's workpiece Johnson–Cook constants, tool rake / clearance /
+edge radius, effective cutting speed, friction coefficient and a chip thickness taken from the job (clamped to
+20–150 µm), then compares its cutting force `Fc` and tool–chip interface temperature rise with what the
+analytic model above predicts for the *same* orthogonal cut (dry, new tool, no calibration).
+
+* Run it from **정밀 분석 → ④ 마찰·냉각·마모 → 물리 교차검증 (MPM)**. It runs in the background (progress, ETA, cancel)
+  and stores a record in `<app_data>/physcal/records.json`. Nothing changes until you opt in.
+* Opt-in per record: **동력 보정 적용** (power) and, separately, **온도 보정도 적용** (temperature), with a weight
+  (default 0.5, 0.25 when the record is flagged low reliability; the applied factor is clamped to 0.5–1.5).
+* A record is applied only while the profile stays inside its envelope (same workpiece material and tool signature,
+  Vc within ±35 %, rake within ±3°, edge radius within ±30 %) and only on axes where the SDS ledger has no real
+  measured calibration — measurements always win.
+* The applied factor goes through the same `Calibration` channel as measured calibrations
+  (`pipeline::calibrated_context`), so the TTM wear forecast, the rule / LAYA decision and the second-pass G-code
+  correction all see the changed force and temperature. It never writes to the SDS ledger or the replan anchor and
+  never creates synthetic measurements; the pipeline divides the applied factor back out before it records real ones.
+* Limits: 2D (no helix or 3D engagement), no flank rubbing, coolant, tool heat conduction or wear, no segmented chips
+  (titanium, Inconel and hardened steel are flagged low reliability), thrust force is not compared, and the
+  chip-thickness size effect differs from the Kienzle exponent of the analytic model. Records with implausible chip
+  diagnostics are also flagged low. **There is no experimental validation** — treat it as a physics-based
+  cross-check, not as a measurement.
+* CLI without the app: `cargo run --release --example physcal_probe -- stainless quick [h_um] [--plan] [--threads N]`
+  (same comparison, writes a JSON record) and
+  `cargo run --release --manifest-path crates/endmill_mpm/Cargo.toml --bin mpmcut -- --h 50 --vc 2.2 --rake 12 --edge 8 --threads 4`
+  (solver only).
+* The solver is original code (same license as the project). It was cross-checked against an independent Taichi
+  prototype of the same equations — an implementation check, not a physical validation.
+
 ---
 
 ## Project Structure
@@ -339,6 +378,7 @@ endmill-sandbox/
 ├── src/
 │   ├── lib.rs                  # public module re-exports
 │   ├── physics.rs              # core analysis engine
+│   ├── physcal.rs              # MPM physics cross-check (records · opt-in calibration)
 │   ├── tribology.rs            # friction · coating · coolant chemistry
 │   ├── dynamics.rs             # chatter lobes · forced vibration
 │   ├── loadsim.rs              # toolpath load simulation
@@ -361,6 +401,8 @@ endmill-sandbox/
 │       ├── mod.rs / rdb.rs / lance.rs / vector.rs / series.rs
 │       ├── attr.rs / record.rs
 │   └── bin/main.rs             # CLI demo
+├── crates/
+│   └── endmill_mpm/            # 2D MPM orthogonal-cutting solver (library + `mpmcut` CLI)
 ├── src-tauri/
 │   ├── Cargo.toml / build.rs / tauri.conf.json
 │   └── src/
@@ -368,9 +410,9 @@ endmill-sandbox/
 │       └── commands.rs         # 50+ IPC commands
 ├── tests/
 │   ├── interaction_physics.rs / pipeline_flow.rs / store_flow.rs
-│   ├── environment_tools.rs / tool_state.rs / wear_compensation.rs
+│   ├── environment_tools.rs / tool_state.rs / wear_compensation.rs / physcal_flow.rs
 │   └── vulkan_backend.rs       # Vulkan ↔ CPU parity (feature = "vulkan")
-├── examples/physics_probe.rs
+├── examples/physics_probe.rs / physcal_probe.rs
 ├── run.bat / build.bat         # Windows CUDA helpers
 ├── _env_rocm.bat / _env_vulkan.bat  # shared MSVC / HIP SDK / protoc / Tauri CLI setup
 ├── {run,build,check,test}_{rocm,vulkan}.bat  # Windows ROCm / Vulkan helpers
@@ -389,6 +431,7 @@ endmill-sandbox/
 | `<app_data>/library/library.sqlite` | Projects, presets, profiles, end mills, workpieces, runs, metrics |
 | `<app_data>/library/lancedb/` | LanceDB tables: `endmill_attr`, `workpiece_attr`, `cut_regime`, `tool_image_d*`, `mold_geom_d*`, `ts_points`, `ts_windows` |
 | `<app_data>/sds/` | SDS ledgers: `tool.json`, `mold.json`, `process.json`, `decision.json`, `runs/` |
+| `<app_data>/physcal/records.json` | MPM physics cross-check records (applied only when the user opts in) |
 | `<app_data>/vectors/` | Saved SigLIP2 image records (`.json` + `.bin`) |
 | `<app_data>/models/` | Default model root (override via `models_root.txt`) |
 

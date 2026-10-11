@@ -9,6 +9,7 @@ pub mod profile;
 pub mod workpiece_setup;
 pub mod ml;
 pub mod physics;
+pub mod physcal;
 pub mod tribology;
 pub mod environment;
 pub mod timeseries;

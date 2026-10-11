@@ -456,6 +456,11 @@ impl AppState {
         if let Ok(log) = library.import_legacy(&data_dir) {
             library.notes.extend(log);
         }
+        match endmill_model::physcal::load_dir(&data_dir.join("physcal")) {
+            Ok(n) if n > 0 => library.notes.push(format!("물리 교차검증(MPM) 기록 {}개를 불러왔습니다", n)),
+            Ok(_) => {}
+            Err(e) => library.notes.push(e),
+        }
         match library.ensure_builtin_presets(&MachiningPreset::builtin()) {
             Ok(added) if !added.is_empty() => library.notes.push(format!("기본 프리셋 {}개 추가: {}", added.len(), added.join(", "))),
             Err(e) => library.notes.push(format!("기본 프리셋 동기화 실패: {}", e)),
@@ -535,6 +540,8 @@ impl AppState {
         let sh = &self.shared;
         sh.shutdown.store(true, Ordering::SeqCst);
         lock(&sh.job).cancel.store(true, Ordering::SeqCst);
+        // 물리(MPM) 계산 스레드는 busy 카운터 밖에서 돌므로 따로 멈추고 기다린다
+        endmill_model::physcal::cancel_and_wait(std::time::Duration::from_secs(8));
         {
             let hub = lock(&sh.hub);
             for spec in endmill_model::modelhub::catalog() {
@@ -3004,6 +3011,7 @@ fn job_set(sh: &Shared, id: u64, pct: f64, stage: &str, label: &str) -> bool {
     }
     if s.stage != stage {
         let line = format!("{:>5.1}% {}", pct, label);
+        eprintln!("[JOB {}] {:>5.1}% stage={} | {}", id, pct, stage, label);
         s.log.push(line);
     }
     s.pct = pct.max(s.pct);
@@ -3039,9 +3047,14 @@ fn run_job(sh: Arc<Shared>, id: u64, mode: JobMode) {
         return;
     }
     let t_start = std::time::Instant::now();
+    eprintln!("[JOB {}] START", id);
     let res = run_job_inner(&sh, id, mode, t_start);
     if sh.shutdown.load(Ordering::SeqCst) {
         return;
+    }
+    match &res {
+        Ok(_) => eprintln!("[JOB {}] DONE in {:.1}s", id, t_start.elapsed().as_secs_f64()),
+        Err(e) => eprintln!("[JOB {}] FAILED: {}", id, e),
     }
     job_finish(&sh, id, res);
 }
@@ -3075,10 +3088,15 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
                 }
             };
             mark("calc", &mut t0);
-            let mut ctx = {
+            let (mut ctx, applied_calib) = {
                 let sds = lock(&sh.sds);
-                endmill_model::pipeline::calibrated_context(&p, Some(&sds)).0
+                endmill_model::pipeline::calibrated_context(&p, Some(&sds))
             };
+            for a in applied_calib.iter().filter(|a| a.scope.starts_with("물리")) {
+                let line = format!("물리(MPM·비검증) 보정 적용 — {} ×{:.3} ({})", a.axis, a.factor, a.scope);
+                eprintln!("[JOB {}] {}", id, line);
+                lock(&sh.job).log.push(line);
+            }
             let tracked = if dry_run {
                 let mut t = peek_tracked_tool(sh, &p, &mut ctx);
                 t.note = Some(match t.start.as_ref() {
@@ -3513,6 +3531,97 @@ pub fn sim_job_cancel(state: tauri::State<'_, AppState>, id: u64) -> Result<JobS
         slot.label = "취소 중".into();
     }
     Ok(job_status(&slot))
+}
+
+// ---------------------------------------------------------------- 물리(MPM) 교차검증 보정
+// 계산·기록·적용 판단은 라이브러리(endmill_model::physcal)가 하고, 여기서는 프로필을 찾아 넘기고 화면용으로 묶기만 한다.
+
+#[derive(Serialize)]
+pub struct PhysView {
+    pub profile: String,
+    pub records: Vec<endmill_model::physcal::PhysCalRecord>,
+    pub matches: Vec<endmill_model::physcal::PhysMatch>,
+    /// 이 프로필에 지금 곱해지고 있는 물리 보정 계수
+    pub active: Vec<endmill_model::physcal::PhysFactor>,
+    pub job: endmill_model::physcal::PhysJobStatus,
+}
+
+fn phys_view(sh: &Shared, profile_name: Option<&str>) -> Result<PhysView, String> {
+    let p = profile_by_name(sh, profile_name)?;
+    let ctx = endmill_model::physics::CutContext::from_profile(&p);
+    Ok(PhysView {
+        profile: p.name.clone(),
+        records: endmill_model::physcal::records(),
+        matches: endmill_model::physcal::matches_for(&p),
+        active: endmill_model::physcal::factors_for(&p, &ctx),
+        job: endmill_model::physcal::job_status(),
+    })
+}
+
+#[tauri::command]
+pub fn phys_overview(state: tauri::State<'_, AppState>, profile_name: Option<String>) -> Result<PhysView, String> {
+    phys_view(&state.shared, profile_name.as_deref())
+}
+
+#[tauri::command]
+pub fn phys_preview(
+    state: tauri::State<'_, AppState>,
+    profile_name: Option<String>,
+    preset: Option<String>,
+    h_um: Option<f64>,
+) -> Result<endmill_model::physcal::PhysPreview, String> {
+    let p = profile_by_name(&state.shared, profile_name.as_deref())?;
+    endmill_model::physcal::preview(&p, &endmill_model::physcal::PhysRunOptions { preset, h_um, threads: None })
+}
+
+#[tauri::command]
+pub fn phys_run(
+    state: tauri::State<'_, AppState>,
+    profile_name: Option<String>,
+    preset: Option<String>,
+    h_um: Option<f64>,
+) -> Result<endmill_model::physcal::PhysJobStatus, String> {
+    let sh = state.shared.clone();
+    if sh.shutdown.load(Ordering::SeqCst) {
+        return Err("앱을 종료하는 중입니다".into());
+    }
+    let p = profile_by_name(&sh, profile_name.as_deref())?;
+    p.endmill_setting.validate()?;
+    endmill_model::physcal::job_start(p, endmill_model::physcal::PhysRunOptions { preset, h_um, threads: None })
+}
+
+#[tauri::command]
+pub fn phys_status() -> endmill_model::physcal::PhysJobStatus {
+    endmill_model::physcal::job_status()
+}
+
+#[tauri::command]
+pub fn phys_cancel() -> endmill_model::physcal::PhysJobStatus {
+    endmill_model::physcal::job_cancel()
+}
+
+/// 기록의 적용 여부·온도 적용 여부·가중치를 바꾼다. 보정이 바뀌므로 뷰포트 캐시를 비운다.
+#[tauri::command]
+pub fn phys_set(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    apply: Option<bool>,
+    apply_temperature: Option<bool>,
+    weight: Option<f64>,
+    profile_name: Option<String>,
+) -> Result<PhysView, String> {
+    let sh = &state.shared;
+    endmill_model::physcal::set_flags(&id, apply, apply_temperature, weight)?;
+    *lock(&sh.viewport_cache) = None;
+    phys_view(sh, profile_name.as_deref())
+}
+
+#[tauri::command]
+pub fn phys_delete(state: tauri::State<'_, AppState>, id: String, profile_name: Option<String>) -> Result<PhysView, String> {
+    let sh = &state.shared;
+    endmill_model::physcal::remove(&id)?;
+    *lock(&sh.viewport_cache) = None;
+    phys_view(sh, profile_name.as_deref())
 }
 
 #[derive(Serialize)]

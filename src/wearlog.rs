@@ -506,7 +506,17 @@ pub fn life_forecast(prior: &[(f64, f64)], log: &WearLog, ttm: Option<&TtmForeca
     if span / step < 8.0 {
         step = part_min / 8.0;
     }
-    let n = ((span / step).floor() as usize + 1).clamp(2, 2000);
+    let mut n = ((span / step).floor() as usize + 1).clamp(2, 2000);
+    // TTM 은 컨텍스트 길이(예: 52점)만큼 실제 이력이 있어야 한다. 짧은 이력(9~16점)을 앞쪽 0 패딩으로
+    // 늘려 먹이면 첫 예측이 +50 µm 가까이 튀어 수명이 실제의 1/3 로 나온다(9개 작업 로그로 확인).
+    // 같은 이력을 더 촘촘한 격자로 다시 샘플해 실제 점만으로 컨텍스트를 채운다.
+    if let Some(m) = ttm {
+        let ctx = m.context_length();
+        if ctx >= 2 && n < ctx {
+            step = span / (ctx - 1) as f64;
+            n = ctx;
+        }
+    }
     let mut series = Series::new("vb_mm", "mm").with_time_unit("min");
     let ts: Vec<f64> = pts.iter().map(|p| p.0).collect();
     let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();

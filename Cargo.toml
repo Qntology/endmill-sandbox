@@ -20,6 +20,7 @@ lancedb = { version = "0.39", features = ["remote"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+endmill_mpm = { path = "crates/endmill_mpm" }
 
 [dev-dependencies]
 anyhow = "1"
@@ -41,3 +42,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "endmill_demo"
 path = "src/bin/main.rs"
+
+# 물리 교차검증용 MPM 해석기는 반복 계산이 많아 개발 빌드에서도 최적화한다 (src-tauri 에서는 "*" 설정이 이미 적용된다)
+[profile.dev.package.endmill_mpm]
+opt-level = 3

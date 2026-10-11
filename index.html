@@ -605,6 +605,20 @@
     .pv-chip { background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 0.7rem; }
     .pv-chip .k { display: block; color: var(--text-muted); font-size: 0.62rem; }
     .pv-chip .v { font-weight: 600; word-break: break-all; }
+    .phys-bar { height: 8px; background: var(--bg-input); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); flex: 1 1 160px; min-width: 120px; }
+    .phys-bar > span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), #6bcb77); transition: width 0.3s; }
+    .phys-tag { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 0.62rem; border: 1px solid var(--border); }
+    .phys-tag.low { color: var(--danger); border-color: var(--danger); }
+    .phys-tag.medium { color: var(--warning); border-color: var(--warning); }
+    .phys-note { font-size: 0.68rem; color: var(--text-muted); line-height: 1.5; }
+    .phys-card details > summary { cursor: pointer; color: var(--text-dim); font-size: 0.66rem; }
+    .phys-card .pv-table td { vertical-align: top; }
+    .phys-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
+    .phys-tag { white-space: nowrap; }
+    .phys-tag.ok { color: var(--success, #6bcb77); border-color: var(--success, #6bcb77); }
+    .phys-reasons { min-width: 220px; max-width: 360px; white-space: normal; }
+    .phys-card input[type=number] { width: 64px; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 3px; padding: 2px 4px; font-size: 0.7rem; }
+    .phys-card .pv-check { margin-bottom: 2px; }
     .pv-opts { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; margin-bottom: 8px; }
     .pv-opts .form-group { margin-bottom: 0; min-width: 120px; }
     .pv-tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
@@ -1056,6 +1070,34 @@
 	          <span id="pv-frf-state" style="font-size:0.7rem;color:var(--text-muted);"></span>
 	        </div>
 	        <div class="pv-row" id="pv-calib"></div>
+	        <div class="pv-card phys-card" id="phys-card" style="margin-top:10px;">
+	          <h4>물리 교차검증 (MPM) — 앱 해석식과 연속체 절삭 계산을 맞대어 보정 · 실험 검증 전 가상 보정</h4>
+	          <div class="pv-row">
+	            <label class="pv-check">해석 단계
+	              <select id="phys-preset">
+	                <option value="quick">빠름 (격자 거칠게 · 수 분)</option>
+	                <option value="standard">표준 (정밀 · 느림)</option>
+	              </select>
+	            </label>
+	            <label class="pv-check">칩 두께 µm <input type="number" id="phys-h" min="20" max="150" step="5" placeholder="자동" style="width:72px;" /></label>
+	            <button class="btn btn-sm btn-outline" onclick="physPreview()">규모·예상 시간</button>
+	            <button class="btn btn-sm" id="phys-run" onclick="physRun()">MPM 계산 실행</button>
+	            <button class="btn btn-sm btn-outline" id="phys-cancel" onclick="physCancel()" disabled>취소</button>
+	          </div>
+	          <div class="pv-row" id="phys-progress" style="display:none;">
+	            <div class="phys-bar"><span id="phys-bar"></span></div>
+	            <span class="phys-note" id="phys-prog-text"></span>
+	          </div>
+	          <div class="phys-note" id="phys-preview" style="margin-bottom:6px;"></div>
+	          <div class="pv-row" id="phys-active"></div>
+	          <div id="phys-body"></div>
+	          <div class="phys-note" style="margin-top:6px;">
+	            2D 평면변형 직교절삭(건식·새 공구)을 연속체(MLS-MPM)로 푼 두 번째 계산입니다. 3D 밀링 형상·공구 열전도·냉각유·마모·톱니형 칩은 다루지 않으며 실험으로 검증되지 않았습니다.
+	            '적용'을 켜면 이 프로필의 이후 계산(공정 해석·재생·재계획)에서 절삭력(power)과 접촉면 온도 계수에 '비 − 1'의 가중치만큼 곱합니다.
+	            원장에 실측 보정이 있는 축에는 적용하지 않고, 원장·재계획 기준점에는 아무 값도 쓰지 않습니다.
+	            보정을 바꾼 뒤에는 재생(계산 실행)을 다시 하세요. 보정을 켠 상태에서 기록한 마모 학습값은 그 보정 기준입니다.
+	          </div>
+	        </div>
 	        <div class="pv-grid" id="pv-proc-cards"></div>
 	        <div class="pv-grid" style="margin-top:10px;">
 	          <div class="pv-card"><h4>재생 채터 안정 로브 (가로: 회전수 rpm · 세로: 한계 ap mm · 점: 현재 조건)</h4><canvas class="pv-canvas" id="pv-lobe-chart" width="440" height="240"></canvas></div>
@@ -5323,6 +5365,7 @@
 	    pvDrawSim();
 	    pvDrawLobes();
 	    pvDrawTraj();
+	    physEnter();
 	  }
 	  if (name === 'ts') pvRenderForecast();
 	  if (name === 'decide') pvSdsStatus();
@@ -5660,9 +5703,15 @@
 	  pvLogLines('pv-mold-notes', [...(c ? c.state_reasons.map(r => '표면 판정: ' + r) : []), ...t.sds.map(l => 'SDS ' + l)]);
 	}
 
+	function pvCalibChip(c) {
+	  const phys = String(c.scope || '').startsWith('물리');
+	  const tail = phys ? esc(c.scope) : `n=${c.n}${Math.abs(c.drift_z) > 2 ? `, 드리프트 z=${fmt(c.drift_z, 1)}` : ''}`;
+	  return `<span class="pv-chip"><span class="k">보정 · ${esc(c.axis)}${phys ? ' · 물리(MPM) 비검증' : ''}</span><span class="v">×${fmt(c.factor, 3)} (${tail})</span></span>`;
+	}
+
 	function pvRenderCalib(list) {
 	  document.getElementById('pv-calib').innerHTML = (list && list.length)
-	    ? list.map(c => `<span class="pv-chip"><span class="k">보정 · ${esc(c.axis)}</span><span class="v">×${fmt(c.factor, 3)} (n=${c.n}${Math.abs(c.drift_z) > 2 ? `, 드리프트 z=${fmt(c.drift_z, 1)}` : ''})</span></span>`).join('')
+	    ? list.map(pvCalibChip).join('')
 	    : '<span style="font-size:0.7rem;color:var(--text-muted);">보정 원장 관측이 부족해 물리 기본값으로 계산했습니다 (냉간 시작)</span>';
 	}
 
@@ -5967,6 +6016,144 @@
 	  pvLogLines('pv-decision-notes', ['조건 반영:', ...ch.map(c => '  ' + c), '반영 후에는 ④ 탭에서 공정 해석을 다시 실행하세요']);
 	  pvRefresh();
 	  renderToolpath2D();
+	}
+
+	// ---- 물리 교차검증 (MPM) -------------------------------------------------
+	const PHYS = { view: null, polling: false };
+
+	function physDur(sec) {
+	  if (sec === null || sec === undefined || !isFinite(sec)) return '-';
+	  const s = Math.max(0, Math.round(sec));
+	  return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
+	}
+
+	function physTime(ms) {
+	  try { return new Date(ms).toLocaleString('ko-KR', { hour12: false }); } catch (e) { return String(ms); }
+	}
+
+	function physShowJob(st) {
+	  const box = document.getElementById('phys-progress');
+	  if (!box || !st) return;
+	  const running = !!st.running;
+	  const show = running || (st.done && st.id > 0 && PHYS.polling);
+	  box.style.display = show ? 'flex' : 'none';
+	  document.getElementById('phys-bar').style.width = `${Math.max(0, Math.min(100, st.pct || 0))}%`;
+	  const eta = st.eta_s !== null && st.eta_s !== undefined ? ` · 남은 약 ${physDur(st.eta_s)}` : (st.est_total_s ? ` · 예상 약 ${physDur(st.est_total_s)}` : '');
+	  document.getElementById('phys-prog-text').textContent =
+	    `#${st.id} ${st.material || ''} h=${fmt(st.h_um, 0)}µm · ${fmt(st.pct, 0)}% · ${st.label || ''} · 경과 ${physDur(st.elapsed_s)}${eta} · 입자 ${st.particles} · 스레드 ${st.threads}`;
+	  document.getElementById('phys-run').disabled = running;
+	  document.getElementById('phys-cancel').disabled = !running;
+	}
+
+	function physRender(v) {
+	  const body = document.getElementById('phys-body');
+	  if (!body || !v) return;
+	  const mt = {};
+	  (v.matches || []).forEach(m => { mt[m.id] = m; });
+	  const act = (v.active || []).map(a => `<span class="pv-chip"><span class="k">적용 중 · ${esc(a.axis)} (${a.level === 'low' ? '신뢰도 낮음' : '신뢰도 보통'}·비검증)</span><span class="v">×${fmt(a.factor, 3)} · 전체비 ×${fmt(a.ratio, 3)} · 가중 ${fmt(a.weight, 2)}</span></span>`).join('');
+	  document.getElementById('phys-active').innerHTML = act || '<span class="phys-note">이 프로필에 적용 중인 물리 보정이 없습니다 (기본값 — 앱 해석식 그대로)</span>';
+	  const lvl = r => (r.reliability.level === 'low' ? '낮음' : '보통');
+	  body.innerHTML = pvTable([
+	    { t: '기록', f: r => `<b>${esc(r.cond.material_label)}</b> <span class="phys-note">${esc(physTime(r.created_ms))}</span>`
+	        + `<div class="phys-note">공구 ${esc(r.cond.tool_signature)}</div>`
+	        + `<div class="phys-note">칩 두께 ${fmt(r.cond.h_um, 0)} µm (작업 평균 ${fmt(r.cond.h_job_um, 0)}) · Vc ${fmt(r.cond.vc_m_min, 0)} m/min · 경사각 ${fmt(r.cond.rake_deg, 1)}° · 날 둥글기 ${fmt(r.cond.edge_um, 1)} µm · μ ${fmt(r.cond.mu, 2)} · ${esc(r.cond.preset)}</div>` },
+	    { t: '절삭력 Fc (N/mm)', f: r => `<span class="phys-note">해석식</span> ${fmt(r.analytic.fc_n_per_mm, 1)}<br><span class="phys-note">MPM</span> ${fmt(r.mpm.fc_n_per_mm, 1)}<br><b>×${fmt(r.raw_power, 2)}</b>`, nw: true },
+	    { t: '접촉면 온도 상승 (K, 냉각 전)', f: r => (r.mpm.interface_rise_c === null || r.mpm.interface_rise_c === undefined) ? '-' : `<span class="phys-note">해석식</span> ${fmt(r.analytic.rise_c, 0)}<br><span class="phys-note">MPM</span> ${fmt(r.mpm.interface_rise_c, 0)}<br><b>×${fmt(r.raw_temperature, 2)}</b>`, nw: true },
+	    { t: '보정 계수 · 신뢰도', f: r => `<div style="white-space:nowrap">power ${fmt(r.ratio_power, 3)}<br>temperature ${fmt(r.ratio_temperature, 3)}</div>`
+	        + `<div class="phys-tags"><span class="phys-tag ${esc(r.reliability.level)}">${lvl(r)}</span><span class="phys-tag">비검증</span></div>`
+	        + `<details><summary>사유 ${r.reliability.reasons.length}건</summary><div class="phys-note phys-reasons">${r.reliability.reasons.map(esc).join('<br>')}</div></details>` },
+	    { t: '적용 (기본 꺼짐)', f: r => {
+	        const m = mt[r.id];
+	        const match = m ? (m.matched ? '<span class="phys-tag ok">현재 프로필과 조건 일치</span>' : `<div class="phys-note">현재 프로필: ${esc(m.reason)}</div>`) : '';
+	        return `<label class="pv-check"><input type="checkbox" ${r.apply ? 'checked' : ''} onchange="physSet('${esc(r.id)}', { apply: this.checked })" /> 동력 보정 적용</label>`
+	          + `<label class="pv-check"><input type="checkbox" ${r.apply_temperature ? 'checked' : ''} ${r.apply ? '' : 'disabled'} onchange="physSet('${esc(r.id)}', { applyTemperature: this.checked })" /> 온도 보정도 적용</label>`
+	          + `<label class="pv-check">가중치 <input type="number" min="0" max="1" step="0.05" value="${fmt(r.weight, 2)}" onchange="physSet('${esc(r.id)}', { weight: parseFloat(this.value) })" /></label>`
+	          + match
+	          + `<div style="margin-top:4px"><button class="btn btn-sm btn-outline" onclick="physDelete('${esc(r.id)}')">삭제</button></div>`;
+	      } },
+	  ], v.records);
+	  if (v.job) physShowJob(v.job);
+	}
+
+	async function physEnter() {
+	  const v = await pvCall('phys_overview', { profileName: getActiveProfile() });
+	  if (!v) return;
+	  PHYS.view = v;
+	  physRender(v);
+	  if (v.job && v.job.running) physPoll();
+	}
+
+	async function physPreview() {
+	  const box = document.getElementById('phys-preview');
+	  box.textContent = '계산 중...';
+	  try {
+	    const r = await invoke('phys_preview', { profileName: getActiveProfile(), preset: document.getElementById('phys-preset').value, hUm: pvNum('phys-h') });
+	    const c = r.cond, a = r.analytic;
+	    box.innerHTML = esc(`${c.material_label} · 작업 평균 칩 두께 ${fmt(c.h_job_um, 0)} µm → 해석 ${fmt(c.h_um, 0)} µm · Vc ${fmt(c.vc_m_min, 0)} m/min · 경사각 ${fmt(c.rake_deg, 1)}° · 날 둥글기 ${fmt(c.edge_um, 1)} µm · 마찰 μ ${fmt(c.mu, 2)}`)
+	      + '<br>' + esc(`격자 ${fmt(c.dx_um, 1)} µm · 질량 ×${fmt(c.mscale, 0)} · 입자 ${r.particles} · 시간 단계 ${r.steps} · 스레드 ${c.threads} · 예상 약 ${physDur(r.est_seconds)} (이 컴퓨터 성능에 따라 달라지며 실행 중 실제 진행률로 다시 계산합니다)`)
+	      + '<br>' + esc(`앱 해석식(보정 전): Fc ${fmt(a.fc_n_per_mm, 1)} N/mm · Ft ${fmt(a.ft_n_per_mm, 1)} N/mm · 접촉면 ΔT ${fmt(a.rise_c, 0)} K (냉각 반영 ${fmt(a.interface_cooled_c, 0)} °C)`)
+	      + (r.warnings && r.warnings.length ? '<br><span style="color:var(--warning);">' + r.warnings.map(esc).join('<br>') + '</span>' : '');
+	  } catch (e) {
+	    box.innerHTML = `<span style="color:var(--danger);">${esc(e)}</span>`;
+	  }
+	}
+
+	async function physRun() {
+	  const st = await pvCall('phys_run', { profileName: getActiveProfile(), preset: document.getElementById('phys-preset').value, hUm: pvNum('phys-h') });
+	  if (!st) return;
+	  appendLog(`물리(MPM) 계산 #${st.id} 시작 — ${st.material} · h ${fmt(st.h_um, 0)} µm · 입자 ${st.particles} · 단계 ${st.steps} · 예상 약 ${physDur(st.est_total_s)}`);
+	  physShowJob(st);
+	  physPoll();
+	}
+
+	async function physCancel() {
+	  try { physShowJob(await invoke('phys_cancel')); } catch (e) { appendLog(`물리 계산 취소 실패: ${e}`); }
+	}
+
+	async function physPoll() {
+	  if (PHYS.polling) return;
+	  PHYS.polling = true;
+	  let last = null;
+	  try {
+	    while (true) {
+	      await sleep(500);
+	      last = await invoke('phys_status');
+	      physShowJob(last);
+	      if (!last.running) break;
+	    }
+	  } catch (e) {
+	    appendLog(`물리 계산 상태 읽기 실패: ${e}`);
+	  }
+	  PHYS.polling = false;
+	  if (last && last.done) {
+	    if (last.error) appendLog(`물리(MPM) 계산 ${last.label}: ${last.error}`);
+	    else appendLog(`물리(MPM) 계산 완료 (${physDur(last.elapsed_s)}) — 기록 ${last.record_id}. '적용'을 켜기 전까지 계산에는 쓰이지 않습니다`);
+	  }
+	  document.getElementById('phys-progress').style.display = 'none';
+	  physEnter();
+	}
+
+	async function physSet(id, patch) {
+	  const v = await pvCall('phys_set', {
+	    id,
+	    apply: patch.apply === undefined ? null : patch.apply,
+	    applyTemperature: patch.applyTemperature === undefined ? null : patch.applyTemperature,
+	    weight: patch.weight === undefined || !isFinite(patch.weight) ? null : patch.weight,
+	    profileName: getActiveProfile(),
+	  });
+	  if (!v) { physEnter(); return; }
+	  PHYS.view = v;
+	  physRender(v);
+	  const names = (v.active || []).map(a => `${a.axis} ×${fmt(a.factor, 3)}`).join(', ');
+	  appendLog(`물리 보정 변경 — 현재 프로필 적용: ${names || '없음'}. 재생(계산 실행)을 다시 해야 결과에 반영됩니다`);
+	  if (PV.process) pvStatus('물리 보정이 바뀌었습니다. 공정 해석을 다시 실행하세요');
+	}
+
+	async function physDelete(id) {
+	  const v = await pvCall('phys_delete', { id, profileName: getActiveProfile() });
+	  if (!v) return;
+	  PHYS.view = v;
+	  physRender(v);
 	}
 
 	async function pvSdsStatus() {

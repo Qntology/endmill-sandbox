@@ -1,0 +1,25 @@
+[package]
+name = "endmill_mpm"
+version = "0.1.0"
+edition = "2021"
+description = "2D plane-strain orthogonal-cutting MLS-MPM (APIC) solver for virtual cross-checking of the end-mill sandbox's analytic cutting model. Research model, not validated against experiments."
+license = "Apache-2.0"
+
+[dependencies]
+rayon = "1"
+
+[lib]
+name = "endmill_mpm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mpmcut"
+path = "src/bin/mpmcut.rs"
+
+# 단독으로 `cargo test` / `cargo run` 할 때를 위한 설정. 앱(src-tauri)·라이브러리에서 의존성으로 쓸 때는
+# 각 최상위 Cargo.toml 의 [profile.dev.package.endmill_mpm] 이 적용된다.
+[profile.dev]
+opt-level = 3
+
+[profile.test]
+opt-level = 3
