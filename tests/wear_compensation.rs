@@ -252,6 +252,15 @@ fn titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked() {
     assert_ne!(o.decision.final_action, CompAction::Skip);
     assert_eq!(o.decision.final_action, CompAction::Hold);
     assert!(o.decision.operator_confirm);
+    // 보류면 2차를 깎지 않으므로 전체 기준 2차 후 중앙값은 1차 잔여 분포 안에 있고 최악 구간 값보다 크지 않다
+    assert!(
+        o.after_all_p50_um >= d.residual.p10_um - 1e-9 && o.after_all_p50_um <= d.residual.p90_um + 1e-9,
+        "all {} vs residual p10 {} p90 {}",
+        o.after_all_p50_um,
+        d.residual.p10_um,
+        d.residual.p90_um
+    );
+    assert!(o.after_all_p50_um <= o.after_p50_um + 1e-9);
     let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, None);
     let mut opts = CompOptions::default();
     opts.measured_radial_um = Some(40.0);
@@ -292,6 +301,8 @@ fn pass_two_path_is_measured_from_pass_one_path_not_from_the_residual_surface() 
             assert!(mn > -tol, "seg {} after min {}", z.seg, mn);
             assert!(mx - mn <= 0.5 * (z.residual_max_um - z.residual_min_um) + 1e-6, "seg {} after spread {} vs residual spread {}", z.seg, mx - mn, z.residual_max_um - z.residual_min_um);
         }
+        // 깎는 선택지는 전체 기준 2차 후 중앙값이 1차 잔여 중앙값보다 줄어야 한다
+        assert!(o.after_all_p50_um < d.residual.p50_um, "{:?}: after all {} vs residual {}", action, o.after_all_p50_um, d.residual.p50_um);
         let text = &o.program_text;
         assert!(!text.is_empty() && text.trim_end().ends_with('%'));
         assert!(text.contains("G02") || text.contains("G03"));

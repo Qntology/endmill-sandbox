@@ -225,6 +225,39 @@ impl ToolPathPattern {
     }
 }
 
+/// 합성 경로가 프리셋 반경 절입(ae)과 크게 다른 피치로 깎을 때 알리는 문구.
+/// 포켓 지그재그는 피치를 0.2~0.6·D, 등고선 다중 패스는 0.1~0.4·D 로 묶으므로, 정삭 조건(ae 0.03~0.1·D)도
+/// 포켓 황삭처럼 넓게 물려 1차 마모·휨·채터가 프리셋 조건보다 크게 나온다 (기본 정삭 프리셋에서 공칭 대비 마모 7~9배).
+pub fn stepover_note(profile: &MachiningProfile, pattern: &ToolPathPattern) -> Option<String> {
+    let (lo, hi) = match pattern {
+        ToolPathPattern::PocketZigZag => (0.2, 0.6),
+        ToolPathPattern::ContourMultiPass { .. } => (0.1, 0.4),
+        _ => return None,
+    };
+    let ae = profile.conditions.radial_doc_mm;
+    if !(ae.is_finite() && ae > 0.0) {
+        return None;
+    }
+    let step = pattern_stepover(profile, lo, hi);
+    let d = profile.endmill_setting.diameter_mm.max(0.1);
+    if step > 1.5 * ae {
+        Some(format!(
+            "{} 패턴은 피치를 {:.0}~{:.0}% D 로 묶어 {:.2} mm 피치로 깎습니다 — 프리셋 반경 절입 {:.2} mm 의 {:.1}배라 1차 마모·휨·채터가 프리셋 조건보다 크게 나옵니다{}",
+            pattern.label(),
+            lo * 100.0,
+            hi * 100.0,
+            step,
+            ae,
+            step / ae,
+            if ae <= 0.12 * d { " (정삭 조건은 사각형 프로파일 패턴으로 평가하는 편이 맞습니다)" } else { "" }
+        ))
+    } else if step < ae / 1.5 {
+        Some(format!("{} 패턴은 피치를 {:.0}% D 이하로 묶어 프리셋 반경 절입 {:.2} mm 보다 좁은 {:.2} mm 피치로 깎습니다", pattern.label(), hi * 100.0, ae, step))
+    } else {
+        None
+    }
+}
+
 pub fn pattern_stepover(profile: &MachiningProfile, min_frac: f64, max_frac: f64) -> f64 {
     let d = profile.endmill_setting.diameter_mm.max(0.1);
     let ae = profile.conditions.radial_doc_mm;
@@ -681,5 +714,22 @@ impl GCodeGenerator {
 
     pub fn generate_metadata(profile: &MachiningProfile) -> GCodeMetadata {
         Self::generate_metadata_with_pattern(profile, &ToolPathPattern::PocketZigZag)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profile::MachiningPreset;
+
+    #[test]
+    fn stepover_note_flags_finishing_ae_on_pocket_pattern() {
+        let mut p = MachiningProfile::from_preset(&MachiningPreset::default_steel_general(), "t");
+        p.conditions.radial_doc_mm = 0.3;
+        let n = stepover_note(&p, &ToolPathPattern::PocketZigZag).expect("note");
+        assert!(n.contains("6.7배") && n.contains("사각형 프로파일"), "{}", n);
+        assert!(stepover_note(&p, &ToolPathPattern::RectangularProfile).is_none());
+        p.conditions.radial_doc_mm = 0.3 * p.endmill_setting.diameter_mm;
+        assert!(stepover_note(&p, &ToolPathPattern::PocketZigZag).is_none());
     }
 }

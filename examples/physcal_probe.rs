@@ -98,13 +98,16 @@ fn main() {
         None => println!("{:<28}{:>14.0}{:>14}{:>10}", "접촉면 온도 상승 (K, 냉각 전)", a.rise_c, "—", "—"),
     }
     println!(
-        "MPM 칩 두께비 {} · 전단각 {} · 겉보기 마찰 {} · 소성일/공구일 {:.2} · 운동에너지 비 {:.3} · 정상상태 {} · 소요 {:.0}초",
+        "MPM 칩 두께비 {} (단면 측정 {}) · 전단각 {} · 겉보기 마찰 {} · 소성일/공구일 {:.2} · 운동에너지 비 {:.3} · 힘 추세 {} · 정상상태 {}{} · 소요 {:.0}초",
         m.chip_ratio.map(|v| format!("{:.2}", v)).unwrap_or("—".into()),
+        m.chip_ratio_geom.map(|v| format!("{:.2}", v)).unwrap_or("—".into()),
         m.shear_angle_deg.map(|v| format!("{:.1}°", v)).unwrap_or("—".into()),
         m.mu_apparent.map(|v| format!("{:.2}", v)).unwrap_or("—".into()),
         m.wp_over_wtool,
         m.ke_ratio_max,
+        m.fc_trend.map(|v| format!("{:+.0}%", v * 100.0)).unwrap_or("—".into()),
         m.steady,
+        if m.chip_at_ceiling { " · 칩이 영역 천장에 닿음" } else { "" },
         m.wall_s
     );
     println!();

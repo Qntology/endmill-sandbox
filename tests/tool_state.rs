@@ -915,7 +915,9 @@ fn tool_change_parts_left_follows_a_fresh_tool_on_the_same_path() {
     if runs.len() > 2 {
         let (late, _, _) = plan(2, Some(CompAction::ToolChange));
         let flat = nominal1.trajectory.for_path(late.path_factor).life_min;
-        assert!(late.fresh_life_min < 0.97 * flat, "a fresh edge has less process damping than the worn one, so it wears faster early: {} vs {}", late.fresh_life_min, flat);
+        // 방향(새 날이 더 빨리 닳음)을 본다. 공작물 표면 냉각을 문헌값으로 올린 뒤(내부 급유 320 → 3,020 W/m²K)
+        // 열에 의한 마모 몫이 줄어 차이가 3% → 약 2% 로 작아졌다.
+        assert!(late.fresh_life_min < 0.995 * flat, "a fresh edge has less process damping than the worn one, so it wears faster early: {} vs {}", late.fresh_life_min, flat);
     }
     let p50 = out.parts_left_p50.expect("parts left for the new tool");
     let p90 = out.parts_left_p90.expect("cautious parts left for the new tool");

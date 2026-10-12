@@ -854,13 +854,20 @@ impl CoolantState {
         matches!(self.method, CoolantMethod::Flood | CoolantMethod::ThroughTool)
     }
 
+    /// 공작물 표면 대류 열전달계수 (W/m²K). 절삭 부근 공작물 면에 닿는 냉각 기준이며
+    /// 이전 패스 열의 감쇠(loadsim 예열), 덩어리 온도, 정상 상태 공작물 온도에 쓰인다.
+    /// 문헌 값: 건식 7~100, 공기 분사 약 540 (실측), MQL 약 560~1,000 (실측),
+    /// 수용성 플러드 1,000~2,700 (FE 모델·Kops & Arenson), 유성 플러드 최대 10,000, 고압 액체 분사 10³~10⁴ 이상.
+    /// (Rai & Xirouchakis IJAMT 2009; Brandão 외 JBSMSE 2010; Shokrani 외 Procedia CIRP 2021; Stegmann 외 Energies 2024)
+    /// 내부 급유도 액체이므로 플러드보다 낮을 수 없다 — 예전 값 320 은 공기 분사 수준이어서 니켈·티타늄처럼 열이 안 빠지는
+    /// 소재에서 이전 패스 열이 과하게 쌓였다 (인코넬 황삭 경로 예열 335 K → 공칭 대비 마모 7.5배).
     pub fn workpiece_h_of(method: &CoolantMethod, flow_l_min: f64) -> f64 {
         20.0 + match method {
             CoolantMethod::Dry => 10.0,
-            CoolantMethod::AirBlast => 40.0,
-            CoolantMethod::Mist => 80.0,
-            CoolantMethod::Flood => 1000.0 * (flow_l_min / 12.0).clamp(0.3, 1.5),
-            CoolantMethod::ThroughTool => 300.0,
+            CoolantMethod::AirBlast => 230.0,
+            CoolantMethod::Mist => 480.0,
+            CoolantMethod::Flood => 2500.0 * (flow_l_min / 12.0).clamp(0.3, 1.5),
+            CoolantMethod::ThroughTool => 3000.0,
         }
     }
 

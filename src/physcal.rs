@@ -27,13 +27,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const RECORD_VERSION: u32 = 1;
+/// 2: 칩 속도 기준 두께비·힘 추세·천장 접촉을 기록하고 해석 길이를 늘린 뒤의 형식. 1 은 짧은 해석이라
+/// 절삭력이 약 20% 낮게 나왔으므로 읽을 때 버린다.
+pub const RECORD_VERSION: u32 = 2;
 /// MPM 에 넣을 칩 두께 범위 (µm). 이보다 얇으면 격자 비용이 급증하고 날 둥글기 해상도가 부족하다.
 pub const MPM_H_MIN_UM: f64 = 20.0;
 pub const MPM_H_MAX_UM: f64 = 150.0;
 pub const FACTOR_MIN: f64 = 0.5;
 pub const FACTOR_MAX: f64 = 1.5;
 pub const MAX_RECORDS: usize = 200;
+
+/// 연속 칩으로 볼 수 있는 칩 두께비·전단각 범위 (금속 절삭 실측 범위를 조금 넓힌 값)
+pub const CHIP_RATIO_MIN: f64 = 0.15;
+pub const CHIP_RATIO_MAX: f64 = 1.0;
+pub const SHEAR_DEG_MIN: f64 = 8.0;
+pub const SHEAR_DEG_MAX: f64 = 50.0;
+
+/// 재료별 직교절삭 칩 두께비 실측 범위 (h = 0.06~0.2 mm, 초경, Vc 60~180 m/min).
+/// SUS304: Marcicano 외 COBEM 2005 (Vc 60~67 m/min, r 0.23~0.44, 전단각 13~24°),
+/// Zhan 외 2017 (Vc 60~180 m/min 선삭, r 약 0.47~0.51).
+pub fn measured_chip_ratio(material_key: &str) -> Option<(f64, f64, &'static str)> {
+    match material_key {
+        "stainless" => Some((0.23, 0.51, "SUS304, Marcicano 2005 · Zhan 2017")),
+        _ => None,
+    }
+}
 /// 비교의 기준 온도 (°C). MPM 의 초기 온도·JC 기준 온도와 같다.
 const T0_C: f64 = 20.0;
 
@@ -86,13 +104,23 @@ pub struct PhysMpm {
     pub interface_t_p95_c: Option<f64>,
     pub interface_rise_c: Option<f64>,
     pub tmax_c: f64,
+    /// 칩 두께비 r = h/h_c (칩 속도·질량 보존 기준)
     pub chip_ratio: Option<f64>,
+    /// 칩 단면 두께를 직접 잰 두께비 (비교용, 예전 기록에는 없음)
+    #[serde(default)]
+    pub chip_ratio_geom: Option<f64>,
     pub shear_angle_deg: Option<f64>,
     pub mu_apparent: Option<f64>,
     pub tau_shear_mpa: Option<f64>,
     pub wp_over_wtool: f64,
     pub ke_ratio_max: f64,
     pub steady: bool,
+    /// 꼬리 구간 뒤 절반 / 앞 절반 절삭력 - 1 (예전 기록에는 없음)
+    #[serde(default)]
+    pub fc_trend: Option<f64>,
+    /// 칩이 계산 영역 천장에 닿아 쌓였는지 (예전 기록에는 없음)
+    #[serde(default)]
+    pub chip_at_ceiling: bool,
     pub steps: usize,
     pub particles: usize,
     pub wall_s: f64,
@@ -340,7 +368,14 @@ fn assess(cond: &PhysConditions, wp: &WorkpieceProps, r: &CutResult) -> PhysReli
     }
     if !r.steady {
         low = true;
-        why.push("절삭력이 정상 상태에 들어가지 않았습니다 (이동거리가 짧거나 칩 형성이 불안정)".into());
+        why.push(format!(
+            "절삭력이 정상 상태에 들어가지 않았습니다 (꼬리 구간 앞뒤 절반 차이 {:+.0}% — 이동거리가 짧거나 칩 형성이 불안정)",
+            r.fc_trend * 100.0
+        ));
+    }
+    if r.chip_at_ceiling {
+        low = true;
+        why.push("칩이 계산 영역 천장에 닿아 빠져나가지 못하고 쌓였습니다 — 절삭력이 실제보다 크게 나오는 쪽입니다".into());
     }
     if r.ke_ratio_max > 0.05 {
         low = true;
@@ -355,12 +390,27 @@ fn assess(cond: &PhysConditions, wp: &WorkpieceProps, r: &CutResult) -> PhysReli
     if !r.chip_ratio.is_finite() {
         low = true;
         why.push("연속 칩이 형성되지 않아 칩 두께비·전단각을 구하지 못했습니다".into());
-    } else if !(0.25..=1.2).contains(&r.chip_ratio) || (r.shear_angle_deg.is_finite() && !(12.0..=55.0).contains(&r.shear_angle_deg)) {
-        // 연속 칩이 정상적으로 말려 올라가면 두께비는 보통 0.3~1.0, 전단각은 20~45° 이다
+    } else if !(CHIP_RATIO_MIN..=CHIP_RATIO_MAX).contains(&r.chip_ratio) || (r.shear_angle_deg.is_finite() && !(SHEAR_DEG_MIN..=SHEAR_DEG_MAX).contains(&r.shear_angle_deg)) {
+        // 금속 연속 칩의 실측 두께비는 대략 0.2~0.9 (칩 압축비 1.1~5), 전단각 10~45° 이다
         low = true;
         why.push(format!(
-            "칩 형성 진단이 비정상입니다 (칩 두께비 {:.2}, 전단각 {:.1}° — 보통 0.3~1.0, 20~45°). 칩이 정상적으로 분리·배출되지 않았거나 격자가 거칠어 칩 두께를 잘못 쟀을 수 있으므로 이 기록은 참고용으로만 보세요",
-            r.chip_ratio, r.shear_angle_deg
+            "칩 형성 진단이 비정상입니다 (칩 두께비 {:.2}, 전단각 {:.1}° — 연속 칩의 실측 범위는 대략 {:.2}~{:.1}, {:.0}~{:.0}°). 칩이 정상적으로 분리·배출되지 않았을 수 있으므로 이 기록은 참고용으로만 보세요",
+            r.chip_ratio, r.shear_angle_deg, CHIP_RATIO_MIN, CHIP_RATIO_MAX, SHEAR_DEG_MIN, SHEAR_DEG_MAX
+        ));
+    } else if let Some((lo, hi, src)) = measured_chip_ratio(&wp.key) {
+        let verdict = if r.chip_ratio < lo * 0.8 {
+            "실측보다 두꺼운 칩(작은 전단각) — 절삭력을 과대평가하는 쪽일 수 있습니다"
+        } else if r.chip_ratio > hi * 1.2 {
+            "실측보다 얇은 칩(큰 전단각) — 절삭력을 과소평가하는 쪽일 수 있습니다"
+        } else {
+            "실측 범위 안"
+        };
+        why.push(format!("칩 두께비 {:.2} (전단각 {:.1}°) · 문헌 실측 {:.2}~{:.2} ({}) → {}", r.chip_ratio, r.shear_angle_deg, lo, hi, src, verdict));
+    }
+    if r.chip_ratio_geom.is_finite() && r.chip_ratio.is_finite() && (r.chip_ratio_geom / r.chip_ratio - 1.0).abs() > 0.35 {
+        why.push(format!(
+            "칩 단면으로 잰 두께비 {:.2} 는 칩 속도(질량 보존)로 구한 {:.2} 와 다릅니다 — 날 끝 근처 단면에는 막 전단된 바깥층이 빠져 단면 값이 얇게 나오므로 속도 기준값을 씁니다",
+            r.chip_ratio_geom, r.chip_ratio
         ));
     }
     if !r.interface_t_mean_c.is_finite() {
@@ -435,12 +485,15 @@ pub fn make_record(plan: &Plan, r: &CutResult) -> Result<PhysCalRecord, String> 
             interface_rise_c: opt(r.interface_t_mean_c - T0_C),
             tmax_c: fin(r.tmax_c),
             chip_ratio: opt(r.chip_ratio),
+            chip_ratio_geom: opt(r.chip_ratio_geom),
             shear_angle_deg: opt(r.shear_angle_deg),
             mu_apparent: opt(r.mu_apparent),
             tau_shear_mpa: opt(r.tau_shear_mpa),
             wp_over_wtool: fin(r.wp_over_wtool),
             ke_ratio_max: fin(r.ke_ratio_max),
             steady: r.steady,
+            fc_trend: opt(r.fc_trend),
+            chip_at_ceiling: r.chip_at_ceiling,
             steps: r.steps,
             particles: r.particles,
             wall_s: fin(r.wall_s),
@@ -987,12 +1040,15 @@ mod tests {
                 interface_rise_c: Some(680.0),
                 tmax_c: 900.0,
                 chip_ratio: Some(0.6),
+                chip_ratio_geom: None,
                 shear_angle_deg: Some(33.0),
                 mu_apparent: Some(0.4),
                 tau_shear_mpa: Some(900.0),
                 wp_over_wtool: 0.92,
                 ke_ratio_max: 0.01,
                 steady: true,
+                fc_trend: None,
+                chip_at_ceiling: false,
                 steps: 1000,
                 particles: 1000,
                 wall_s: 1.0,
@@ -1143,6 +1199,35 @@ mod tests {
         // 정상 범위의 칩은 이 이유로 낮아지지 않는다
         let ok = make_record(&plan, &mk(0.62, 34.6)).expect("record");
         assert!(!ok.reliability.reasons.iter().any(|s| s.contains("칩 형성 진단")), "{:?}", ok.reliability.reasons);
+        // 같은 조건을 칩 속도(질량 보존)로 다시 잰 값: 두께비 0.22 · 전단각 12.6° (단면 측정은 0.10)
+        // → 실측 범위(SUS304 0.23~0.51, 20% 여유) 안이라 신뢰도를 낮추지 않고 문헌 비교와 측정 차이만 남긴다
+        let mut r = mk(0.22, 12.6);
+        r.chip_ratio_geom = 0.10;
+        let fixed = make_record(&plan, &r).expect("record");
+        assert_eq!(fixed.reliability.level, "medium", "{:?}", fixed.reliability.reasons);
+        assert!(fixed.reliability.reasons.iter().any(|s| s.contains("문헌 실측") && s.contains("실측 범위 안")), "{:?}", fixed.reliability.reasons);
+        assert!(fixed.reliability.reasons.iter().any(|s| s.contains("칩 속도")), "{:?}", fixed.reliability.reasons);
+        assert_eq!(fixed.mpm.chip_ratio_geom, Some(0.10));
+        // 칩이 천장에 닿아 쌓였거나 힘이 계속 오르면 낮음
+        let mut jam = mk(0.37, 21.5);
+        jam.chip_at_ceiling = true;
+        let j = make_record(&plan, &jam).expect("record");
+        assert_eq!(j.reliability.level, "low");
+        assert!(j.reliability.reasons.iter().any(|s| s.contains("천장")), "{:?}", j.reliability.reasons);
+        assert!(j.mpm.chip_at_ceiling);
+        let mut rising = mk(0.37, 21.5);
+        rising.steady = false;
+        rising.fc_trend = 0.15;
+        let r2 = make_record(&plan, &rising).expect("record");
+        assert_eq!(r2.reliability.level, "low");
+        assert!(r2.reliability.reasons.iter().any(|s| s.contains("+15%")), "{:?}", r2.reliability.reasons);
+        // 예전 기록(단면 두께비 필드 없음)도 읽힌다
+        let mut js: serde_json::Value = serde_json::to_value(&fixed).unwrap();
+        for k in ["chip_ratio_geom", "fc_trend", "chip_at_ceiling"] {
+            js["mpm"].as_object_mut().unwrap().remove(k);
+        }
+        let back: PhysCalRecord = serde_json::from_value(js).unwrap();
+        assert_eq!(back.mpm.chip_ratio_geom, None);
     }
 
     #[test]

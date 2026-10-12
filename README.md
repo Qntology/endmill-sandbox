@@ -304,6 +304,13 @@ Expected folder naming (keyword search):
 * Coating thermal barrier (steady + transient contact resistance)
 * Tool body temperature → radial/axial thermal growth (µm)
 * Workpiece lumped-capacitance steady-state rise
+* Workpiece-surface convection by coolant (dry 30 · air blast 250 · MQL/mist 500 · flood 2,500 × flow/12 l/min ·
+  through-tool 3,000 W/m²K). It sets how fast the heat of earlier passes decays before the tool comes back
+  (toolpath preheat), the bulk workpiece temperature and the cool-down dwell. Values follow published machining
+  heat-transfer coefficients (dry 7–100, air jet ≈ 540, MQL ≈ 560–1,000, water-based flood 1,000–2,700, oil flood up
+  to 10,000, liquid jets 10³–10⁴: Rai & Xirouchakis 2009, Brandão et al. 2010, Shokrani et al. 2021,
+  Stegmann et al. 2024). The previous through-tool value (320) was air-jet level and let earlier passes pre-heat
+  nickel and titanium alloys by 150–335 K.
 * Thermal shock index (interrupted cutting + quench severity)
 
 ### Wear Model
@@ -332,6 +339,10 @@ Expected folder naming (keyword search):
 * Adaptive feed-scale per episode
 * Thin-wall compliance (plate bending, thickness search)
 * G00 collision & G01 LOC-exceed warnings
+* The synthetic pocket pattern clamps its stepover to 0.2–0.6·D (multi-pass contour 0.1–0.4·D) and leaves a 1 mm wall
+  to the stock edge. A finishing preset (ae ≈ 0.03–0.1·D) is therefore cut like pocket roughing at several times its
+  radial engagement; the simulation now adds a warning when the pattern stepover differs from the preset ae by more
+  than 1.5×. Use the rectangular profile pattern to judge finishing conditions.
 
 ### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
 
@@ -354,11 +365,22 @@ analytic model above predicts for the *same* orthogonal cut (dry, new tool, no c
   (`pipeline::calibrated_context`), so the TTM wear forecast, the rule / LAYA decision and the second-pass G-code
   correction all see the changed force and temperature. It never writes to the SDS ledger or the replan anchor and
   never creates synthetic measurements; the pipeline divides the applied factor back out before it records real ones.
+* Run length and diagnostics: the default run is long enough for the primary shear zone of thick-chip materials
+  (travel ≥ 8h + 100 µm, workpiece margin ≥ 6h, free space above the stock ≥ travel/2 + 4h). A record is flagged low
+  when the force is still drifting (`fc_trend` over 8 % between the two halves of the averaging window), when the chip
+  reached the top of the grid, or when the chip ratio is outside 0.15–1.0 / shear angle outside 8–50°. The chip
+  ratio comes from the chip speed (mass conservation, r = V_chip/V_c); for SUS304 it is compared with measured
+  orthogonal-cutting values (r 0.23–0.51, Marcicano et al. 2005, Zhan et al. 2017) in the record's reasons.
+* Reference (SUS304, h = 50 µm, Vc 132 m/min, rake 12°, edge 8 µm, μ 0.4): MPM Fc 194 N/mm (standard) / 187 N/mm
+  (quick) vs. 186 N/mm from the analytic model, chip ratio 0.35 / 0.37, shear angle 20° / 21.5°. The default stainless
+  profile (h = 32 µm, Vc 180 m/min, edge 12.4 µm, quick) gives Fc ×0.98 and an interface rise ×0.88 of the analytic
+  values, chip ratio 0.27. An earlier, shorter default run (travel 300 µm, 150 µm margin) reported ~20 % lower forces
+  and implausible chip ratios; records made before this change are
+  ignored (record format 2).
 * Limits: 2D (no helix or 3D engagement), no flank rubbing, coolant, tool heat conduction or wear, no segmented chips
-  (titanium, Inconel and hardened steel are flagged low reliability), thrust force is not compared, and the
-  chip-thickness size effect differs from the Kienzle exponent of the analytic model. Records with implausible chip
-  diagnostics are also flagged low. **There is no experimental validation** — treat it as a physics-based
-  cross-check, not as a measurement.
+  (titanium, Inconel and hardened steel are flagged low reliability), and thrust force is not compared. Only
+  h = 32 and 50 µm on SUS304 have been checked against literature chip data. **There is no experimental validation** —
+  treat it as a physics-based cross-check, not as a measurement.
 * CLI without the app: `cargo run --release --example physcal_probe -- stainless quick [h_um] [--plan] [--threads N]`
   (same comparison, writes a JSON record) and
   `cargo run --release --manifest-path crates/endmill_mpm/Cargo.toml --bin mpmcut -- --h 50 --vc 2.2 --rake 12 --edge 8 --threads 4`

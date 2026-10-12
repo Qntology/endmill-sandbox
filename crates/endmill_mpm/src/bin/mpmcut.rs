@@ -109,9 +109,9 @@ fn main() {
             }
             if let Some(p) = dump_path {
                 let mut f = std::io::BufWriter::new(std::fs::File::create(&p).expect("particles 저장 실패"));
-                writeln!(f, "x_um,y_um,ep,T_C,p_GPa").unwrap();
+                writeln!(f, "x_um,y_um,ep,T_C,p_GPa,vx_m_s,vy_m_s,x0_um,y0_um").unwrap();
                 for q in &r.particles_dump {
-                    writeln!(f, "{:.3},{:.3},{:.4},{:.1},{:.4}", q[0], q[1], q[2], q[3], q[4]).unwrap();
+                    writeln!(f, "{:.3},{:.3},{:.4},{:.1},{:.4},{:.4},{:.4},{:.3},{:.3}", q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]).unwrap();
                 }
             }
         }

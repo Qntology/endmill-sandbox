@@ -516,9 +516,14 @@ pub struct CompOutcome {
     pub time_s: f64,
     pub cut_time_s: f64,
     pub vb_after_mm: f64,
+    /// 2차 후 예측 — 보정 대상 구간 중 중앙값이 가장 큰 구간의 값 (최악 구간 기준, 과삭 구간 제외)
     pub after_p50_um: f64,
     pub after_min_um: f64,
     pub after_max_um: f64,
+    /// 2차 후 예측 — 최종 벽면 전체(과삭 구간 제외): 구간별 2차 후 중앙값을 구간 표본 수로 가중한 중앙값.
+    /// 1차 잔여 P50 과 거의 같은 기준이라 서로 비교할 수 있다 (보류·보정 안 함이면 1차 잔여와 같다)
+    #[serde(default)]
+    pub after_all_p50_um: f64,
     pub parts_left_p50: Option<f64>,
     pub parts_left_p90: Option<f64>,
     pub report_line: String,
@@ -1746,6 +1751,24 @@ fn state_text(
     s
 }
 
+/// (값, 가중치) 의 가중 중앙값
+fn weighted_median(v: &mut Vec<(f64, f64)>) -> Option<f64> {
+    v.retain(|(x, w)| x.is_finite() && *w > 0.0);
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let half = 0.5 * v.iter().map(|p| p.1).sum::<f64>();
+    let mut acc = 0.0;
+    for (x, w) in v.iter() {
+        acc += w;
+        if acc >= half {
+            return Some(*x);
+        }
+    }
+    v.last().map(|p| p.0)
+}
+
 pub fn consult(draft: &CompDraft, laya: Option<&LayaAdvisor>, agreement_rate: Option<(f64, u64)>, use_laya: bool) -> CompDecision {
     let mut d = CompDecision {
         need: draft.need,
@@ -2480,6 +2503,10 @@ pub fn finalize(
         ));
     }
     let after_p50_um = if afters.is_empty() { draft.residual.p50_um } else { afters.iter().map(|a| a.0).fold(f64::NEG_INFINITY, f64::max) };
+    let after_all_p50_um = {
+        let mut w: Vec<(f64, f64)> = draft.zones.iter().filter(|z| !z.excluded).map(|z| (z.after_for(action).0, z.n.max(1) as f64)).collect();
+        weighted_median(&mut w).unwrap_or(draft.residual.p50_um)
+    };
     let after_min_um = if afters.is_empty() { draft.residual.min_um } else { afters.iter().map(|a| a.1).fold(f64::INFINITY, f64::min) };
     let after_max_um = if afters.is_empty() { draft.residual.max_um } else { afters.iter().map(|a| a.2).fold(f64::NEG_INFINITY, f64::max) };
     let parts = |per: Option<f64>| -> Option<f64> {
@@ -2640,6 +2667,7 @@ pub fn finalize(
         after_p50_um,
         after_min_um,
         after_max_um,
+        after_all_p50_um,
         parts_left_p50,
         parts_left_p90,
         report_line,

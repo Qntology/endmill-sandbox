@@ -3800,6 +3800,7 @@
 	    ['1차 최종 벽면 잔여량 P10 / P50 / P90', `${fmt(rs.p10_um, 1)} / ${fmt(rs.p50_um, 1)} / ${fmt(rs.p90_um, 1)} µm`],
 	    ['최소 / 최대', `${fmt(rs.min_um, 1)} / ${fmt(rs.max_um, 1)} µm (${rs.n}점 · ${rs.zones}구간)`],
 	    ['2차 후 예측 (구간 중앙값 최대 / 최소 / 최대 · 과삭 구간 제외)', `${fmt(c.after_p50_um, 1)} / ${fmt(c.after_min_um, 1)} / ${fmt(c.after_max_um, 1)} µm`],
+	    ['2차 후 예측 전체 중앙값 (1차 잔여 P50 과 같은 기준)', c.after_all_p50_um === undefined || c.after_all_p50_um === null ? '-' : `${fmt(c.after_all_p50_um, 1)} µm`],
 	    ['반경 마모 출처', `${esc({ simulated: '1차 시뮬레이션', measured: '실측 입력', image: '공구 이미지' }[d.radial_source] || d.radial_source)} ${fmt(d.radial_used_um, 1)} µm (시뮬레이션 ${fmt(d.radial_end1_um, 1)} µm)`],
 	    ['VB 1차 시작 (공구 누적) → 1차 끝', `${fmt(d.vb_start_mm || 0, 4)} → ${fmt(d.vb_end1_mm, 4)} mm${d.vb_start_mm > 0 ? ' · 길들이기 반복 없음' : ' · 새 날'}`],
 	    ['VB 1차 끝 → 2차 끝 (P50 / P90)', `${fmt(d.vb_end1_mm, 4)} → ${fmt(d.vb_end2_p50_mm, 4)} / ${fmt(d.vb_end2_p90_mm, 4)} mm (한계 ${fmt(d.vb_limit_mm, 2)})`],

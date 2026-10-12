@@ -61,7 +61,8 @@ impl Material {
 }
 
 /// 해석 품질 단계. 빠름은 표준보다 격자가 거칠다(칩 두께 10칸 대 12.5칸, 질량 스케일 2배).
-/// 기준 조건(h=50 µm)에서 빠름은 절삭력 +1.5%, 접촉면 온도 +1% 차이, 추력은 -17% 로 흔들린다(날 둥글기 해상도).
+/// 기준 조건(SUS304, h=50 µm, 기본 이동거리)에서 빠름은 표준 대비 절삭력 -3%, 접촉면 온도 +10%, 칩 두께비 +6% 차이
+/// (표준 194 N/mm · 782 °C · r 0.35 / 빠름 187 N/mm · 860 °C · r 0.37). 추력은 날 둥글기 해상도에 따라 더 흔들린다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {
     Quick,
@@ -223,19 +224,35 @@ pub struct CutResult {
     pub interface_t_mean_c: f64,
     pub interface_t_p95_c: f64,
     pub chip_ep_mean: f64,
+    /// 칩 두께 (µm) — `chip_ratio` 와 같은 기준 (h / chip_ratio)
     pub chip_thickness_um: f64,
+    /// 칩 두께비 r = h/h_c. 정상 구간의 칩 속도(공구 기준, 경사면 방향)로 질량 보존 r = V_chip / V_c 에서 구한다.
+    /// 속도 표본이 부족하면 단면 두께 측정값을 쓴다.
     pub chip_ratio: f64,
+    /// 칩 단면 두께를 직접 재서 구한 두께비 (칩이 말리거나 공구에 붙으면 흔들린다) — 비교용
+    pub chip_ratio_geom: f64,
+    /// 공구 기준 칩 속도 (경사면 방향, m/s, 정상 구간 중앙값)
+    pub chip_velocity_m_s: f64,
+    /// 칩 속도 표본(기록 시점) 수
+    pub chip_samples: usize,
     pub shear_angle_deg: f64,
     pub mu_apparent: f64,
     pub tau_shear_mpa: f64,
     pub wp_over_wtool: f64,
     pub ke_ratio_max: f64,
-    /// 힘이 안정 구간에 들어갔는지(꼬리 구간 표준편차/평균 < 12%)
+    /// 꼬리 구간 뒤 절반 평균 / 앞 절반 평균 - 1 (절삭력 추세)
+    pub fc_trend: f64,
+    /// 칩이 계산 영역 천장 근처까지 올라갔는지 (그러면 칩이 쌓여 힘이 커진다)
+    pub chip_at_ceiling: bool,
+    /// 힘이 안정 구간에 들어갔는지(꼬리 구간 표준편차/평균 < 12%, 앞뒤 절반 차이 < 8%)
     pub steady: bool,
     pub cancelled: bool,
     pub history: Vec<HistRow>,
-    /// keep_particles 일 때만: [x_um, y_um, ep, T_C, p_GPa]
-    pub particles_dump: Vec<[f32; 5]>,
+    /// keep_particles 일 때만: [x_um, y_um, ep, T_C, p_GPa, vx_m_s, vy_m_s, x0_um, y0_um]
+    pub particles_dump: Vec<[f32; 9]>,
+    /// 해석이 끝난 시점의 날 끝 위치 (µm) — 입자 덤프를 공구 기준으로 볼 때 쓴다
+    pub tool_tip_x_um: f64,
+    pub tool_tip_y_um: f64,
     pub notes: Vec<String>,
 }
 
@@ -267,11 +284,18 @@ impl CutResult {
             f("chip_ep_mean", self.chip_ep_mean),
             f("chip_thickness_um", self.chip_thickness_um),
             f("chip_ratio", self.chip_ratio),
+            f("chip_ratio_geom", self.chip_ratio_geom),
+            f("tool_tip_x_um", self.tool_tip_x_um),
+            f("tool_tip_y_um", self.tool_tip_y_um),
+            f("chip_velocity_m_s", self.chip_velocity_m_s),
+            format!("\"chip_samples\":{}", self.chip_samples),
             f("shear_angle_deg", self.shear_angle_deg),
             f("mu_apparent", self.mu_apparent),
             f("tau_shear_mpa", self.tau_shear_mpa),
             f("wp_over_wtool", self.wp_over_wtool),
             f("ke_ratio_max", self.ke_ratio_max),
+            f("fc_trend", self.fc_trend),
+            format!("\"chip_at_ceiling\":{}", self.chip_at_ceiling),
             format!("\"steady\":{}", self.steady),
             format!("\"cancelled\":{}", self.cancelled),
         ];
@@ -696,8 +720,12 @@ fn geometry(prm: &CutParams) -> Result<Geo, String> {
     let c_p = ((lam_l + 2.0 * mu_l) / rho_m).sqrt();
     let dx = prm.dx_um * 1e-6;
     let h_m = prm.h_um * 1e-6;
-    let travel_um = if prm.travel_um > 0.0 { prm.travel_um } else { (4.5 * prm.h_um + 75.0).max(300.0) };
-    let wp_len_um = if prm.wp_len_um > 0.0 { prm.wp_len_um } else { travel_um + 150.0 };
+    // 이동거리·공작물 길이: 칩이 두껍게 나오는 재료(SUS304, 전단각 13~25°)는 전단면이 날 끝 앞쪽으로 h/tanφ ≈ 4h 까지
+    // 뻗는다. 예전 기본값(이동 max(300, 4.5h+75) µm, 끝 여유 150 µm)은 h=50 µm 에서 힘이 아직 오르는 구간과
+    // 공작물 끝 효과가 겹쳐 절삭력을 15~20% 낮게 냈다 (이동 1000 µm 해석에서 300~600 µm 구간 약 190 N/mm 로 수렴,
+    // 예전 평균 157 N/mm). 이동은 8h+100 µm 이상, 끝 여유는 6h 이상으로 둔다.
+    let travel_um = if prm.travel_um > 0.0 { prm.travel_um } else { (8.0 * prm.h_um + 100.0).max(300.0) };
+    let wp_len_um = if prm.wp_len_um > 0.0 { prm.wp_len_um } else { travel_um + (6.0 * prm.h_um).max(150.0) };
     let wp_thick_um = if prm.wp_thick_um > 0.0 { prm.wp_thick_um } else { (3.0 * prm.h_um + 50.0).max(200.0) };
     if prm.edge_um + 8.0 > wp_thick_um {
         return Err("작업물 두께가 너무 얇습니다".into());
@@ -707,7 +735,10 @@ fn geometry(prm: &CutParams) -> Result<Geo, String> {
     let x_wp1 = x_wp0 + wp_len_um * 1e-6;
     let y_top = y_wp0 + wp_thick_um * 1e-6;
     let l_dom = (wp_len_um + 300.0) * 1e-6;
-    let h_dom = (wp_thick_um + 260.0 + prm.h_um) * 1e-6;
+    // 공작물 위 여유: 칩이 계산 영역 천장에 닿으면 빠져나가지 못하고 쌓여 힘이 계속 오른다 (이동 1000 µm 해석에서
+    // 700 µm 이후 확인). 칩이 자라는 만큼(이동의 절반 + 4h) 이상 비워 둔다.
+    let space_um = (0.5 * travel_um + 4.0 * prm.h_um).max(260.0);
+    let h_dom = (wp_thick_um + 80.0 + space_um) * 1e-6;
     let nx = (l_dom / dx).round() as usize + 8;
     let ny = (h_dom / dx).round() as usize + 8;
     let nxp = ((x_wp1 - x_wp0) / dx).round() as usize * PPC;
@@ -769,6 +800,30 @@ pub fn plan(prm: &CutParams) -> Result<RunPlan, String> {
         wp_thick_um: g.wp_thick_um,
         work: g.n_p as f64 * g.n_steps as f64,
     })
+}
+
+/// 경사면을 따라 올라가는 칩의 공구 기준 속도 (m/s, 중앙값).
+/// 칩 층(처음에 절삭 두께 h 안에 있었고 이미 공구가 지나간 입자) 가운데 날 끝에서 경사면을 따라 1.2h~2.5h,
+/// 경사면에서 0~4h 거리에 있는 입자만 쓴다. 정상 상태에서는 질량 보존으로 h·V_c = h_c·V_chip 이므로
+/// 두께비 r = h/h_c = V_chip/V_c 가 된다 (칩 단면을 직접 재는 방법보다 칩이 말려도 덜 흔들린다).
+#[allow(clippy::too_many_arguments)]
+fn chip_speed(parts: &[P], x0: &[[f64; 2]], tx: f64, cen_y: f64, y_top: f64, h_m: f64, r_edge: f64, dx: f64, cr: f64, sr: f64, vc: f64) -> Option<f64> {
+    let mut v: Vec<f64> = Vec::new();
+    for (p, o) in parts.iter().zip(x0.iter()) {
+        if !(o[1] > y_top - h_m && o[0] < tx - 60e-6) {
+            continue;
+        }
+        let (rx, ry) = (p.x[0] - tx, p.x[1] - cen_y);
+        let d2 = rx * cr + ry * sr;
+        let s2 = -rx * sr + ry * cr;
+        if s2 > 1.2 * h_m && s2 < 2.5 * h_m && d2 > r_edge - dx && d2 < r_edge + 4.0 * h_m {
+            v.push(-(p.v[0] - vc) * sr + p.v[1] * cr);
+        }
+    }
+    if v.len() < 20 {
+        return None;
+    }
+    Some(percentile(&mut v, 0.5))
 }
 
 /// 해석 실행. `progress(진행률 0..1, 메시지)` 가 false 를 돌려주면 취소한다.
@@ -843,6 +898,10 @@ pub fn run(prm: &CutParams, progress: &(dyn Fn(f64, &str) -> bool + Sync)) -> Re
     let mut last_f = 0.0f64;
     let mut last_tick = Instant::now();
     let p_mass = sim.k.p_mass;
+    // 칩 속도 표본: 정상 구간(뒤 45%)의 기록 시점마다 경사면 창 안 칩 입자들의 공구 기준 속도 중앙값
+    let tail_from = (n_steps as f64 * 0.55) as usize;
+    let mut vchip: Vec<f64> = Vec::new();
+    let (cr0, sr0) = (rk.cos(), rk.sin());
     pool.install(|| {
         for it in 0..n_steps {
             let tx = tool_x0 + prm.vc_m_s * dt * it as f64;
@@ -863,6 +922,11 @@ pub fn run(prm: &CutParams, progress: &(dyn Fn(f64, &str) -> bool + Sync)) -> Re
                     ke_max = ke_max.max(ke / w_tool);
                 }
                 hist.push(HistRow { travel_um: (it + 1) as f64 * dt * prm.vc_m_s * 1e6, fc: -fa_x * 1e-3, ft: fa_y * 1e-3, tmax_c: tmax - 273.15 });
+                if it >= tail_from {
+                    if let Some(v) = chip_speed(&sim.parts, &sim.x0, tx, cen_y, y_top, h_m, r_edge, dx, cr0, sr0, prm.vc_m_s) {
+                        vchip.push(v);
+                    }
+                }
             }
             // 진행률은 1% 마다, 오래 걸리는 해석에서는 0.4초 마다 알린다 (취소가 늦지 않도록)
             if (it + 1) % 16 == 0 {
@@ -897,12 +961,25 @@ pub fn run(prm: &CutParams, progress: &(dyn Fn(f64, &str) -> bool + Sync)) -> Re
     res.fc_sd = (tail.iter().map(|h| (h.fc - fc).powi(2)).sum::<f64>() / nt).sqrt();
     res.ft_n_per_mm = tail.iter().map(|h| h.ft).sum::<f64>() / nt;
     res.tmax_c = tail.iter().map(|h| h.tmax_c).fold(0.0, f64::max);
-    res.steady = res.fc_sd < 0.12 * fc.abs().max(1e-9);
+    // 정상 상태: 꼬리 구간의 흔들림이 작고(표준편차 12% 미만) 앞뒤 절반 평균 차이도 작아야 한다 (8% 미만).
+    // 힘이 계속 오르는 구간(칩 형성 초기, 칩이 쌓이는 경우)을 정상으로 잘못 보지 않기 위해서다.
+    let half = tail.len() / 2;
+    let trend = if half >= 2 {
+        let a = tail[..half].iter().map(|h| h.fc).sum::<f64>() / half as f64;
+        let b = tail[half..].iter().map(|h| h.fc).sum::<f64>() / (tail.len() - half) as f64;
+        (b - a) / fc.abs().max(1e-9)
+    } else {
+        0.0
+    };
+    res.fc_trend = trend;
+    res.steady = res.fc_sd < 0.12 * fc.abs().max(1e-9) && trend.abs() < 0.08;
     res.wp_over_wtool = wp_total / w_tool.max(1e-30);
     res.ke_ratio_max = ke_max;
 
     // 칩 진단 — 초기 위치로 칩 입자를 식별(최종 가공면보다 위에 있던 두께 h 층 중 이미 절삭된 쪽)
     let tip_x = (tool_x0 + prm.vc_m_s * dt * n_steps as f64) * 1e6;
+    res.tool_tip_x_um = tip_x;
+    res.tool_tip_y_um = tip_y * 1e6;
     let (cr, sr) = (rk.cos(), rk.sin());
     let cen = [tip_x, cen_y * 1e6];
     let mut chip_t = Vec::new();
@@ -938,17 +1015,43 @@ pub fn run(prm: &CutParams, progress: &(dyn Fn(f64, &str) -> bool + Sync)) -> Re
         res.interface_t_mean_c = f64::NAN;
         res.interface_t_p95_c = f64::NAN;
     }
-    if win_d2.len() > 30 {
+    res.chip_ratio_geom = if win_d2.len() > 30 {
         let mut a = win_d2.clone();
         let t_c = percentile(&mut a, 0.98) - percentile(&mut win_d2, 0.02);
-        res.chip_thickness_um = t_c;
-        res.chip_ratio = prm.h_um / t_c.max(1e-9);
+        prm.h_um / t_c.max(1e-9)
+    } else {
+        f64::NAN
+    };
+    res.chip_samples = vchip.len();
+    let r_flux = if vchip.len() >= 3 {
+        let v = percentile(&mut vchip.clone(), 0.5);
+        res.chip_velocity_m_s = v;
+        v / prm.vc_m_s.max(1e-9)
+    } else {
+        res.chip_velocity_m_s = f64::NAN;
+        f64::NAN
+    };
+    res.chip_ratio = if r_flux.is_finite() && r_flux > 0.02 && r_flux < 3.0 {
+        r_flux
+    } else if res.chip_ratio_geom.is_finite() {
+        res.notes.push("칩 속도 표본이 부족해 칩 두께비는 단면 두께 측정값을 씁니다".into());
+        res.chip_ratio_geom
+    } else {
+        f64::NAN
+    };
+    if res.chip_ratio.is_finite() {
+        res.chip_thickness_um = prm.h_um / res.chip_ratio;
         res.shear_angle_deg = (res.chip_ratio * cr).atan2(1.0 - res.chip_ratio * sr).to_degrees();
+        if r_flux.is_finite() && res.chip_ratio_geom.is_finite() && (res.chip_ratio_geom / r_flux - 1.0).abs() > 0.35 {
+            res.notes.push(format!(
+                "칩 단면 두께로 잰 두께비 {:.2} 와 칩 속도(질량 보존)로 구한 {:.2} 가 크게 다릅니다 — 칩이 말리거나 공구에 붙어 단면 측정이 흔들린 것으로 보고 속도 기준값을 씁니다",
+                res.chip_ratio_geom, r_flux
+            ));
+        }
     } else {
         res.chip_thickness_um = f64::NAN;
-        res.chip_ratio = f64::NAN;
         res.shear_angle_deg = f64::NAN;
-        res.notes.push("연속 칩 두께를 잴 만큼 칩이 길지 않습니다".into());
+        res.notes.push("연속 칩이 형성되지 않아 칩 두께비를 구하지 못했습니다".into());
     }
     let bg = res.ft_n_per_mm.atan2(res.fc_n_per_mm);
     res.mu_apparent = (bg + rk).tan();
@@ -959,8 +1062,17 @@ pub fn run(prm: &CutParams, progress: &(dyn Fn(f64, &str) -> bool + Sync)) -> Re
     } else {
         res.tau_shear_mpa = f64::NAN;
     }
+    let ceiling = (ny as f64 - 6.0) * dx;
+    res.chip_at_ceiling = sim.parts.iter().any(|p| p.x[1] > ceiling);
+    if res.chip_at_ceiling {
+        res.notes.push("칩이 계산 영역 천장 근처까지 올라가 빠져나가지 못하고 쌓였을 수 있습니다 — 절삭력이 커지는 쪽으로 틀어집니다".into());
+    }
     if !res.steady {
-        res.notes.push(format!("힘이 아직 안정 구간이 아닙니다(표준편차 {:.0}%) — 이동거리를 늘려 보세요", 100.0 * res.fc_sd / fc.abs().max(1e-9)));
+        res.notes.push(format!(
+            "힘이 아직 안정 구간이 아닙니다(표준편차 {:.0}% · 앞뒤 절반 차이 {:+.0}%) — 이동거리를 늘려 보세요",
+            100.0 * res.fc_sd / fc.abs().max(1e-9),
+            100.0 * res.fc_trend
+        ));
     }
     if res.ke_ratio_max > 0.05 {
         res.notes.push(format!("운동에너지 비 {:.1}% — 질량 스케일링이 과해 준정적 가정이 흔들립니다", res.ke_ratio_max * 100.0));
@@ -971,10 +1083,21 @@ pub fn run(prm: &CutParams, progress: &(dyn Fn(f64, &str) -> bool + Sync)) -> Re
         res.particles_dump = sim
             .parts
             .iter()
-            .map(|p| {
+            .zip(sim.x0.iter())
+            .map(|(p, o)| {
                 let (_, s, _) = svd2(p.f);
                 let tr = s[0].max(1e-6).ln() + s[1].max(1e-6).ln() + p.e3;
-                [(p.x[0] * 1e6) as f32, (p.x[1] * 1e6) as f32, p.ep as f32, (p.t - 273.15) as f32, (-kb * tr * 1e-9) as f32]
+                [
+                    (p.x[0] * 1e6) as f32,
+                    (p.x[1] * 1e6) as f32,
+                    p.ep as f32,
+                    (p.t - 273.15) as f32,
+                    (-kb * tr * 1e-9) as f32,
+                    p.v[0] as f32,
+                    p.v[1] as f32,
+                    (o[0] * 1e6) as f32,
+                    (o[1] * 1e6) as f32,
+                ]
             })
             .collect();
     }
@@ -1097,6 +1220,36 @@ mod tests {
         assert!(res.history.iter().all(|h| h.fc.is_finite() && h.ft.is_finite()));
         let j = res.to_json();
         assert!(j.starts_with('{') && j.ends_with('}'));
+    }
+
+    #[test]
+    fn chip_speed_recovers_mass_flow_ratio() {
+        // 경사면을 따라 r·V_c 로 미끄러지는 강체 칩을 만들면 r 을 그대로 돌려줘야 한다
+        let (vc, rake, h, r_edge, dx) = (2.0, 12f64.to_radians(), 50e-6, 8e-6, 4e-6);
+        let (cr, sr) = (rake.cos(), rake.sin());
+        let (tx, y_top) = (500e-6, 300e-6);
+        let cen_y = y_top - h + r_edge;
+        for r in [0.3, 0.6, 0.9] {
+            let mut parts = Vec::new();
+            let mut x0 = Vec::new();
+            for i in 0..12 {
+                for j in 0..12 {
+                    let s2 = 1.3 * h + (i as f64) * 0.09 * h;
+                    let d2 = r_edge + (j as f64 + 0.5) * (h / r) / 12.0;
+                    // (d2, s2) → 실좌표: 법선 (cr, sr), 경사면 방향 (-sr, cr)
+                    let x = tx + d2 * cr - s2 * sr;
+                    let y = cen_y + d2 * sr + s2 * cr;
+                    let v = [vc - r * vc * sr, r * vc * cr];
+                    parts.push(P { x: [x, y], v, c: [0.0; 4], f: [1.0, 0.0, 0.0, 1.0], e3: 0.0, ep: 1.0, epd: 1.0, t: 300.0 });
+                    x0.push([tx - 200e-6, y_top - 0.5 * h]);
+                }
+            }
+            let got = chip_speed(&parts, &x0, tx, cen_y, y_top, h, r_edge, dx, cr, sr, vc).expect("samples");
+            assert!((got / vc - r).abs() < 1e-9, "r={} got={}", r, got / vc);
+        }
+        // 아직 공구가 지나가지 않은 입자나 칩 층 밖 입자는 쓰지 않는다
+        let p = P { x: [tx + 30e-6, cen_y + 80e-6], v: [0.0; 2], c: [0.0; 4], f: [1.0, 0.0, 0.0, 1.0], e3: 0.0, ep: 0.0, epd: 1.0, t: 300.0 };
+        assert!(chip_speed(&vec![p; 40], &vec![[tx + 10e-6, y_top - 0.5 * h]; 40], tx, cen_y, y_top, h, r_edge, dx, cr, sr, vc).is_none());
     }
 
     #[test]
