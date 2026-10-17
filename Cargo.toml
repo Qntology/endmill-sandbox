@@ -1,0 +1,48 @@
+[package]
+name = "endmill_sandbox"
+version = "0.2.0"
+edition = "2021"
+description = "End Mill specification, coating, and cutting condition data model"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+candle-core = "0.11.0"
+candle-nn = "0.11.0"
+candle-rocm = { git = "https://github.com/Qntology/candle-rocm-vulkan.git", optional = true }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
+base64 = "0.22"
+regex = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+lancedb = { version = "0.39", features = ["remote"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+endmill_mpm = { path = "crates/endmill_mpm" }
+
+[dev-dependencies]
+anyhow = "1"
+
+[features]
+default = []
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
+rocm = ["dep:candle-rocm", "candle-core/rocm", "candle-nn/rocm"]
+vulkan = ["candle-core/vulkan", "candle-nn/vulkan"]
+
+[patch.crates-io]
+candle-core = { git = "https://github.com/Qntology/candle-rocm-vulkan.git" }
+candle-nn = { git = "https://github.com/Qntology/candle-rocm-vulkan.git" }
+
+[lib]
+name = "endmill_model"
+path = "src/lib.rs"
+
+[[bin]]
+name = "endmill_demo"
+path = "src/bin/main.rs"
+
+# 물리 교차검증용 MPM 해석기는 반복 계산이 많아 개발 빌드에서도 최적화한다 (src-tauri 에서는 "*" 설정이 이미 적용된다)
+[profile.dev.package.endmill_mpm]
+opt-level = 3
