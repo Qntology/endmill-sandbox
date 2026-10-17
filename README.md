@@ -374,11 +374,50 @@ also weaker in the model (≈ 0–6 %).
 ### Dynamics
 
 * Altintas–Budak analytic stability lobes (2-branch eigenvalue solution)
-* FRF: cantilever beam + holder spring; measured tap-test override with stickout scaling
+* FRF: cantilever beam + holder spring (tool mode) **plus a spindle/bearing mode** coupled as a 2-DOF chain
+  (ground —k_s,c_s— spindle mass —k_t,c_t— tool tip). Defaults 1000 Hz · 30 N/µm · ζ 0.05 (`machine.spindle_*`;
+  published spindle modes 500–1500 Hz, 20–60 N/µm, ζ 0.03–0.07, almost independent of overhang — Zhang & Schmitz 2011).
+  The static tip compliance is beam + holder + spindle, the same in the deflection and the FRF. A chain instead of a
+  modal sum keeps the coupling right when the tool mode lies within ±30 % of the spindle mode (tool-length tuning).
+  The spindle mode decides the chatter limit when its k·ζ is the smaller one (stubby tools, L/D ≲ 2–2.5 at D ≥ 12 mm), and
+  at low speed even when it is not, because the high-frequency tool mode gets more process damping (the Inconel roughing
+  preset chatters at 970 Hz on the spindle mode: margin 1.45 → 0.87). The audit reports which mode limits at the actual rpm.
+  A measured tap-test FRF already contains the spindle, so no second mode is added then.
+* Measured tap-test override with stickout scaling
+* Flip-lobe correction of the zero-order (ZOA) limit: at ae/D < 0.2 and a tooth-passing/natural frequency ratio within
+  ±15 % of 2/(2k+1) (2, 0.67, 0.4 — only above 0.3) the limit is multiplied by 1 − 0.4·|sinc(ap/p)|, p = πD/(N·tanβ)
+  (0.6 for shallow cuts, → 1 when ap covers a whole helix pitch). ZOA misses these period-doubling islands at low
+  immersion (Insperger/Stépán, Gradišek et al. 2005, Merdol & Altintas 2004; helix suppression: Zatarain et al. 2006).
 * Process damping (wavelength vs. flank wear land, material factor × clearance factor)
 * Variable pitch gain
 * Robust lobe search (±2 % RPM band)
-* Forced vibration: harmonic decomposition of Fx/Fy at tooth-passing harmonics → SLE
+* Forced vibration: harmonic decomposition of Fx/Fy at tooth-passing harmonics → SLE through the two-mode FRF (the
+  near-resonance flag only checks the tool mode, because the default spindle mode is a typical value, not a measurement)
+
+### Wall Dimension and Surface Finish
+
+* **Runout over-cut is part of the wall error.** The longest flute sets the wall, so the wall lies 0.85·e inside the
+  mean-radius position (e = TIR/2; 0.7–1.0·e because the long flute takes the thicker chip and bends more — Schmitz et al.
+  2007). Every wall sample has `runout_um` (negative = over-cut) and the second-pass compensation carries the same bias.
+  If the tool radius was measured *rotating* (laser tool setter), tick "공구 반경 회전 측정 (레이저)" in the tool form
+  (`radius_measured_rotating`): the over-cut is then already inside the radius offset and is set to 0.
+* **Side-wall roughness** (`src/surface.rs`): each flute j cuts with its own radius R + 0.85·e·cos(2πj/N); the lower
+  envelope of the tooth arcs over one revolution gives Rt and the Ra of the profile. A shorter flute that would take
+  less than the minimum chip drops out. With a few µm of runout one flute makes the wall and the marks are spaced by the
+  feed per revolution — why measured finishing roughness is 19–38× the geometric feed mark (Wojciechowski 2011/2016).
+  Ra = (Ra_envelope + 0.1·h_min + material floor) × wear factor × built-up-edge factor (0.1 = Nowakowski's k 0.4 × the
+  ≈ 1/4 ratio between his surface-identified h_min and this model's edge-radius h_min; low confidence); floors from the lowest measured
+  finishing Ra (7075 0.12, steels 0.18, Ti 0.20, Inconel 0.25, 316L 0.30, CFRP 1.0 µm); wear factor 1 up to VB 0.1 mm,
+  +22 % per 0.1 mm to 0.4 mm, steep beyond (4340 data; Inconel from VB 0.25). When the chatter margin is below 1 a
+  waviness W ≈ h_max·ap/ap_lim (≤ 3·h_max) is mixed in with the chatter probability (Ra ≈ 0.2·Rt when vibration dominates).
+  The path simulation evaluates this at every wall step: wall samples carry `ra_um` and `waviness_um`, segment stats carry
+  `ra_um / ra_max_um / waviness_um`, the per-bin CSV gained `ra_um`, and the report has `wall_ra_mean_um / p90 / max`.
+* **Tool-life scatter in the part count.** `parts_left_p90` used to be only 3 % below p50. It now uses a log-normal
+  spread σ_total = √(σ_scatter² + σ_model²): tool-to-tool scatter σ 0.18 (carbon/alloy steel), 0.20 (Ti), 0.28 (SS, Ni),
+  0.30 (Al, CFRP), 0.40 (hardened), 0.45 when chatter-driven chipping is likely; model error σ 0.5 uncalibrated, 0.2 once
+  the wear is calibrated or measured. P90 = median × exp(−1.2816·σ_total) (R7).
+* Not modelled (logged as info `machine_thermal_warmup_excluded`): spindle/head warm-up drift. On a warmed-up machine with
+  thermal compensation the XY residual is 2–5 µm; a cold start adds XY 3–15 µm and Z 15–50 µm over τ 20–40 min.
 
 ### Toolpath Load Simulation
 
@@ -416,8 +455,9 @@ outside its validity range:
 | `force` | nominal (preset `ae`) vs. executed (path `ae`) force · power · specific energy · chip thickness, edge-force share, axial force mean / peak, cutting coefficients |
 | `thermal` | interface dry / wet, cooling effectiveness, film and chip-conduction coefficients, tool-body rise, path temperatures |
 | `wear` | job VB split into **steady** and **break-in**, break-in VB / τ and its progress, κ, path factor k, nominal vs. path life, chatter factors, how "parts until replacement" is built (physical path trajectory vs. the naïve job-average rate), the VB at which the radial wear uses up the tolerance (`vb_dim`) and the part count by that criterion, and — for aluminium Ø ≤ 8 mm — the steady rate / life / volume / specific wear against published bands (yellow outside the band; red only on the short-life side, because published tests are biased toward short lives) |
-| `dynamics` | modal estimate, tooth-passing vs. natural frequency, margins (executed / nominal / path minimum), ZOA validity at low radial immersion (valid from ae/D ≈ 0.25), whether chatter reaches the wall error, and a reference band for the chatter marks that error leaves out (0.15·h_max at the limit … h_max when the tool leaves the cut) |
-| `deflection` | tool-tip compliance split (beam vs. holder), wall deflection nominal / path, the normal force at the moment the wall is cut for **up vs. down milling** at the executed `ae` (and the share of the path cut in each mode), the runout over-cut the wall error leaves out, fixture and thermal terms |
+| `dynamics` | modal estimate (tool mode + spindle mode, which one dominates, static tip stiffness), tooth-passing vs. natural frequency, margins (executed / nominal / path minimum), ZOA validity at low radial immersion and the flip-lobe factor, and the chatter-mark band W ≈ (0.5–2)·h_max·ap/ap_lim (≤ 3·h_max) |
+| `deflection` | tool-tip compliance split (beam / holder / spindle), wall deflection nominal / path, the normal force at the moment the wall is cut for **up vs. down milling** at the executed `ae` (and the share of the path cut in each mode), the runout over-cut now included in the wall error (0 when the radius was measured rotating), fixture and thermal terms |
+| `surface` | side-wall Ra / Rz (new tool, executed ae), envelope Rt vs. feed-mark Rt, how many flutes actually form the wall, floor / minimum-chip / BUE / end-of-path wear factors, chatter waviness and probability, and the path Ra mean / p90 / max |
 | `flags[]` | machine-readable warnings: `id`, `severity` (0 info · 1 caution · 2 do not trust), `value`, `expected`, `message` |
 
 Reading the wear numbers: the VB growth of a short job is dominated by the break-in term (VB_b = 15 % of the limit,
@@ -425,12 +465,13 @@ Reading the wear numbers: the VB growth of a short job is dominated by the break
 `parts_left` comes from the physical path trajectory (steady wear only after break-in), not from that average.
 τ = 3 % of the linear life is an assumption; where it leaves the published 0.5–5 min range (long-life finishing
 conditions) `wear_breakin_tau_assumed` says so. The per-bin CSV gained
-`ae_mm, ap_mm, fz_mm, h_max_um, vb_rate_um_min, breakin_um_min, chatter_wear, defl_um`.
+`ae_mm, ap_mm, fz_mm, h_max_um, vb_rate_um_min, breakin_um_min, chatter_wear, defl_um, ra_um`.
 
 Flags that are deliberately *not* alarms: a specific energy above 8 J/mm³ at a mean chip thickness under 15 µm is the
 size effect (info); a ball-nose tool has no straight-wall `ae` expectation (`engage_geometry_ball_nose`, length and time
-are still compared); chatter marks are never added to the wall error — when the margin is below 1 the audit prints a
-reference band for them and marks the wall error as the stable-cut value (`dynamics_chatter_not_in_wall`).
+are still compared); chatter marks are never added to the wall error median — they are peak-to-valley marks, so they go
+into the wall samples' `waviness_um` (× chatter probability) and the Ra instead, and `dynamics_chatter_not_in_wall`
+prints their band.
 
 ### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
 

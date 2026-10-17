@@ -205,8 +205,10 @@ fn aluminum_profile_within_tolerance_skips_and_saves_logs() {
     assert!(au.deflection.path_down_share < 1e-9, "다운밀링 비율 {}", au.deflection.path_down_share);
     assert!(au.deflection.wall_down_force_n > 2.0 * au.deflection.wall_up_force_n && au.deflection.wall_down_um > 2.0 * au.deflection.wall_up_um, "{:?}", au.deflection);
     assert!(au.flags.iter().any(|f| f.id == "deflection_mode_sensitivity"));
-    assert!(au.inputs.runout_um > 0.0 && (au.deflection.runout_overcut_um + 0.5 * au.inputs.runout_um).abs() < 1e-9, "{}", au.deflection.runout_overcut_um);
-    assert!(au.flags.iter().any(|f| f.id == "deflection_runout_overcut_excluded"));
+    // 런아웃 과삭은 이제 벽 오차에 들어간다: 0.85·e (e = TIR/2) — 긴 날이 더 휘어 e 의 0.7~1.0 (Schmitz 외 2007)
+    assert!(au.inputs.runout_um > 0.0 && (au.deflection.runout_overcut_um + 0.85 * 0.5 * au.inputs.runout_um).abs() < 1e-9, "{}", au.deflection.runout_overcut_um);
+    assert!(au.flags.iter().any(|f| f.id == "deflection_runout_overcut"));
+    assert!(au.surface.ra_um > 0.0 && au.surface.path_ra_mean_um > 0.0 && au.surface.forming_teeth >= 1);
     if au.dynamics.margin_executed < 1.0 {
         assert!(au.dynamics.chatter_waviness_low_um > 0.0 && au.dynamics.chatter_waviness_high_um > au.dynamics.chatter_waviness_low_um);
     }
@@ -326,10 +328,11 @@ fn ttm_and_laya_models_are_actually_used_in_the_job() {
 #[test]
 fn titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked() {
     // Ti 반경력을 실측 계수(Krc/Ktc 0.37, Kte ×1.7, Kre/Kte 1.9)로 바로잡자 1차 벽 휨과 잔여량이 커져 분할 패스의 칩이 최소 칩 두께를
-    // 넘게 되었다 — '모든 절삭이 막힌' 판정 시나리오를 유지하려고 이송을 0.75 배로 줄인다
+    // 넘게 되었다 — '모든 절삭이 막힌' 판정 시나리오를 유지하려고 이송을 줄인다. 런아웃 과삭(0.85·e)을 2차 바이어스에 넣고 스핀들
+    // 컴플라이언스를 휨에 더하자 0.75 배에서 분할 마지막 칩이 3.79 µm 로 최소 칩 3.72 µm 를 넘어 0.70 배로 낮춘다 (1회 칩은 약 4.7 µm 로 여전히 위)
     let mut p = titanium_finishing();
-    p.conditions.feed_per_tooth_mm *= 0.75;
-    p.conditions.feed_rate_mm_min *= 0.75;
+    p.conditions.feed_per_tooth_mm *= 0.70;
+    p.conditions.feed_rate_mm_min *= 0.70;
     let dir = temp_dir("ti-fin");
     let mut sds = SdsStore::open(&dir.join("sds"));
     let r = wearcomp::run_pipeline(&p, "pocket_zigzag", &mut sds, None, None, &CompOptions::default(), None, None, &mut |_, _| true).unwrap();

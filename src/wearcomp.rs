@@ -259,11 +259,17 @@ pub struct CompZone {
     pub cause_wear_um: f64,
     #[serde(default)]
     pub cause_thermal_um: f64,
+    /// 2차 패스의 런아웃 과삭 (µm, 음수 = 지령보다 더 깎음) — 새 공구에도 같은 TIR 사양을 가정
+    #[serde(default)]
+    pub runout_bias_um: f64,
+    /// 1차 결과의 런아웃 과삭 몫 (µm, 음수)
+    #[serde(default)]
+    pub cause_runout_um: f64,
 }
 
 impl CompZone {
     pub fn bias_for(&self, a: CompAction) -> f64 {
-        self.thermal_bias_um + if a == CompAction::ToolChange { 0.0 } else { self.wear_bias_um }
+        self.thermal_bias_um + self.runout_bias_um + if a == CompAction::ToolChange { 0.0 } else { self.wear_bias_um }
     }
 
     pub fn path_offsets_um(&self, a: CompAction, scale: f64) -> Vec<f64> {
@@ -832,8 +838,9 @@ pub fn evaluate_with(
         let n_eff = (0.5 * zmax * zmax).min(20.0).exp();
         let localized = s.n >= 8 && n_eff > 10.0 * s.n as f64 && mx > tol_um;
         let thermal_bias = ctx.wp.expansion * excess_after * ((s.x_mm - datum.0) * s.nx + (s.y_mm - datum.1) * s.ny) * 1000.0;
-        let bias_worn = radial_used + thermal_bias;
-        let bias_fresh = thermal_bias;
+        let runout_bias = -ctx.tool.runout_overcut_um();
+        let bias_worn = radial_used + thermal_bias + runout_bias;
+        let bias_fresh = thermal_bias + runout_bias;
         let (delta_e, ev_e) = solve_offset(&env, &worn, s, p50, target, 1.0, h_min_mm, bias_worn);
         let (delta_r, ev_r) = solve_offset(&env, &worn, s, p50, target, REDUCED_FEED, h_min_mm, bias_worn);
         let (delta_f, ev_f) = solve_offset(&env, &fresh, s, p50, target, 1.0, h_min_mm, bias_fresh);
@@ -895,6 +902,8 @@ pub fn evaluate_with(
             cause_wall_um: s.workpiece_um,
             cause_wear_um: s.wear_um + wadj,
             cause_thermal_um: s.thermal_um,
+            runout_bias_um: runout_bias,
+            cause_runout_um: s.runout_um,
         });
     }
     all_res.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -2544,11 +2553,24 @@ pub fn finalize(
             Some((rem / (path_part_min * factor)).floor())
         }
     };
-    let (phys50, phys90) = (phys(r_meas.sqrt()), phys(g90));
+    // 보수 분위: 한 작업 안의 VB 시계열 예측 폭(g90)만으로는 p90 이 중앙값보다 3 % 정도만 작았다 — 공구 간 수명 편차와
+    // 모델 오차를 합친 로그 표준편차로 10 % 분위를 만든다 (`pairref::life_spread`)
+    let spread = crate::pairref::life_spread(ctx, rep.chatter_fraction, rep.min_chatter_margin, draft.radial_source != "simulated");
+    let g90_life = g90.max(1.0 / spread.p10_total.max(1e-6)).min(8.0);
+    let (phys50, phys90) = (phys(r_meas.sqrt()), phys(g90_life));
     let path_label = format!(
         "{}{}",
         if draft.path_factor > 0.0 { format!(" (1차 경로 정상 마모 = 공칭 ×{:.2})", draft.path_factor) } else { String::new() },
         if (r_meas - 1.0).abs() > 0.05 { format!(" · 실측/예측 마모 비 ×{:.2} (중앙값엔 √ 반영)", r_meas) } else { String::new() }
+    );
+    let spread_note = format!(
+        " · 보수 P90 = 중앙값 × {:.2} (공구 간 수명 편차 σ {:.2}{} + 모델 오차 σ {:.2}{}; 편차만이면 × {:.2})",
+        spread.p10_total,
+        spread.sigma_scatter,
+        if spread.chipping_regime { " 채터·치핑 구간" } else { "" },
+        spread.sigma_model,
+        if spread.calibrated { " 실측·보정 반영" } else { " 보정 전" },
+        spread.p10_scatter_only
     );
     let (mut parts_left_p50, mut parts_left_p90, mut parts_source) = if vb_after >= draft.vb_limit_mm {
         (Some(0.0), Some(0.0), "2차 후 마모가 이미 한계 이상".to_string())
@@ -2603,6 +2625,9 @@ pub fn finalize(
         if binds {
             parts_source = format!("{} · 열피로 누적 한계(부품당 손상 {:.3})", parts_source, fatigue_per_part);
         }
+    }
+    if parts_left_p90.map(|v| v > 0.0).unwrap_or(false) {
+        parts_source.push_str(&spread_note);
     }
     let causes = cause_shares(&draft.zones);
     let report_line = format!(

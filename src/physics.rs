@@ -855,6 +855,28 @@ pub struct ToolGeometry {
     pub substrate_max_c: f64,
     #[serde(default)]
     pub edge_default_um: f64,
+    /// 공구 반경을 회전 상태로 재서 런아웃 과삭이 보정값에 이미 들어 있는가
+    #[serde(default)]
+    pub runout_compensated: bool,
+    /// 스핀들 모드 (공구 끝 기준) — `MachineLimits::spindle_*`
+    #[serde(default = "default_spindle_k")]
+    pub spindle_stiffness_n_per_um: f64,
+    #[serde(default = "default_spindle_fn")]
+    pub spindle_fn_hz: f64,
+    #[serde(default = "default_spindle_zeta")]
+    pub spindle_zeta: f64,
+}
+
+fn default_spindle_k() -> f64 {
+    30.0
+}
+
+fn default_spindle_fn() -> f64 {
+    1000.0
+}
+
+fn default_spindle_zeta() -> f64 {
+    0.05
 }
 
 fn default_substrate_max_c() -> f64 {
@@ -936,6 +958,10 @@ impl ToolGeometry {
             substrate: s.substrate.key().into(),
             substrate_max_c: s.substrate.max_temp_c(),
             edge_default_um: edge_default,
+            runout_compensated: s.radius_measured_rotating,
+            spindle_stiffness_n_per_um: machine.spindle_stiffness_n_per_um.max(1.0),
+            spindle_fn_hz: machine.spindle_fn_hz.max(50.0),
+            spindle_zeta: machine.spindle_zeta.clamp(0.005, 0.3),
         }
     }
 
@@ -949,6 +975,21 @@ impl ToolGeometry {
     /// 프리셋 TIR 10 µm 에서 ±20 µm, 평균 칩 두께의 약 70%: 피크/평균 힘 4.3, 평균 칩 두께 28.6 µm 로 부풀었다.)
     pub fn runout_ecc_mm(&self) -> f64 {
         0.5 * self.runout_um.max(0.0) / 1000.0
+    }
+
+    /// 런아웃으로 가장 긴 날이 벽을 더 깎는 양 (µm, 크기). 공구 반경을 회전 상태로 재서 보정했으면 0
+    pub fn runout_overcut_um(&self) -> f64 {
+        if self.runout_compensated {
+            0.0
+        } else {
+            crate::surface::RUNOUT_EFFECTIVE * self.runout_ecc_mm() * 1000.0
+        }
+    }
+
+    /// 공구 아래쪽(홀더 + 스핀들)의 정적 컴플라이언스 (mm/N). 예전에는 홀더 스프링(50 N/µm)만 있었다 —
+    /// 짧은 공구에서는 스핀들 모드(20~60 N/µm)가 공구 끝 정적 강성의 큰 몫이다 (Ø20 L/D 3.75: 세 모드 직렬 ≈ 12 N/µm)
+    pub fn support_compliance_mm_per_n(&self) -> f64 {
+        1.0 / (self.holder_stiffness_n_per_um.max(1e-6) * 1000.0) + 1.0 / (self.spindle_stiffness_n_per_um.max(1e-6) * 1000.0)
     }
 
     pub fn reset_to_reference_substrate(&mut self, wp: &WorkpieceProps) {
@@ -1691,7 +1732,17 @@ pub fn tool_sections(tool: &ToolGeometry) -> [(f64, f64, f64); 3] {
     [(0.0, ls, i_s), (ls, ls + ln, i_n), (ls + ln, l, i_f)]
 }
 
+/// 공구 끝 정적 컴플라이언스 (보 + 홀더 + 스핀들) — 휨·벽 오차용
 pub fn tool_compliance(tool: &ToolGeometry, ap: f64, cal: f64) -> Compliance {
+    compliance_with(tool, ap, cal, true)
+}
+
+/// 공구·홀더 모드만의 컴플라이언스 — 동역학에서 스핀들 모드를 따로 더할 때 쓴다
+pub fn tool_compliance_lumped(tool: &ToolGeometry, ap: f64, cal: f64) -> Compliance {
+    compliance_with(tool, ap, cal, false)
+}
+
+fn compliance_with(tool: &ToolGeometry, ap: f64, cal: f64, spindle: bool) -> Compliance {
     let e = tool.elastic_gpa * 1000.0;
     let l = tool.stickout_mm.max(tool.loc_mm.min(tool.stickout_mm));
     let a = (l - ap.max(0.0).min(l) / 2.0).max(1e-3);
@@ -1706,7 +1757,7 @@ pub fn tool_compliance(tool: &ToolGeometry, ap: f64, cal: f64) -> Compliance {
         }
         delta_per_n += ((a - x0).powi(3) - (a - x1c).powi(3)) / (3.0 * e * i);
     }
-    let holder = 1.0 / (tool.holder_stiffness_n_per_um * 1000.0);
+    let holder = if spindle { tool.support_compliance_mm_per_n() } else { 1.0 / (tool.holder_stiffness_n_per_um * 1000.0) };
     let total = (delta_per_n + holder) * cal;
     Compliance {
         stiffness_n_per_um: 1.0 / (total * 1000.0),
@@ -2281,13 +2332,29 @@ pub struct SurfaceResult {
     pub min_chip_um: f64,
     #[serde(default)]
     pub chatter_penalty: f64,
+    /// 날 궤적 포락선 모델 (`surface::wall_roughness`)
+    #[serde(default)]
+    pub wall_rz_um: f64,
+    #[serde(default)]
+    pub wall_ra_stable_um: f64,
+    #[serde(default)]
+    pub envelope_rt_um: f64,
+    #[serde(default)]
+    pub forming_teeth: u32,
+    #[serde(default)]
+    pub single_tooth: bool,
+    #[serde(default)]
+    pub chatter_wpv_um: f64,
 }
 
-pub fn surface(tool: &ToolGeometry, fz: f64, stepover: f64, h_min_mm: f64) -> SurfaceResult {
+/// 측벽 조도·코너 R 스캘럽. 측벽 Ra 는 날 궤적 포락선 모델 (`surface::wall_roughness`) — 런아웃·최소 칩·마모·구성인선·채터 반영
+#[allow(clippy::too_many_arguments)]
+pub fn surface(ctx: &CutContext, fz: f64, stepover: f64, h_min_mm: f64, h_max_mm: f64, bue_risk: f64, margin: f64, chatter_p: f64) -> SurfaceResult {
+    let tool = &ctx.tool;
     let r = tool.radius();
     let rt = fz * fz / (8.0 * r) * 1000.0;
-    let rt_min = 0.5 * h_min_mm.max(0.0) * 1000.0;
-    let ra = (rt + rt_min) / 4.0 + tool.runout_um / 4.0;
+    let w = crate::surface::wall_roughness(r, tool.flutes, fz, tool.runout_ecc_mm(), h_min_mm, h_max_mm, tool.flank_wear_mm, crate::pairref::WpGroup::of(&ctx.wp), bue_risk, margin, chatter_p);
+    let ra = w.ra_um;
     let rc = tool.nose.corner_radius(tool.diameter_mm);
     let scallop = if rc > 0.0 && stepover > 0.0 && stepover < 2.0 * rc {
         (rc - (rc * rc - stepover * stepover / 4.0).sqrt()) * 1000.0
@@ -2298,8 +2365,14 @@ pub fn surface(tool: &ToolGeometry, fz: f64, stepover: f64, h_min_mm: f64) -> Su
         wall_ra_um: ra,
         feed_mark_um: rt,
         scallop_um: scallop,
-        min_chip_um: rt_min,
-        chatter_penalty: 0.0,
+        min_chip_um: w.hmin_term_um,
+        chatter_penalty: if w.ra_stable_um > 0.0 { ra / w.ra_stable_um - 1.0 } else { 0.0 },
+        wall_rz_um: w.rz_um,
+        wall_ra_stable_um: w.ra_stable_um,
+        envelope_rt_um: w.rt_envelope_um,
+        forming_teeth: w.forming_teeth,
+        single_tooth: w.single_tooth,
+        chatter_wpv_um: w.chatter_wpv_um,
     }
 }
 
@@ -2314,7 +2387,7 @@ pub struct WallError {
 
 pub fn wall_error(ctx: &CutContext, f: &ForceResult, eng: &Engagement, th: &ThermalResult, wr: &WearResult) -> WallError {
     let comp = tool_compliance(&ctx.tool, eng.ap_mm, ctx.calib.deflection);
-    let holder = 1.0 / (ctx.tool.holder_stiffness_n_per_um * 1000.0) * ctx.calib.deflection;
+    let holder = ctx.tool.support_compliance_mm_per_n() * ctx.calib.deflection;
     let l = ctx.tool.stickout_mm;
     let mut top = 0.0;
     let mut bottom = 0.0;
@@ -2468,6 +2541,9 @@ pub struct ErrorBudget {
     pub environment_um: f64,
     #[serde(default)]
     pub drift_um: f64,
+    /// 런아웃으로 가장 긴 날이 더 깎는 양 (µm) — 공구 반경을 회전 상태로 재면 0
+    #[serde(default)]
+    pub runout_um: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -2517,7 +2593,6 @@ pub fn analyze_cut(ctx: &CutContext, conds: &CuttingConditions, down: bool, body
     wr.radial_loss_rate_um_per_min *= kappa;
     wr.linear_life_min = if wr.vb_rate_mm_per_min > 0.0 { wr.vb_limit_mm / wr.vb_rate_mm_per_min } else { f64::INFINITY };
     wr.tool_life_min = trajectory.life_min;
-    let mut sf = surface(&ctx.tool, fz, conds.radial_doc_mm, co.h_min_mm);
     let stability = crate::dynamics::stability(
         &ctx.tool,
         &co,
@@ -2541,11 +2616,9 @@ pub fn analyze_cut(ctx: &CutContext, conds: &CuttingConditions, down: bool, body
     let wall = wall_error(ctx, &f, &eng, &th, &wr);
     let modal = crate::dynamics::tool_modal(&ctx.tool, ap, ctx.calib.deflection);
     let forced = crate::dynamics::forced_vibration(&f, &modal, rpm, ctx.tool.flutes, &eng);
-    if !stability.stable && stability.margin.is_finite() {
-        let pen = 1.5 * (1.0 - stability.margin).clamp(0.0, 1.0);
-        sf.chatter_penalty = pen;
-        sf.wall_ra_um *= 1.0 + pen;
-    }
+    // 예전 채터 보정 `Ra × (1 + 1.5·(1 − 여유))` 대신 파상도(h_max·ap/ap_lim)를 날 궤적에 더하고 채터 확률로 가중한다
+    let chatter_p = crate::toolwear::chatter_probability(stability.margin, stability.measured);
+    let sf = surface(ctx, fz, conds.radial_doc_mm, co.h_min_mm, f.h_max_mm, th.bue_risk, stability.margin, chatter_p);
     let spindle = f.cutting_power_kw / ctx.machine.efficiency.max(0.1);
     let avail = ctx.machine.available_power_kw(rpm);
     let defl_peak = f.f_res_peak / comp.stiffness_n_per_um;
@@ -2558,7 +2631,8 @@ pub fn analyze_cut(ctx: &CutContext, conds: &CuttingConditions, down: bool, body
     let env_rep = crate::environment::report(ctx, body, vce, th.interface_c);
     let env_um = env_rep.scale_error_um;
     let drift_um = env_rep.drift_um;
-    let total = wall_defl.abs() + wear10 + th.tool_radial_growth_um.abs() + wp_um + fixture_um + dynamic_um + env_um.abs() + drift_um;
+    let runout_um = ctx.tool.runout_overcut_um();
+    let total = wall_defl.abs() + wear10 + th.tool_radial_growth_um.abs() + wp_um + fixture_um + dynamic_um + env_um.abs() + drift_um + runout_um;
     let tol_um = ctx.tolerance_mm * 1000.0;
     let mut notes = Vec::new();
     let thinning = if eng.mode != MillMode::Slot && eng.max_sin() > 0.0 { 1.0 / eng.max_sin() } else { 1.0 };
@@ -2726,6 +2800,7 @@ pub fn analyze_cut(ctx: &CutContext, conds: &CuttingConditions, down: bool, body
             dynamic_um,
             environment_um: env_um,
             drift_um,
+            runout_um,
         },
         thermal: th,
         wear: wr,
