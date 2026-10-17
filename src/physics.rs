@@ -86,6 +86,68 @@ pub struct WorkpieceProps {
     pub mech_shares: [f64; 4],
     #[serde(default)]
     pub lift_factor: f64,
+    /// 반경력/접선력 비(kr)의 하한. Merchant 관계 tan(β−α) 는 직교절삭의 추력비라 엔드밀 측정 계수(Krc/Ktc)보다 낮게 나올 수 있다.
+    /// 알루미늄은 6061·AlMgSi 엔드밀 6세트가 0.33~0.52 (Rubeo & Schmitz 2016, Schmitz 외 2022, Honeycutt & Schmitz 2018,
+    /// Gradišek 외 2004), 반경 힘이 작으면 벽 순간의 접선·반경 성분이 상쇄되어 휨이 과소평가된다.
+    #[serde(default = "default_kr_floor")]
+    pub kr_floor: f64,
+    /// 절삭 중 공구–칩 겉보기 마찰계수 (무코팅 초경 기준, 힘 측정에서 역산한 값 — 핀온디스크 값이 아님).
+    /// 1045 직교절삭 0.38~0.70 (중앙 0.50), Ti-6Al-4V 0.36~0.42 (날끝 힘 제외)·FE 관행 0.5~0.7, 304 FE 0.6,
+    /// 알루미늄 엔드밀 Krc/Ktc 0.46 (경사 10~15°) → 0.7~0.85, CFRP 섬유각에 따라 0.2~0.6. 코팅은 `pairref::coating_mu_factor` 로 작게만 바꾼다
+    #[serde(default = "default_cut_mu")]
+    pub cut_mu: f64,
+    /// 날끝 접선 계수 배수: Kte = 0.011·kc1.1·√(r/10 µm) × 이 값. Ti-6Al-4V 엔드밀 실측 Kte 41 N/mm (Ø12 4날)·직교 24 N/mm →
+    /// 식의 17 N/mm 보다 1.4~2.4배, 304 선삭 날끝 절편 51 N/mm (r ≈ 20 µm)
+    #[serde(default = "one")]
+    pub kte_factor: f64,
+    /// 날끝 반경/접선 비 Kre/Kte. 알루미늄 엔드밀 4세트 0.83~1.0, 1045 직교(−7°) 1.5~2, Ti-6Al-4V 1.8~1.9, 304 선삭 0.7, 58 HRC 볼 0.7
+    #[serde(default = "default_kre_over_kte")]
+    pub kre_over_kte: f64,
+    /// 공구가 여유각을 지정하지 않았을 때의 1차 여유각 (°) — 피삭재용 초경 엔드밀 설계값 (제조사 기술자료·특허 합의값)
+    #[serde(default = "default_clearance_deg")]
+    pub clearance_deg: f64,
+    /// 공구 수명 판정 VB (mm, 균일 플랭크 마모). ISO 8688-2 의 0.3 mm 가 기본이고 Ti 0.2 (평균)·스테인리스 0.2·
+    /// 고경도 정삭 0.1~0.2·CFRP 0.1~0.2 (섬유 미절단·박리가 먼저 옴)를 쓴다. 부품 공차 규칙(≤20 µm → 0.2)과 작은 쪽을 쓴다
+    #[serde(default = "default_vb_criterion")]
+    pub vb_criterion_mm: f64,
+    /// 길들이기(초기 급마모) 크기 (µm) — 수명의 비율이 아니라 날끝 상태로 정해지는 양. HRC 52 날카로운 볼 30~63 µm (PHM2010),
+    /// 호닝 8~10 µm 코팅 316L 0~20 µm (30분간 마모 안 보임), Ti-6Al-4V AlCrN 5 m 이송에 115 µm (Vc 150)
+    #[serde(default = "default_breakin_vb_um")]
+    pub breakin_vb_um: f64,
+    /// 길들이기 시상수 (분, 절삭 시간). 수 m 의 이송 경로 안에 끝난다 — 예전의 '선형 수명의 3 %' 는 수명이 긴 조건에서 10~20분이 되었다
+    #[serde(default = "default_breakin_tau_min")]
+    pub breakin_tau_min: f64,
+    /// 길들이기 크기의 절삭속도 지수 (Ti·Ni 는 속도가 오르면 초기 날끝 손상이 커진다). 0 이면 속도 무관
+    #[serde(default)]
+    pub breakin_vc_exp: f64,
+}
+
+fn default_kr_floor() -> f64 {
+    0.30
+}
+
+fn default_cut_mu() -> f64 {
+    0.50
+}
+
+fn default_kre_over_kte() -> f64 {
+    1.5
+}
+
+fn default_clearance_deg() -> f64 {
+    10.0
+}
+
+fn default_vb_criterion() -> f64 {
+    0.3
+}
+
+fn default_breakin_vb_um() -> f64 {
+    30.0
+}
+
+fn default_breakin_tau_min() -> f64 {
+    2.0
 }
 
 fn hv_of_hrc(h: f64) -> f64 {
@@ -162,7 +224,9 @@ impl WorkpieceProps {
             rake_deg: 10.0,
             adhesion: 1.0,
             wear_activation_k: 7500.0,
-            thermal_factor: 1.0,
+            // 1.0 → 0.88: C45 엔드밀 Vc 180 에서 606 °C 로, 문헌 대역 420~580 °C 보다 높았다 (Hosokawa 2000 의 Vc 628 플랭크 770 °C 를
+            // Vc 180 으로 환산하면 470~550 °C, 4140 Vc 300 플랭크 304~345 °C)
+            thermal_factor: 0.88,
             melt_c: 1460.0,
             temp_limit_c: None,
             bue_range_c: Some((250.0, 450.0)),
@@ -198,6 +262,17 @@ impl WorkpieceProps {
             wear_transition_c: 877.0,
             mech_shares: [0.30, 0.15, 0.45, 0.10],
             lift_factor: 0.8,
+            // 45강(C45) 초경 엔드밀 실측 Kr/Kt 0.34~0.38 (Sensors 2023, 2·4날 초경과 HSS 3세트)
+            kr_floor: 0.33,
+            cut_mu: 0.50,
+            kte_factor: 1.0,
+            kre_over_kte: 1.5,
+            // 탄소·합금강용 초경 엔드밀 1차 여유각 6~9° (2차 14~17°)
+            clearance_deg: 8.0,
+            vb_criterion_mm: 0.3,
+            breakin_vb_um: 30.0,
+            breakin_tau_min: 2.0,
+            breakin_vc_exp: 0.0,
         };
         match m {
             WorkpieceMaterial::Aluminum => WorkpieceProps {
@@ -207,21 +282,32 @@ impl WorkpieceProps {
                 expansion: 23.6e-6,
                 elastic_gpa: 69.0,
                 hardness_hrc: 0.0,
-                kc11: 700.0,
+                // 700 → 600: 이 상수에 날끝 항(kte)을 따로 더하면 칩 29 µm 에서 비에너지가 2.1~2.3 J/mm³ 로, 문헌(엔드밀 계수 세트를
+                // 같은 형상에 적용한 중앙값 약 1.5, 범위 0.8~3.1)·직교절삭 MPM(0.9~1.3)·AA2024 직교 실측(h 0.1 mm 에서 1.0~1.3 → 29 µm 에서 1.4~1.9)보다
+                // 높았다. 600 이면 같은 조건에서 약 1.5 J/mm³.
+                kc11: 600.0,
                 mc: 0.25,
                 rake_deg: 18.0,
                 adhesion: 1.25,
+                thermal_factor: 1.0,
                 wear_activation_k: 3500.0,
                 melt_c: 650.0,
                 bue_range_c: Some((150.0, 300.0)),
                 fz_coeff: 0.010,
                 ae_ratio: 0.5,
                 edge_radius_um: 4.0,
-                ref_life_min: 240.0,
+                // 240 → 60: 기준 상태(Ø10, ae 0.5D, ap 1D, 300 m/min)의 240분은 공구 하나당 2~5만 cm³ 로, 같은 Ø6 급 초경 엔드밀의
+                // 알루미늄 실측(VB 0.2~0.4 mm 까지 59~342분, 119~684 cm³; Grigoriev 외 2020 등)보다 한 자릿수 길었다. 이 앵커가 경로 수명을
+                // 841분/2,100 cm³ 로 만들었고, 길들이기 시상수(선형 수명의 3%)도 9.6분으로 문헌(0.5~5분)보다 늘렸다. 60 이면 알루미늄 황삭
+                // 프리셋(rect_profile)의 경로 수명이 283분/702 cm³, 시상수 4.0분 — 문헌 대역 위쪽 끝이라 감사가 노란 플래그를 세운다
+                // (확신도 보통: 실측 VB 계열이 들어오면 SDS 원장 보정으로 대체됨).
+                ref_life_min: 60.0,
                 min_chip_ratio: 0.30,
                 work_hardening: 0.03,
                 softening_m: 1.34,
-                process_damping: 0.4,
+                // 0.4 → 1.0: 압입 계수 Ksp 가 Al7075 4e4 N/mm³ (Budak & Tunç), Ti-6Al-4V 3e4 로 같은 자릿수 — 알루미늄의 공정감쇠가 약한 것은
+                // 계수가 작아서가 아니라 절삭속도가 높아 파장이 길기 때문이고, 그 효과는 `process_damping_gain` 의 파장 항에 이미 있다 (확신도 낮음)
+                process_damping: 1.0,
                 chem: WpChem::Aluminum,
                 thermo: vec![
                     (20.0, 167.0, 896.0),
@@ -240,6 +326,17 @@ impl WorkpieceProps {
                 wear_transition_c: 450.0,
                 mech_shares: [0.12, 0.85, 0.02, 0.01],
                 lift_factor: 0.6,
+                // 엔드밀 측정 Krc/Ktc 0.33~0.52 (중앙값 약 0.4). ZOA 안정선도 kr ≥ 0.4 쪽이 보수적이다 (kr 0.35 부근에서 특이 봉우리)
+                kr_floor: 0.40,
+                // 엔드밀 Krc/Ktc 0.46 (경사 10~15°) 에서 β ≈ 35~40° → μ 0.7~0.85
+                cut_mu: 0.78,
+                // 엔드밀 4세트 Kre/Kte 0.83~1.0 (Rubeo & Schmitz 2016, AlSi9Cu3 2세트 Sci. Rep. 2024)
+                kre_over_kte: 0.9,
+                // 알루미늄용 엔드밀 1차 여유각 10~14° (2차 ~20°)
+                clearance_deg: 12.0,
+                // 연마날·DLC 의 길들이기는 20 µm 이하 (직접 실측 없음, 확신도 낮음)
+                breakin_vb_um: 15.0,
+                breakin_tau_min: 2.0,
                 ..base("aluminum", "알루미늄 합금")
             },
             WorkpieceMaterial::CarbonSteel => WorkpieceProps {
@@ -248,10 +345,13 @@ impl WorkpieceProps {
             },
             WorkpieceMaterial::AlloySteel { hardness_hrc } => {
                 let h = *hardness_hrc as f64;
+                // Sandvik MC 표 (h = 1 mm, 경사 0°): 50 HRC 3090, 55 HRC 3690, 60 HRC 4330, 63 HRC 4750 (65 HRC 는 외삽 4950).
+                // 예전 표의 60·65 HRC (3800·4200) 는 12~15 % 낮았다
                 let kc = interp(
-                    &[(20.0, 1950.0), (30.0, 2100.0), (40.0, 2500.0), (50.0, 3100.0), (60.0, 3800.0), (65.0, 4200.0)],
+                    &[(20.0, 1950.0), (30.0, 2100.0), (40.0, 2500.0), (50.0, 3100.0), (55.0, 3690.0), (60.0, 4330.0), (63.0, 4750.0), (65.0, 4950.0)],
                     h,
                 );
+                let hard = h > 45.0;
                 let fz = if h <= 30.0 {
                     0.005
                 } else if h <= 45.0 {
@@ -274,7 +374,9 @@ impl WorkpieceProps {
                     mc: 0.25,
                     rake_deg: (8.0 - 0.5 * (h - 40.0).max(0.0)).clamp(-6.0, 8.0),
                     adhesion: 0.95,
-                    thermal_factor: (1.0 - 0.015 * (h - 25.0).max(0.0)).clamp(0.5, 1.0),
+                    // 고경도 정삭에서 계면 온도를 과대평가했다 (58 HRC Ø6 볼 Vc 70 에서 745 °C, 문헌 대역 350~600 °C —
+                    // H13 52 HRC 볼 엔드밀 Vc 200 까지 계면 200~400 °C, Dewes 외 1999). 전단 띠 형성으로 경사면에 가는 열이 줄어드는 몫
+                    thermal_factor: interp(&[(25.0, 0.88), (40.0, 0.78), (50.0, 0.55), (58.0, 0.40), (65.0, 0.34)], h),
                     ref_life_min: if h > 45.0 { 35.0 } else { 60.0 },
                     bue_range_c: if h > 40.0 { None } else { Some((300.0, 480.0)) },
                     ref_vc: if h <= 30.0 {
@@ -289,7 +391,8 @@ impl WorkpieceProps {
                     fz_coeff: fz,
                     ae_ratio: if h > 45.0 { 0.1 } else { 0.3 },
                     edge_radius_um: if h > 45.0 { 20.0 } else { 12.0 },
-                    min_chip_ratio: if h > 45.0 { 0.20 } else { 0.25 },
+                    // 고경도: 0.20 → 0.35 (날카로운 날 0.63~0.80, 일반 호닝 강 0.2~0.4 — Wojciechowski 리뷰 2022, arXiv 2403.15554)
+                    min_chip_ratio: if h > 45.0 { 0.35 } else { 0.25 },
                     work_hardening: if h > 45.0 { 0.02 } else { 0.06 },
                     process_damping: if h > 45.0 { 1.2 } else { 1.0 },
                     softening_m: jc.m,
@@ -300,6 +403,17 @@ impl WorkpieceProps {
                     hard_phase_hv: interp(&[(20.0, 1200.0), (30.0, 1300.0), (50.0, 1600.0), (60.0, 1700.0)], h),
                     hard_phase_frac: interp(&[(20.0, 0.02), (30.0, 0.02), (50.0, 0.05), (58.0, 0.12), (65.0, 0.15)], h),
                     mech_shares: alloy_shares(h),
+                    kr_floor: if hard { 0.30 } else { 0.33 },
+                    cut_mu: if hard { 0.42 } else { 0.48 },
+                    // 58 HRC 볼 엔드밀 Kre/Kte 0.7 (날카로운 3.5 µm 날), T-랜드·호닝 공구는 더 크다 → 1.0 (확신도 낮음)
+                    kre_over_kte: if hard { 1.0 } else { 1.5 },
+                    // 고경도용 1차 여유각 5~8°
+                    clearance_deg: if hard { 7.0 } else { 8.0 },
+                    // 고경도 정삭 수명 판정 0.1~0.2 mm
+                    vb_criterion_mm: if hard { 0.15 } else { 0.3 },
+                    // 날카로운 초경 볼 HRC 52 첫 4초 절삭에 31~63 µm (PHM2010) — 수십 초~2분 안에 끝남
+                    breakin_vb_um: if hard { 45.0 } else { 30.0 },
+                    breakin_tau_min: if hard { 0.5 } else { 2.0 },
                     ..base(&format!("alloy_steel_hrc{}", hardness_hrc), &format!("합금강/금형강 (HRC {})", hardness_hrc))
                 }
             }
@@ -312,7 +426,8 @@ impl WorkpieceProps {
                 hardness_hrc: 20.0,
                 kc11: 2000.0,
                 mc: 0.21,
-                rake_deg: 12.0,
+                // 12 → 10°: 스테인리스용 초경 엔드밀 경사 +8~12°
+                rake_deg: 10.0,
                 adhesion: 1.15,
                 wear_activation_k: 7500.0,
                 thermal_factor: 0.85,
@@ -322,9 +437,12 @@ impl WorkpieceProps {
                 ae_ratio: 0.25,
                 edge_radius_um: 10.0,
                 ref_life_min: 45.0,
-                min_chip_ratio: 0.35,
+                // 0.35 → 0.28: 304 선삭 h_min/r 0.25~0.30 (FE·실측, Materials 2026)
+                min_chip_ratio: 0.28,
                 work_hardening: 0.30,
-                process_damping: 1.1,
+                // 1.1 → 1.8: 공정감쇠 계수 C 가 304 4.1~5.8e5 N/m, 1018 강 1.3~2.0e5 (같은 공구·조건, Tyler·Karandikar·Schmitz 2014) →
+                // C 비 약 3.2 배. 이 모델의 이득은 계수의 제곱으로 커지므로 √3.2 ≈ 1.8
+                process_damping: 1.8,
                 thermo: vec![
                     (20.0, 16.2, 500.0),
                     (100.0, 16.6, 500.0),
@@ -341,6 +459,19 @@ impl WorkpieceProps {
                 hard_phase_frac: 0.03,
                 mech_shares: [0.25, 0.30, 0.35, 0.10],
                 lift_factor: 1.0,
+                // 304 선삭 Ft/Fc 기울기 0.30 (경사 10°)
+                kr_floor: 0.30,
+                // FE 관행 0.6, 강 직교 실측 중앙 0.50
+                cut_mu: 0.55,
+                // 304 선삭 날끝 절편 Fc 51 N/mm (r ≈ 20 µm) → 식보다 약 1.3배 (확신도 낮음)
+                kte_factor: 1.3,
+                kre_over_kte: 1.0,
+                clearance_deg: 9.0,
+                // 스테인리스 실무 판정 0.2 mm
+                vb_criterion_mm: 0.2,
+                // 호닝 8~10 µm nACo 코팅으로 316L 을 깎으면 30분간 마모가 보이지 않음 (Materials 2025) → 작은 길들이기
+                breakin_vb_um: 20.0,
+                breakin_tau_min: 2.0,
                 ..base("stainless", "스테인리스강 (SUS304)")
             },
             WorkpieceMaterial::Titanium => WorkpieceProps {
@@ -365,7 +496,8 @@ impl WorkpieceProps {
                 min_chip_ratio: 0.30,
                 work_hardening: 0.12,
                 softening_m: 1.1,
-                process_damping: 1.3,
+                // 1.3 → 1.0: 공정감쇠 계수 C 가 Ti-6Al-4V 1.2~1.8e5 N/m 로 1018 강과 같은 수준 (Tyler 외 2014)
+                process_damping: 1.0,
                 chem: WpChem::Titanium,
                 thermo: vec![
                     (20.0, 6.7, 526.0),
@@ -387,6 +519,20 @@ impl WorkpieceProps {
                 wear_transition_c: 850.0,
                 mech_shares: [0.10, 0.45, 0.40, 0.05],
                 lift_factor: 1.3,
+                // Krc/Ktc: Ø12 4날 초경 엔드밀 실측 0.5 (Ktc 2000·Krc 1000 N/mm², Kte 41·Kre 77 N/mm — J. Vibroeng.), TC4 볼 실측 0.37
+                // (Sci. Rep. 2026), Budak 1996 직교 데이터베이스의 경사 변환 0.29 → 중앙 0.37
+                kr_floor: 0.37,
+                // 무코팅 초경 직교절삭 실측 μ 0.4~0.6 (ETH, arXiv 2209.04197), 날끝 힘을 뺀 β 20~23° → 0.36~0.42
+                cut_mu: 0.45,
+                kte_factor: 1.7,
+                kre_over_kte: 1.9,
+                clearance_deg: 10.0,
+                // Ti 판정 VB 평균 0.2 mm / 최대 0.3 mm (Wu 외 2019)
+                vb_criterion_mm: 0.2,
+                // AlCrN Vc 150 에서 5 m 이송에 115 µm, PVD 코팅이 수 초~수 분에 벗겨짐 → 권장 속도에서 50~100 µm, 속도에 따라 커짐
+                breakin_vb_um: 60.0,
+                breakin_tau_min: 1.5,
+                breakin_vc_exp: 0.5,
                 ..base("titanium", "티타늄 (Ti-6Al-4V)")
             },
             WorkpieceMaterial::Inconel => WorkpieceProps {
@@ -406,7 +552,8 @@ impl WorkpieceProps {
                 bue_range_c: None,
                 fz_coeff: 0.003,
                 ae_ratio: 0.1,
-                edge_radius_um: 10.0,
+                // 10 → 15 µm: 인코넬용 엔드밀 호닝 10~25 µm
+                edge_radius_um: 15.0,
                 ref_life_min: 25.0,
                 min_chip_ratio: 0.35,
                 work_hardening: 0.35,
@@ -432,6 +579,18 @@ impl WorkpieceProps {
                 wear_transition_c: 850.0,
                 mech_shares: [0.30, 0.25, 0.35, 0.10],
                 lift_factor: 1.2,
+                // 공개 엔드밀 계수 세트 없음 — 강과 스테인리스 사이로 둔 가정값 (확신도 낮음)
+                kr_floor: 0.30,
+                cut_mu: 0.55,
+                kre_over_kte: 1.4,
+                // 실측 인코넬용 엔드밀 1차 여유각 8.5° (MM Science J. 2020)
+                clearance_deg: 9.0,
+                // VBmax 0.3 mm (노치 마모가 먼저 오는 경우가 많음)
+                vb_criterion_mm: 0.3,
+                // Ti 와 같은 50~100 µm 대역의 하한 — 인코넬 실측(5 m 에 320~600 µm)은 권장 속도의 2.5~4배에서 난 날끝 붕괴라 그대로 쓰지 않는다
+                breakin_vb_um: 50.0,
+                breakin_tau_min: 1.0,
+                breakin_vc_exp: 0.5,
                 ..base("inconel", "인코넬 718")
             },
             WorkpieceMaterial::SuperAlloy => WorkpieceProps {
@@ -474,6 +633,18 @@ impl WorkpieceProps {
                 wear_transition_c: 850.0,
                 mech_shares: [0.30, 0.25, 0.35, 0.10],
                 lift_factor: 1.2,
+                // 공개 엔드밀 계수 세트 없음 — 강과 스테인리스 사이로 둔 가정값 (확신도 낮음)
+                kr_floor: 0.30,
+                cut_mu: 0.55,
+                kre_over_kte: 1.4,
+                // 실측 인코넬용 엔드밀 1차 여유각 8.5° (MM Science J. 2020)
+                clearance_deg: 9.0,
+                // VBmax 0.3 mm (노치 마모가 먼저 오는 경우가 많음)
+                vb_criterion_mm: 0.3,
+                // Ti 와 같은 50~100 µm 대역의 하한 — 인코넬 실측(5 m 에 320~600 µm)은 권장 속도의 2.5~4배에서 난 날끝 붕괴라 그대로 쓰지 않는다
+                breakin_vb_um: 50.0,
+                breakin_tau_min: 1.0,
+                breakin_vc_exp: 0.5,
                 ..base("superalloy", "수퍼알로이")
             },
             WorkpieceMaterial::CFRP => WorkpieceProps {
@@ -488,7 +659,8 @@ impl WorkpieceProps {
                 rake_deg: 10.0,
                 adhesion: 0.6,
                 wear_activation_k: 2500.0,
-                thermal_factor: 0.5,
+                // 0.5 → 0.42: 다이아몬드 공구 Vc 200 에서 312 °C 로 문헌 대역(150~300 °C, 에폭시 Tg ≈ 180 °C) 위였다
+                thermal_factor: 0.42,
                 melt_c: 400.0,
                 temp_limit_c: Some(180.0),
                 bue_range_c: None,
@@ -510,6 +682,16 @@ impl WorkpieceProps {
                 wear_transition_c: 300.0,
                 mech_shares: [0.95, 0.03, 0.005, 0.015],
                 lift_factor: 0.0,
+                // CFRP 는 날끝 마찰(rubbing)이 지배하고 물리적인 엔드밀 계수 세트가 없다 — FE 마찰계수 0.2~0.6 (섬유각) 중간값 (확신도 낮음)
+                kr_floor: 0.25,
+                cut_mu: 0.30,
+                kre_over_kte: 1.4,
+                // CFRP 용 공구 1차 여유각 12~20°
+                clearance_deg: 15.0,
+                // 섬유 미절단·박리가 VB 보다 먼저 오는 경우가 많아 0.1~0.2 mm
+                vb_criterion_mm: 0.2,
+                breakin_vb_um: 20.0,
+                breakin_tau_min: 2.0,
                 ..base("cfrp", "CFRP")
             },
         }
@@ -710,6 +892,13 @@ impl ToolGeometry {
         let coating = tribology_from_name(s.coating_name.as_deref());
         let edge_coated = coated_edge_um(edge_default, coating.thickness_um);
         let neck = s.neck();
+        let stickout = s.effective_stickout_mm();
+        // 감쇠비: 사용자가 넣은 값(탭 테스트)이 없으면 돌출비·홀더로 정한 공구 끝 모드 기본값 (예전에는 모든 공구 0.03)
+        let damping = if machine.damping_is_user() {
+            machine.damping_ratio
+        } else {
+            crate::pairref::default_damping(stickout / s.diameter_mm.max(1e-6), s.holder)
+        };
         Self {
             diameter_mm: s.diameter_mm,
             flutes: z,
@@ -718,12 +907,13 @@ impl ToolGeometry {
             oal_mm: s.oal_mm,
             shank_mm: s.shank_diameter_mm,
             nose: s.nose,
-            stickout_mm: s.effective_stickout_mm(),
+            stickout_mm: stickout,
             rake_deg: s.rake_deg.unwrap_or(wp.rake_deg),
-            clearance_deg: s.clearance_deg.unwrap_or(10.0),
+            clearance_deg: s.clearance_deg.unwrap_or(wp.clearance_deg),
             edge_radius_um: s.edge_radius_um.unwrap_or(edge_coated),
             core_ratio: core,
-            runout_um: s.runout_um.unwrap_or(if s.is_high_end { 3.0 } else { 10.0 }),
+            // 런아웃 TIR: 입력값 > 홀더 사양 > 공구 등급 가정 (고급형 3 µm 는 열박음·유압 수준, 보급형 10 µm 는 ER 정밀·표준 사이)
+            runout_um: s.runout_um.or(s.holder.tir_um()).unwrap_or(if s.is_high_end { 3.0 } else { 10.0 }),
             variable_pitch: s.variable_pitch,
             elastic_gpa: e,
             tool_conductivity: k,
@@ -734,7 +924,7 @@ impl ToolGeometry {
             holder_stiffness_n_per_um: machine.holder_stiffness_n_per_um,
             flank_wear_mm: 0.0,
             tool_density: density,
-            damping_ratio: machine.damping_ratio.clamp(0.005, 0.2),
+            damping_ratio: damping.clamp(0.005, 0.2),
             holder_mass_kg: machine.holder_mass_kg.max(0.0),
             measured_fn_hz: machine.tip_fn_hz.filter(|v| frf_ok && *v > 0.0),
             measured_k_n_per_um: machine.tip_stiffness_n_per_um.filter(|v| frf_ok && *v > 0.0),
@@ -753,6 +943,14 @@ impl ToolGeometry {
         self.neck_diameter_mm > 0.0 && self.reach_mm > self.loc_mm
     }
 
+    /// 편심 진폭 e (mm). `runout_um` 은 다이얼 게이지로 읽는 TIR(전체 흔들림, 홀더 사양서의 "런아웃 3 µm" 같은 값)이고,
+    /// 공구 중심이 스핀들 축에서 벗어난 거리 e 는 TIR/2 이다. 날 j 의 절삭 반경은 r + e·cos(ψj) 이므로 2날 공구에서 두 날의
+    /// 칩 두께 차이(오프셋)는 2e = TIR 이다. (예전 구현은 runout_um 을 e 로 읽어 오프셋이 ±2·TIR 이 되었다 — 알루미늄 황삭
+    /// 프리셋 TIR 10 µm 에서 ±20 µm, 평균 칩 두께의 약 70%: 피크/평균 힘 4.3, 평균 칩 두께 28.6 µm 로 부풀었다.)
+    pub fn runout_ecc_mm(&self) -> f64 {
+        0.5 * self.runout_um.max(0.0) / 1000.0
+    }
+
     pub fn reset_to_reference_substrate(&mut self, wp: &WorkpieceProps) {
         let (e, k, alpha, rho_c, wf, density, nu, kic) = CARBIDE_PROPS;
         self.elastic_gpa = e;
@@ -764,7 +962,7 @@ impl ToolGeometry {
         self.poisson = nu;
         self.fracture_toughness = kic;
         self.rake_deg = wp.rake_deg;
-        self.clearance_deg = 10.0;
+        self.clearance_deg = wp.clearance_deg;
         if self.edge_default_um > 0.0 {
             self.edge_radius_um = coated_edge_um(self.edge_default_um, tribology::coating_props("AlTiN").thickness_um);
         }
@@ -953,12 +1151,11 @@ impl CutContext {
         }
     }
 
+    /// 공구 수명 판정 VB (mm): 부품 공차 규칙(공차 ≤ 20 µm 이면 0.2, 아니면 ISO 8688-2 의 0.3)과 피삭재 판정 기준
+    /// (Ti·스테인리스·CFRP 0.2, 고경도 정삭 0.15 — `WorkpieceProps::vb_criterion_mm`) 중 작은 쪽
     pub fn vb_limit_mm(&self) -> f64 {
-        if self.tolerance_mm <= 0.02 {
-            0.2
-        } else {
-            0.3
-        }
+        let tol_rule: f64 = if self.tolerance_mm <= 0.02 { 0.2 } else { 0.3 };
+        tol_rule.min(self.wp.vb_criterion_mm.max(0.05))
     }
 }
 
@@ -1077,6 +1274,13 @@ pub struct CuttingCoeffs {
     pub lubricant_access: f64,
     #[serde(default)]
     pub friction_temp_c: f64,
+    /// 축방향 힘 계수: dFa = kac_ratio × (전단 접선력) + kae × db. 헬릭스 날의 경사 절삭에서 생기는 공구를 뽑아 올리는 힘.
+    /// 알루미늄 엔드밀 측정 Kac/Ktc 0.2~0.4 (경사절삭 이론은 35° 에서 0.16~0.33) — 0.35·tan(헬릭스)
+    #[serde(default)]
+    pub kac_ratio: f64,
+    /// 날 길이당 축방향 날끝 힘 (N/mm). 측정 Kae 0~5 N/mm, 날끝 접선 계수의 약 0.2~0.3배
+    #[serde(default)]
+    pub kae: f64,
 }
 
 fn one() -> f64 {
@@ -1102,20 +1306,21 @@ fn coeffs_from_friction(ctx: &CutContext, fr: &tribology::Friction, t_c: f64) ->
     let x = (beta - alpha).clamp((-5f64).to_radians(), 50f64.to_radians());
     let g = |v: f64| 2.0 * v.cos() / (1.0 - v.sin());
     let x0 = 0.55f64.atan() - 6f64.to_radians();
-    let factor = (g(x) / g(x0)).clamp(0.6, 1.6);
+    // 마찰이 피삭재 기준값(`cut_mu`)에서 코팅으로 조금만 바뀌므로 배수 범위도 좁다 (코팅의 절삭력 효과 0~6 %)
+    let factor = (g(x) / g(x0)).clamp(0.7, 1.3);
     let phi = PI / 4.0 - x / 2.0;
     let share = (beta.sin() * phi.sin() / ((beta - alpha).cos() * (phi - alpha).cos())).clamp(0.05, 0.8);
     let kc11 = ctx.wp.kc11 * factor * ctx.calib.power;
-    let kte = 0.011 * ctx.wp.kc11 * (ctx.tool.edge_radius_um / 10.0).max(0.1).sqrt() * ctx.calib.power;
+    let kte = 0.011 * ctx.wp.kc11 * (ctx.tool.edge_radius_um / 10.0).max(0.1).sqrt() * ctx.wp.kte_factor * ctx.calib.power;
     CuttingCoeffs {
         mu,
         beta_deg: beta.to_degrees(),
         shear_angle_deg: phi.to_degrees(),
         kc11,
         mc: ctx.wp.mc,
-        kr: x.tan().clamp(0.15, 0.9),
+        kr: x.tan().clamp(ctx.wp.kr_floor.clamp(0.0, 0.9), 0.9),
         kte,
-        kre: 1.4 * kte,
+        kre: ctx.wp.kre_over_kte * kte,
         friction_factor: factor,
         friction_power_share: share,
         softening: 1.0,
@@ -1129,6 +1334,8 @@ fn coeffs_from_friction(ctx: &CutContext, fr: &tribology::Friction, t_c: f64) ->
         sticking: fr.sticking,
         lubricant_access: fr.lubricant_access,
         friction_temp_c: t_c,
+        kac_ratio: (0.35 * ctx.tool.helix_deg.to_radians().tan()).clamp(0.0, 0.6),
+        kae: 0.3 * kte,
     }
 }
 
@@ -1191,9 +1398,14 @@ pub fn interface_rise(ctx: &CutContext, co: &CuttingCoeffs, f: &ForceResult, vc:
     interface_rise_from(ctx, co, f, vc, ctx.coolant.ambient_c())
 }
 
+/// 계면 온도식의 비절삭에너지에 쓰는 칩 두께 하한 (mm). Kienzle 의 h^−mc 크기효과를 이보다 얇은 칩으로 외삽하면 날끝 밀림 에너지까지
+/// 경사면 열로 셈하게 된다 (밀림 열은 주로 플랭크·공작물로 간다). 이 하한이 없을 때 58 HRC 볼 정삭(평균 칩 7 µm)이 663~745 °C 로
+/// 문헌 대역 350~600 °C (H13 52 HRC 볼 계면 200~400 °C, Dewes 외 1999) 보다 높았다
+pub const SIZE_EFFECT_MIN_H_MM: f64 = 0.02;
+
 pub fn interface_rise_from(ctx: &CutContext, co: &CuttingCoeffs, f: &ForceResult, vc: f64, t0: f64) -> (f64, f64) {
     let h = f.h_mean_mm.max(1e-4);
-    let u = co.kc11 * h.powf(-co.mc) * 1.0e6;
+    let u = co.kc11 * h.max(SIZE_EFFECT_MIN_H_MM).powf(-co.mc) * 1.0e6;
     let v = vc / 60.0;
     let rise = |tm: f64| {
         let pe = (v * h * 1e-3 / ctx.wp.diffusivity_at(tm)).max(1e-6);
@@ -1249,6 +1461,24 @@ pub struct ForceResult {
     pub flank_share: f64,
     #[serde(default)]
     pub flank_power_share: f64,
+    /// 축방향(공구를 뽑아 올리는) 힘의 평균·피크 (N) — 헬릭스 경사 절삭 항 (`kac_ratio`, `kae`)
+    #[serde(default)]
+    pub fa_mean: f64,
+    #[serde(default)]
+    pub fa_peak: f64,
+}
+
+/// 슬라이스 하나의 축방향 힘 `dfa` (N): 전단 접선력에 비례하는 항 + 날 길이당 날끝 항.
+#[inline]
+pub fn slice_axial(co: &CuttingCoeffs, h: f64, db: f64) -> f64 {
+    let wh = 1.0 + co.work_hardening * co.hardened_depth_mm / (h + co.hardened_depth_mm).max(1e-9);
+    let ramp = if co.h_min_mm > 0.0 {
+        let q = ((h - 0.5 * co.h_min_mm) / (0.5 * co.h_min_mm)).clamp(0.0, 1.0);
+        q * q * (3.0 - 2.0 * q)
+    } else {
+        1.0
+    };
+    co.kac_ratio * co.kc11 * wh * h.powf(1.0 - co.mc) * db * ramp + co.kae * db
 }
 
 /// 슬라이스 하나(칩 두께 `h` mm, 폭 `db` mm)의 절삭 방향 힘 `dft` 와 반경 방향 힘 `dfr` (N).
@@ -1280,7 +1510,7 @@ pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm:
     let r = tool.radius();
     let tan_h = tool.helix_deg.to_radians().tan();
     let dz = eng.ap_mm / slices as f64;
-    let runout_mm = tool.runout_um / 1000.0;
+    let runout_mm = tool.runout_ecc_mm();
     let mut fx_s = Vec::with_capacity(steps);
     let mut fy_s = Vec::with_capacity(steps);
     let mut t_sum = 0.0;
@@ -1315,6 +1545,9 @@ pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm:
     let mut fx_c = vec![0.0; turns];
     let mut fy_c = vec![0.0; turns];
     let mut tq_c = vec![0.0; turns];
+    let mut fa_c = vec![0.0; turns];
+    let mut fa_sum = 0.0;
+    let mut fa_peak = 0.0f64;
     let mut teeth = vec![false; turns * z];
     let mut fres_sum = 0.0;
     for s in 0..steps {
@@ -1322,6 +1555,7 @@ pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm:
         fx_c.iter_mut().for_each(|v| *v = 0.0);
         fy_c.iter_mut().for_each(|v| *v = 0.0);
         tq_c.iter_mut().for_each(|v| *v = 0.0);
+        fa_c.iter_mut().for_each(|v| *v = 0.0);
         teeth.iter_mut().for_each(|t| *t = false);
         for j in 0..z {
             for k in 0..slices {
@@ -1354,6 +1588,7 @@ pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm:
                     fx_c[c] += -dft * cp - dfr * sp;
                     fy_c[c] += dft * sp - dfr * cp;
                     tq_c[c] += dft * rl;
+                    fa_c[c] += slice_axial(co, h, db);
                     h_sum += h;
                     h_cnt += 1.0;
                     h_max = h_max.max(h);
@@ -1365,18 +1600,22 @@ pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm:
         let mut fx = 0.0;
         let mut fy = 0.0;
         let mut torque = 0.0;
+        let mut fa = 0.0;
         for c in 0..turns {
             let fres = (fx_c[c] * fx_c[c] + fy_c[c] * fy_c[c]).sqrt();
             fres_peak = fres_peak.max(fres);
             fn_peak = fn_peak.max(fy_c[c].abs());
             t_peak = t_peak.max(tq_c[c]);
+            fa_peak = fa_peak.max(fa_c[c]);
             fres_sum += fres * wt;
             fx += fx_c[c] * wt;
             fy += fy_c[c] * wt;
             torque += tq_c[c] * wt;
+            fa += fa_c[c] * wt;
         }
         teeth_sum += teeth.iter().filter(|t| **t).count() as f64 * wt;
         t_sum += torque;
+        fa_sum += fa;
         fx_s.push(fx);
         fy_s.push(fy);
     }
@@ -1400,6 +1639,8 @@ pub fn mechanistic_forces(tool: &ToolGeometry, co: &CuttingCoeffs, fz: f64, rpm:
     out.rubbing_share = if tot_t > 0.0 { rub_t / tot_t } else { 0.0 };
     out.flank_share = if fr_sum > 0.0 { flank_r / fr_sum } else { 0.0 };
     out.flank_power_share = if tot_t > 0.0 { flank_t / tot_t } else { 0.0 };
+    out.fa_mean = fa_sum / n;
+    out.fa_peak = fa_peak;
     out
 }
 
@@ -1708,7 +1949,7 @@ pub fn wear_at(ctx: &CutContext, f: &ForceResult, th: &ThermalResult, vc: f64, f
     let cf: f64 = (0..4).map(|i| reference.shares[i] * at_ref[i] / reference.raw[i]).sum();
     let thermal_share = (reference.shares[2] + reference.shares[3]).max(1e-9);
     let tf = (parts[2] + parts[3]) / thermal_share;
-    let rf = (1.0 + 2.0 * ctx.tool.runout_um / 1000.0 / fz.max(1e-4)).powf(1.0 - ctx.wp.mc).min(2.0);
+    let rf = (1.0 + 2.0 * ctx.tool.runout_ecc_mm() / fz.max(1e-4)).powf(1.0 - ctx.wp.mc).min(2.0);
     let evac = 1.0 + 0.3 * (1.0 - ctx.coolant.chip_evacuation()) * (0.3 + 0.7 * chip_confinement(eng));
     let base_rate = 0.2 / ctx.wp.ref_life_min.max(1.0);
     let rate = base_rate * mech * rf * ctx.tool.base_wear_factor * evac * ctx.calib.wear * (1.0 + 1.5 * th.thermal_crack_risk) * substrate_softening(ctx, th.interface_c);
@@ -1749,7 +1990,7 @@ struct RawTrajectory {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: &Engagement, vce: f64, body: ThermalBody, reference: WearReference) -> RawTrajectory {
+fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: &Engagement, vce: f64, body: ThermalBody, reference: WearReference, kappa: f64) -> RawTrajectory {
     let limit = ctx.vb_limit_mm();
     let mut c = ctx.clone();
     c.tool.flank_wear_mm = 0.0;
@@ -1762,8 +2003,11 @@ fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: 
     let (r0, f0, t0) = eval(&c);
     let r0 = r0.max(1e-12);
     let linear = limit / r0;
-    let vb_b = 0.15 * limit;
-    let tau = (0.03 * linear).max(1e-9);
+    // 길들이기: 조합 기준값(크기 µm, 시상수 분) — 예전의 '한계의 15 %, 선형 수명의 3 %' 는 수명이 긴 조건에서 10~20분짜리
+    // 길들이기를 만들었다. 이 궤적의 시간은 나중에 κ 로 나누어 실제 시간이 되므로 시상수에 κ 를 미리 곱한다
+    let b = crate::pairref::breakin(ctx, vce);
+    let vb_b = b.vb_mm;
+    let tau = (b.tau_min * kappa.max(1e-6)).max(1e-9);
     let ds = (linear / 150.0).max(1e-9);
     let mut out = RawTrajectory {
         s: Vec::new(),
@@ -1829,7 +2073,7 @@ pub fn wear_kappa(ctx: &CutContext) -> f64 {
         area_m2: 0.03,
         size_mm: 100.0,
     };
-    let raw = trajectory_raw(&rctx, &co, fz, rpm, &eng, rctx.wp.ref_vc, body, reference);
+    let raw = trajectory_raw(&rctx, &co, fz, rpm, &eng, rctx.wp.ref_vc, body, reference, 1.0);
     (raw.life_s / raw.linear_s.max(1e-12)).clamp(0.2, 1.0)
 }
 
@@ -1998,7 +2242,7 @@ impl WearTrajectory {
 #[allow(clippy::too_many_arguments)]
 pub fn wear_trajectory(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: &Engagement, vce: f64, body: ThermalBody, kappa: f64) -> WearTrajectory {
     let reference = reference_state(ctx);
-    let raw = trajectory_raw(ctx, co, fz, rpm, eng, vce, body, reference);
+    let raw = trajectory_raw(ctx, co, fz, rpm, eng, vce, body, reference, kappa);
     let k = kappa.max(1e-6);
     let n = raw.s.len();
     let keep: Vec<usize> = if n <= 80 {
@@ -2182,6 +2426,10 @@ pub struct ForceSummary {
     pub h_max_mm: f64,
     pub h_mean_mm: f64,
     pub teeth_in_cut: f64,
+    #[serde(default)]
+    pub fa_mean: f64,
+    #[serde(default)]
+    pub fa_peak: f64,
 }
 
 impl From<&ForceResult> for ForceSummary {
@@ -2197,6 +2445,8 @@ impl From<&ForceResult> for ForceSummary {
             h_max_mm: f.h_max_mm,
             h_mean_mm: f.h_mean_mm,
             teeth_in_cut: f.teeth_in_cut,
+            fa_mean: f.fa_mean,
+            fa_peak: f.fa_peak,
         }
     }
 }
@@ -2535,7 +2785,8 @@ pub fn recommend(ctx: &CutContext, is_high_end: bool, body: ThermalBody, purpose
     if let Some(n) = coat_note {
         notes.push(n);
     }
-    let dry_penalty = if matches!(ctx.coolant.method, CoolantMethod::Dry) && ctx.wp.thermal_factor < 0.9 && ctx.wp.hardness_hrc < 45.0 {
+    // 열이 공구에 남는 저열전도 소재(스테인리스·Ti·Ni·CFRP, k < 25 W/mK)의 건식 절삭만 속도를 낮춘다
+    let dry_penalty = if matches!(ctx.coolant.method, CoolantMethod::Dry) && ctx.wp.conductivity < 25.0 && ctx.wp.hardness_hrc < 45.0 {
         0.75
     } else {
         1.0

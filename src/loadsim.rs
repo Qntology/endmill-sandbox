@@ -9,6 +9,10 @@ use std::collections::HashMap;
 
 pub const NO_MATERIAL: f32 = f32::NEG_INFINITY;
 
+/// 셀 높이 `h` 는 '소재가 있는 부분의 평균 높이' 이다. 공구가 셀의 일부만 덮으면(`cov` < 1) 덮인 부분만 공구 높이로 내려가고
+/// 나머지는 원래 높이(`top`)로 남아, 셀 평균은 top·(1−cov) + 덮인 높이·cov 가 된다 (면적 가중 / 상자 필터).
+/// 셀 중심이 원 안에 있는지만 보던 이전 방식은 셀이 ae 보다 크면 경계 셀을 통째로 지우거나 남겨 ae 가 0.5~2배로 읽혔다.
+/// `fill` 은 스톡 가장자리 셀의 소재 비율(안쪽 셀은 1)이다. 비어 있으면 모든 셀이 가득 찬 것으로 본다.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockGrid {
     pub x0: f64,
@@ -19,6 +23,10 @@ pub struct StockGrid {
     pub h: Vec<f32>,
     pub top: f32,
     pub bottom: f32,
+    #[serde(default)]
+    pub cov: Vec<f32>,
+    #[serde(default)]
+    pub fill: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -28,6 +36,8 @@ struct Removal {
     forward: f64,
     max_depth: f64,
     cells: usize,
+    /// 지운 양을 '깊이 max_depth 의 셀 몇 개' 로 환산한 값 — 셀 경계 양자화와 무관한 연속량
+    eq_cells: f64,
 }
 
 impl StockGrid {
@@ -36,32 +46,50 @@ impl StockGrid {
         let hgt = p.workpiece_setup.height_mm.max(1.0);
         let d = p.endmill_setting.diameter_mm.max(0.1);
         let allowance = p.workpiece_setup.stock_allowance_mm.max(0.05);
-        let margin = d * 1.5 + 2.0;
+        let margin0 = d * 1.5 + 2.0;
         let mut cell = (d / 20.0).min(allowance / 3.0).clamp(0.05, 0.5);
-        let span_x = w + 2.0 * margin;
-        let span_y = hgt + 2.0 * margin;
-        while (span_x / cell) * (span_y / cell) > max_cells as f64 {
+        // 스톡의 가까운 가장자리(x=0, y=0)가 셀 경계에 정확히 놓이도록 여백을 셀의 정수배로 맞춘다
+        let aligned_margin = |c: f64| (margin0 / c).ceil() * c;
+        loop {
+            let m = aligned_margin(cell);
+            if ((w + 2.0 * m) / cell) * ((hgt + 2.0 * m) / cell) <= max_cells as f64 {
+                break;
+            }
             cell *= 1.25;
         }
+        let margin = aligned_margin(cell);
+        let span_x = w + 2.0 * margin;
+        let span_y = hgt + 2.0 * margin;
         let nx = (span_x / cell).ceil() as usize;
         let ny = (span_y / cell).ceil() as usize;
         let x0 = -margin;
         let y0 = -margin;
         let bottom = -(p.workpiece_setup.thickness_mm.max(0.1)) as f32;
         let mut h = vec![NO_MATERIAL; nx * ny];
+        let mut fill = vec![0.0f32; nx * ny];
         for j in 0..ny {
             for i in 0..nx {
-                let x = x0 + (i as f64 + 0.5) * cell;
-                let y = y0 + (j as f64 + 0.5) * cell;
-                let inside = match &p.workpiece_setup.shape {
+                let xa = x0 + i as f64 * cell;
+                let ya = y0 + j as f64 * cell;
+                // 셀 사각형과 스톡이 겹치는 면적 비율 (사각 스톡은 정확, 원통은 상자 필터)
+                let frac = match &p.workpiece_setup.shape {
                     StockShape::Cylindrical { diameter_mm } => {
-                        let r = diameter_mm / 2.0;
-                        (x - w / 2.0).powi(2) + (y - hgt / 2.0).powi(2) <= r * r
+                        let rr = diameter_mm / 2.0;
+                        let dx = xa + 0.5 * cell - w / 2.0;
+                        let dy = ya + 0.5 * cell - hgt / 2.0;
+                        let rd = (dx * dx + dy * dy).sqrt();
+                        let width = if rd > 1e-9 { cell * (dx.abs() + dy.abs()) / rd } else { cell };
+                        (0.5 + (rr - rd) / width.max(1e-9)).clamp(0.0, 1.0)
                     }
-                    _ => x >= 0.0 && x <= w && y >= 0.0 && y <= hgt,
+                    _ => {
+                        let fx = ((xa + cell).min(w) - xa.max(0.0)).max(0.0) / cell;
+                        let fy = ((ya + cell).min(hgt) - ya.max(0.0)).max(0.0) / cell;
+                        fx.clamp(0.0, 1.0) * fy.clamp(0.0, 1.0)
+                    }
                 };
-                if inside {
+                if frac > 0.02 {
                     h[j * nx + i] = 0.0;
+                    fill[j * nx + i] = frac as f32;
                 }
             }
         }
@@ -74,6 +102,8 @@ impl StockGrid {
             h,
             top: 0.0,
             bottom,
+            cov: vec![0.0; nx * ny],
+            fill,
         }
     }
 
@@ -88,24 +118,32 @@ impl StockGrid {
 
     #[allow(clippy::too_many_arguments)]
     fn cut(&mut self, cx: f64, cy: f64, z_tip: f64, r: f64, nose: ToolNose, dir: (f64, f64), front_only: bool, floor_err: &mut [f32], floor_val: f32, cut_times: (&mut [f32], &mut [f32]), t_now: f32) -> Removal {
+        if self.cov.len() != self.h.len() {
+            self.cov = vec![0.0; self.h.len()];
+        }
         let (first_cut, last_cut) = cut_times;
         let rc = nose.corner_radius(2.0 * r);
         let mut out = Removal::default();
-        let i0 = (((cx - r) - self.x0) / self.cell).floor().max(0.0) as usize;
-        let i1 = ((((cx + r) - self.x0) / self.cell).ceil() as usize).min(self.nx);
-        let j0 = (((cy - r) - self.y0) / self.cell).floor().max(0.0) as usize;
-        let j1 = ((((cy + r) - self.y0) / self.cell).ceil() as usize).min(self.ny);
+        // 경계 셀(중심이 원 밖이어도 일부가 덮이는 셀)까지 보려고 셀 대각선의 절반만큼 넓힌다
+        let pad = 0.5 * self.cell * std::f64::consts::SQRT_2;
+        let i0 = (((cx - r - pad) - self.x0) / self.cell).floor().max(0.0) as usize;
+        let i1 = ((((cx + r + pad) - self.x0) / self.cell).ceil() as usize).min(self.nx);
+        let j0 = (((cy - r - pad) - self.y0) / self.cell).floor().max(0.0) as usize;
+        let j1 = ((((cy + r + pad) - self.y0) / self.cell).ceil() as usize).min(self.ny);
         let area = self.cell * self.cell;
+        let top = self.top as f64;
+        let floor = self.bottom as f64;
         let (ux, uy) = dir;
         let (nx_, ny_) = (-uy, ux);
+        let have_fill = self.fill.len() == self.h.len();
         for j in j0..j1 {
             let y = self.y0 + (j as f64 + 0.5) * self.cell;
             for i in i0..i1 {
                 let x = self.x0 + (i as f64 + 0.5) * self.cell;
                 let dx = x - cx;
                 let dy = y - cy;
-                let rr = dx * dx + dy * dy;
-                if rr > r * r {
+                let rd = (dx * dx + dy * dy).sqrt();
+                if rd > r + pad {
                     continue;
                 }
                 let fwd = dx * ux + dy * uy;
@@ -117,23 +155,44 @@ impl StockGrid {
                 if old == NO_MATERIAL {
                     continue;
                 }
-                let rd = rr.sqrt();
+                // 셀 사각형을 반경 방향으로 투영한 폭 안에서 원 경계가 선형으로 지나간다고 보고 덮인 면적 비율을 구한다
+                let width = if rd > 1e-9 { self.cell * (dx.abs() + dy.abs()) / rd } else { self.cell };
+                let cov_tool = (0.5 + (r - rd) / width.max(1e-9)).clamp(0.0, 1.0);
+                // 소재가 셀의 일부뿐이면(스톡 가장자리) 공구는 빈 쪽에서 들어와 빈 부분을 먼저 덮는다고 본다
+                let m = if have_fill { (self.fill[k] as f64).clamp(0.02, 1.0) } else { 1.0 };
+                let cov_now = ((cov_tool - (1.0 - m)) / m).clamp(0.0, 1.0);
+                if cov_now <= 1e-3 {
+                    continue;
+                }
                 let prof = if rc <= 0.0 || rd <= r - rc {
                     z_tip
                 } else {
-                    let q = rd - (r - rc);
+                    let q = rd.min(r) - (r - rc);
                     z_tip + rc - (rc * rc - q * q).max(0.0).sqrt()
                 };
-                let new = prof.max(self.bottom as f64) as f32;
-                if (old as f64) > prof + 1e-6 {
-                    let removed = old as f64 - new as f64;
-                    if removed > 0.0 {
-                        let v = removed * area;
-                        out.volume += v;
-                        out.lateral += v * (dx * nx_ + dy * ny_);
-                        out.forward += v * fwd;
-                        out.max_depth = out.max_depth.max(old as f64 - z_tip);
-                        out.cells += 1;
+                let prof_eff = prof.max(floor);
+                let old_h = old as f64;
+                let old_cov = (self.cov[k] as f64).clamp(0.0, 1.0);
+                // 이미 공구가 덮었던 부분의 평균 높이
+                let hc_old = if old_cov > 1e-6 { (old_h - top * (1.0 - old_cov)) / old_cov } else { top };
+                let cov_new = old_cov.max(cov_now);
+                let reuse = old_cov.min(cov_now);
+                // 새로 덮이는 부분은 top → prof, 다시 덮이는 부분은 더 깊을 때만 내려가고, 안 덮이는 옛 부분은 그대로
+                let covered_sum = reuse * hc_old.min(prof_eff) + (old_cov - reuse) * hc_old + (cov_new - old_cov) * prof_eff;
+                let new_h = top * (1.0 - cov_new) + covered_sum;
+                let removed = old_h - new_h;
+                if removed > 1e-9 {
+                    let v = removed * area * m;
+                    let layer_top = if cov_new > old_cov + 1e-6 { top } else { hc_old };
+                    // 관통 절삭(공구가 소재 바닥보다 깊이 내려감)에서는 축방향 맞물림이 소재 두께까지만이다
+                    let depth = (layer_top - z_tip.max(floor)).max(1e-9);
+                    out.volume += v;
+                    out.lateral += v * (dx * nx_ + dy * ny_);
+                    out.forward += v * fwd;
+                    out.max_depth = out.max_depth.max(layer_top - z_tip.max(floor));
+                    out.cells += 1;
+                    out.eq_cells += (removed * m / depth).min(1.0);
+                    if cov_tool >= 0.5 {
                         floor_err[k] = floor_val;
                         if first_cut[k].is_nan() {
                             first_cut[k] = t_now;
@@ -142,7 +201,8 @@ impl StockGrid {
                             last_cut[k] = t_now;
                         }
                     }
-                    self.h[k] = if prof <= self.bottom as f64 { NO_MATERIAL } else { new };
+                    self.cov[k] = cov_new as f32;
+                    self.h[k] = if cov_new >= 0.999 && prof <= floor { NO_MATERIAL } else { new_h as f32 };
                 }
             }
         }
@@ -373,6 +433,26 @@ pub struct WearBin {
     pub wp_c: f64,
     pub seg0: usize,
     pub seg1: usize,
+    /// 아래는 원인 추적용 진단 열 — 빈 안의 시간 가중 평균 (h_max 만 최댓값)
+    #[serde(default)]
+    pub ae_mm: f64,
+    #[serde(default)]
+    pub ap_mm: f64,
+    #[serde(default)]
+    pub fz_mm: f64,
+    #[serde(default)]
+    pub h_max_um: f64,
+    /// 총 VB 속도 (정상 마모 × 채터 + 길들이기 항)
+    #[serde(default)]
+    pub vb_rate_um_min: f64,
+    /// 그중 길들이기(break-in) 항 — 이 값이 크면 로그의 '마모 속도'는 정상 마모율이 아니다
+    #[serde(default)]
+    pub breakin_um_min: f64,
+    #[serde(default)]
+    pub chatter_wear: f64,
+    /// 벽면 휨 (절대값)
+    #[serde(default)]
+    pub defl_um: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -397,6 +477,14 @@ struct BinAcc {
     seg0: usize,
     seg1: usize,
     used: bool,
+    ae_dt: f64,
+    ap_dt: f64,
+    fz_dt: f64,
+    hmax: f64,
+    rate_dt: f64,
+    brk_dt: f64,
+    cwf_dt: f64,
+    defl_dt: f64,
 }
 
 impl BinAcc {
@@ -408,6 +496,14 @@ impl BinAcc {
             *self = *o;
             return;
         }
+        self.ae_dt += o.ae_dt;
+        self.ap_dt += o.ap_dt;
+        self.fz_dt += o.fz_dt;
+        self.hmax = self.hmax.max(o.hmax);
+        self.rate_dt += o.rate_dt;
+        self.brk_dt += o.brk_dt;
+        self.cwf_dt += o.cwf_dt;
+        self.defl_dt += o.defl_dt;
         self.dt += o.dt;
         self.t_end = self.t_end.max(o.t_end);
         self.t_cut_end = self.t_cut_end.max(o.t_cut_end);
@@ -451,6 +547,14 @@ impl BinAcc {
             wp_c: self.wp_c,
             seg0: self.seg0,
             seg1: self.seg1,
+            ae_mm: self.ae_dt / dt,
+            ap_mm: self.ap_dt / dt,
+            fz_mm: self.fz_dt / dt,
+            h_max_um: self.hmax * 1000.0,
+            vb_rate_um_min: self.rate_dt / dt * 1000.0,
+            breakin_um_min: self.brk_dt / dt * 1000.0,
+            chatter_wear: self.cwf_dt / dt,
+            defl_um: self.defl_dt / dt,
         }
     }
 }
@@ -666,6 +770,8 @@ pub struct LoadSimReport {
     pub thermal_damage: f64,
     #[serde(default)]
     pub thermal_fatigue_per_min: f64,
+    #[serde(default)]
+    pub engage_audit: EngageAudit,
 }
 
 fn one_f64() -> f64 {
@@ -1085,6 +1191,113 @@ fn seg_wall_stats(walls: &[WallErrorSample], segments: &[ToolPathSegment], seg_s
     out
 }
 
+/// 스텝 하나의 제거량 (면적 가중 제거라 스텝마다 연속에 가깝지만, 경로 시작·끝과 경계 셀 근사의 잡음을 구간 합으로 누른다).
+#[derive(Debug, Clone, Copy, Default)]
+struct StepRem {
+    cells: usize,
+    eq: f64,
+    vol: f64,
+    lat: f64,
+    fwd: f64,
+    depth: f64,
+    len: f64,
+}
+
+/// 최근 이동 구간의 제거량 합 — 결합(ae·진입 방향)과 '절삭 중' 판정을 스텝이 아니라 구간으로 읽는다.
+///
+/// 셀 중심이 원 안인지만 보던 시절에는 스텝(셀의 1/2)마다 셀이 0~3개씩 들쭉날쭉하게 지워졌고, 제거 체적이 0 인 스텝을
+/// '공중' 으로 분류해 절삭 시간이 절반으로 줄고 나머지 스텝의 ae 가 2배로 읽혔다 (알루미늄 황삭 프리셋 rect_profile:
+/// ae 0.5 mm → 0.99 mm, 절삭 25.7 s → 12.9 s). 면적 가중 제거는 이 앨리어싱의 원인을 없애지만, 경계 셀 근사(상자 필터)의
+/// 몇 % 잡음과 경로 양끝의 영향은 남으므로 구간 하한(길이 셀 2개, 제거량 셀 8개 분량)을 채울 때까지 뒤로 모은다.
+/// 상한은 공구 직경의 1/4 이다.
+struct EngageWindow {
+    steps: std::collections::VecDeque<StepRem>,
+    min_eq: f64,
+    min_len: f64,
+    max_len: f64,
+}
+
+impl EngageWindow {
+    fn new(cell_mm: f64, tool_d_mm: f64) -> Self {
+        let min_len = 2.0 * cell_mm;
+        Self {
+            steps: std::collections::VecDeque::new(),
+            min_eq: 8.0,
+            min_len,
+            max_len: (0.25 * tool_d_mm).max(4.0 * cell_mm).max(min_len),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.steps.clear();
+    }
+
+    fn total(&self) -> StepRem {
+        let mut s = StepRem::default();
+        for x in self.steps.iter() {
+            s.cells += x.cells;
+            s.eq += x.eq;
+            s.vol += x.vol;
+            s.lat += x.lat;
+            s.fwd += x.fwd;
+            s.len += x.len;
+            s.depth = s.depth.max(x.depth);
+        }
+        s
+    }
+
+    /// 새 스텝을 넣고, 하한(길이·제거량)을 채우는 가장 짧은 최근 구간의 합을 돌려준다 (상한 길이 안에서).
+    fn push(&mut self, s: StepRem) -> StepRem {
+        self.steps.push_back(s);
+        loop {
+            if self.steps.len() <= 1 {
+                break;
+            }
+            let all = self.total();
+            let first = self.steps[0];
+            let len_wo = all.len - first.len;
+            let eq_wo = all.eq - first.eq;
+            if (len_wo >= self.min_len && eq_wo >= self.min_eq) || all.len > self.max_len {
+                self.steps.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.total()
+    }
+
+}
+
+/// 격자 이산화와 결합 판독이 맞는지 보기 위한 카운터 (로그·감사용). 값이 이상하면 결합·시간 표본이 어긋난 것이다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EngageAudit {
+    pub cell_mm: f64,
+    pub step_mm: f64,
+    pub allowance_cells: f64,
+    pub window_min_cells: usize,
+    pub window_min_len_mm: f64,
+    pub window_max_len_mm: f64,
+    pub steps_total: usize,
+    pub steps_cutting: usize,
+    /// 이 스텝 자체의 제거는 0 이지만 구간 안에 제거가 있어 절삭으로 센 스텝 (앨리어싱 보정 대상)
+    pub steps_cutting_no_own_removal: usize,
+    pub steps_plunge: usize,
+    pub cut_len_mm: f64,
+    pub cut_time_s: f64,
+    pub removed_mm3: f64,
+    pub ap_mean_mm: f64,
+    /// 제거 체적 / (ap × 절삭 길이) — 격자에서 읽은 평균 반경 절입
+    pub ae_volume_mm: f64,
+    /// 스텝별 ae 판독의 시간 가중 평균 (공구 모델에 실제로 들어간 값)
+    pub ae_model_mm: f64,
+    pub ae_min_mm: f64,
+    pub ae_max_mm: f64,
+    pub window_len_mean_mm: f64,
+    pub window_cells_mean: f64,
+    /// 스텝 제거량이 0 이었던 절삭 스텝의 비율 (앨리어싱 정도)
+    pub no_own_removal_fraction: f64,
+}
+
 pub fn simulate(profile: &MachiningProfile, pattern: &ToolPathPattern, ctx: &CutContext) -> LoadSimReport {
     let segments = GCodeGenerator::generate_synthetic_segments_with_pattern(profile, pattern);
     simulate_segments(profile, &segments, pattern.key(), ctx)
@@ -1186,7 +1399,19 @@ pub fn simulate_segments_prog(
     let mut vb = vb_start;
     let mut wp_rise = 0.0f64;
     let mut removed = 0.0f64;
-    let mut ema_ae = 0.0f64;
+    let mut win = EngageWindow::new(grid.cell, 2.0 * r);
+    let mut air_gap = 0.0f64;
+    let mut audit = EngageAudit {
+        cell_mm: grid.cell,
+        step_mm: step,
+        allowance_cells: profile.workpiece_setup.stock_allowance_mm / grid.cell.max(1e-9),
+        window_min_cells: win.min_eq as usize,
+        window_min_len_mm: win.min_len,
+        window_max_len_mm: win.max_len,
+        ae_min_mm: f64::INFINITY,
+        ..Default::default()
+    };
+    let (mut audit_ae_dt, mut audit_ap_dt, mut audit_win_len, mut audit_win_cells, mut audit_dt_side, mut audit_side_removed) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mut max_power = 0.0f64;
     let mut max_force = 0.0f64;
     let mut max_temp = 0.0f64;
@@ -1216,6 +1441,7 @@ pub fn simulate_segments_prog(
         }
         match seg.feed() {
             None => {
+                win.clear();
                 let dtr = seg_len / profile.machine.rapid_mm_min.max(1.0) * 60.0;
                 t += dtr;
                 rapid_time += dtr;
@@ -1269,7 +1495,37 @@ pub fn simulate_segments_prog(
             first = false;
             removed += rem.volume;
             t += dt;
-            let cutting = rem.volume > 1e-9;
+            // 결합 판독용 제거량: 플런지는 스텝마다 연속으로 지워지므로 그대로, 측면 절삭은 최근 구간의 합 (셀 양자화 앨리어싱 방지)
+            let step_rem = StepRem {
+                cells: rem.cells,
+                eq: rem.eq_cells,
+                vol: rem.volume,
+                lat: rem.lateral,
+                fwd: rem.forward,
+                depth: rem.max_depth,
+                len: lateral,
+            };
+            // 면적 가중 제거는 스텝마다 연속이라 '이 스텝이 소재를 깎았는가' 를 스텝 자신의 제거량으로 가린다 (경로 끝에 꼬리가 안 생김).
+            // 윈도우에는 깎은 스텝만 넣어 ae 를 매끄럽게 읽고, 공중 구간이 윈도우 상한보다 길면 비운다.
+            let eng_rem = if plunge_like {
+                win.clear();
+                air_gap = 0.0;
+                step_rem
+            } else if rem.volume > 1e-9 {
+                air_gap = 0.0;
+                win.push(step_rem)
+            } else {
+                air_gap += lateral;
+                if air_gap > win.max_len {
+                    win.clear();
+                }
+                StepRem::default()
+            };
+            let cutting = eng_rem.vol > 1e-9;
+            audit.steps_total += 1;
+            if !plunge_like {
+                audit_side_removed += rem.volume;
+            }
             let fz_nom = feed / (rpm * z);
             let mut sample_force = ForceResult::default();
             let mut eng_deg = 0.0;
@@ -1287,10 +1543,20 @@ pub fn simulate_segments_prog(
             let mut down_here = false;
             let mut bin_dt = 0.0;
             let mut fz_here = fz_nom;
+            let (mut rate_here, mut brk_here, mut cwf_here) = (0.0f64, 0.0f64, 1.0f64);
             if cutting && dt > 0.0 {
                 cut_time += dt;
                 cut_samples += 1;
                 bin_dt = dt;
+                audit.steps_cutting += 1;
+                if rem.volume <= 1e-9 {
+                    audit.steps_cutting_no_own_removal += 1;
+                }
+                if plunge_like {
+                    audit.steps_plunge += 1;
+                } else {
+                    audit.cut_len_mm += lateral;
+                }
                 let vbq = (vb / 0.01).round() * 0.01;
                 if (wtool.flank_wear_mm - vbq).abs() > 1e-9 {
                     wtool.flank_wear_mm = vbq;
@@ -1306,11 +1572,10 @@ pub fn simulate_segments_prog(
                     ap_eff = rem.max_depth.min(tool.loc_mm);
                     ae_eff = 2.0 * r;
                 } else {
-                    ap_eff = rem.max_depth.clamp(0.0, tool.loc_mm);
-                    let raw_ae = if ap_eff > 1e-6 { rem.volume / (ap_eff * lateral.max(1e-9)) } else { 0.0 };
-                    ema_ae = if ema_ae <= 0.0 { raw_ae } else { 0.7 * ema_ae + 0.3 * raw_ae };
-                    ae_eff = ema_ae.clamp(0.0, 2.0 * r);
-                    let lat_mean = rem.lateral / rem.volume.max(1e-12);
+                    ap_eff = eng_rem.depth.clamp(0.0, tool.loc_mm);
+                    let raw_ae = if ap_eff > 1e-6 { eng_rem.vol / (ap_eff * eng_rem.len.max(1e-9)) } else { 0.0 };
+                    ae_eff = raw_ae.clamp(0.0, 2.0 * r);
+                    let lat_mean = eng_rem.lat / eng_rem.vol.max(1e-12);
                     let eng = if ae_eff >= 1.9 * r {
                         Engagement::side(ap_eff, 2.0 * r, 2.0 * r, true)
                     } else if lat_mean > 0.15 * r {
@@ -1394,6 +1659,15 @@ pub fn simulate_segments_prog(
                         down_here = eng.mode == MillMode::Down;
                     }
                 }
+                if !plunge_like {
+                    audit_dt_side += dt;
+                    audit_ae_dt += ae_eff * dt;
+                    audit_ap_dt += ap_eff * dt;
+                    audit.ae_min_mm = audit.ae_min_mm.min(ae_eff);
+                    audit.ae_max_mm = audit.ae_max_mm.max(ae_eff);
+                    audit_win_len += eng_rem.len;
+                    audit_win_cells += eng_rem.eq;
+                }
                 let vce = physics::effective_vc(tool, rpm, ap_eff);
                 let eng_for_heat = Engagement {
                     ap_mm: ap_eff,
@@ -1402,8 +1676,8 @@ pub fn simulate_segments_prog(
                     phi_ex: eng_deg.to_radians().max(1e-3),
                     mode: MillMode::Center,
                 };
-                let vol = rem.volume.max(1e-12);
-                let (lat_c, fwd_c) = (rem.lateral / vol, rem.forward / vol);
+                let vol = eng_rem.vol.max(1e-12);
+                let (lat_c, fwd_c) = (eng_rem.lat / vol, eng_rem.fwd / vol);
                 let (odx, ody) = if plunge_like { (0.0, 0.0) } else { (fwd_c * dir.0 - lat_c * dir.1, fwd_c * dir.1 + lat_c * dir.0) };
                 let on = (odx * odx + ody * ody).sqrt();
                 if on > 0.05 * r {
@@ -1433,7 +1707,11 @@ pub fn simulate_segments_prog(
                     .or_insert_with(|| (toolwear::chatter_wear_factor(margin, frf_measured), toolwear::chatter_probability(margin, frf_measured)));
                 tf_damage += toolwear::thermal_fatigue_rate(th.shock.severity, eng_for_heat.span(), rpm) * dt;
                 let steady = kappa * wr.vb_rate_mm_per_min * cwf;
-                let rate = steady + vb_break / tau_break * (-(t_cut_min + age0) / tau_break).exp();
+                let brk = vb_break / tau_break * (-(t_cut_min + age0) / tau_break).exp();
+                let rate = steady + brk;
+                rate_here = rate;
+                brk_here = brk;
+                cwf_here = cwf;
                 let vb_prev = vb;
                 if vb_prev < vb_cap {
                     grow_t += dt;
@@ -1559,6 +1837,14 @@ pub fn simulate_segments_prog(
                     seg0: si,
                     seg1: si,
                     used: true,
+                    ae_dt: ae_eff * bin_dt,
+                    ap_dt: ap_eff * bin_dt,
+                    fz_dt: fz_here * bin_dt,
+                    hmax: sample_force.h_max_mm,
+                    rate_dt: rate_here * bin_dt,
+                    brk_dt: brk_here * bin_dt,
+                    cwf_dt: cwf_here * bin_dt,
+                    defl_dt: defl_wall.abs() * bin_dt,
                 });
             }
             samples.push(SimSample {
@@ -1698,6 +1984,8 @@ pub fn simulate_segments_prog(
         h: floor_err.iter().map(|v| if v.is_finite() { *v } else { NO_MATERIAL }).collect(),
         top: 0.0,
         bottom: grid.bottom,
+        cov: Vec::new(),
+        fill: Vec::new(),
     };
     let first_cut_grid = StockGrid {
         x0: grid.x0,
@@ -1708,6 +1996,8 @@ pub fn simulate_segments_prog(
         h: first_cut.iter().map(|v| if v.is_finite() { *v } else { NO_MATERIAL }).collect(),
         top: 0.0,
         bottom: grid.bottom,
+        cov: Vec::new(),
+        fill: Vec::new(),
     };
     let last_cut_grid = StockGrid {
         x0: grid.x0,
@@ -1718,7 +2008,25 @@ pub fn simulate_segments_prog(
         h: last_cut.iter().map(|v| if v.is_finite() { *v } else { NO_MATERIAL }).collect(),
         top: 0.0,
         bottom: grid.bottom,
+        cov: Vec::new(),
+        fill: Vec::new(),
     };
+    audit.cut_time_s = cut_time;
+    audit.removed_mm3 = removed;
+    let side_steps = audit.steps_cutting.saturating_sub(audit.steps_plunge).max(1) as f64;
+    if audit_dt_side > 0.0 {
+        audit.ae_model_mm = audit_ae_dt / audit_dt_side;
+        audit.ap_mean_mm = audit_ap_dt / audit_dt_side;
+    }
+    if audit.cut_len_mm > 1e-9 && audit.ap_mean_mm > 1e-9 {
+        audit.ae_volume_mm = audit_side_removed / (audit.ap_mean_mm * audit.cut_len_mm);
+    }
+    if !audit.ae_min_mm.is_finite() {
+        audit.ae_min_mm = 0.0;
+    }
+    audit.window_len_mean_mm = audit_win_len / side_steps;
+    audit.window_cells_mean = audit_win_cells / side_steps;
+    audit.no_own_removal_fraction = audit.steps_cutting_no_own_removal as f64 / audit.steps_cutting.max(1) as f64;
     let stride = (samples.len() / 4000).max(1);
     let samples_ds: Vec<SimSample> = samples
         .iter()
@@ -1793,6 +2101,7 @@ pub fn simulate_segments_prog(
         last_cut: Some(last_cut_grid.downsample_max(256)),
         thermal_damage: tf_damage,
         thermal_fatigue_per_min: tf_per_min,
+        engage_audit: audit,
     })
 }
 
@@ -1963,6 +2272,8 @@ mod tests {
             h: vec![0.0; 2000],
             top: 0.0,
             bottom: -20.0,
+            cov: Vec::new(),
+            fill: Vec::new(),
         };
         for j in 0..10 {
             for i in 60..200 {
@@ -1992,6 +2303,8 @@ mod tests {
             h: vec![-10.0; 2000],
             top: 0.0,
             bottom: -20.0,
+            cov: Vec::new(),
+            fill: Vec::new(),
         };
         assert!(thin_wall_um(&g, 2.95, 0.55, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0).is_none());
         for j in 0..10 {
@@ -2001,6 +2314,74 @@ mod tests {
         }
         let w = thin_wall_um(&g, 2.95, 0.55, (1.0, 0.0), -10.0, -5.0, 10.0, 5000.0, 69000.0).unwrap();
         assert!(w.thickness_mm < 0.5 && w.defl_um <= 500.0 * w.thickness_mm + 1e-9, "{:?}", w);
+    }
+
+    /// 셀이 반경 절입(ae)과 같은 크기여도 지운 체적이 기하(ae × ap × 이동 거리)와 맞아야 한다.
+    /// 셀 중심만 보던 방식은 ae 0.15 mm 에 셀 0.3 mm 이면 한 줄을 통째로 지우거나 안 지워 ae 가 0 또는 2배로 읽혔다.
+    #[test]
+    fn partial_cell_coverage_keeps_the_swept_volume_exact_on_a_coarse_grid() {
+        for (cell, ae) in [(0.4f64, 0.5f64), (0.4, 0.55), (0.3, 0.15), (0.3, 0.1), (0.17, 0.5), (0.5, 0.3), (0.5, 0.75)] {
+            let k = (12.0 / cell).ceil();
+            let y0 = -k * cell;
+            let nx = (90.0 / cell).ceil() as usize;
+            let ny = (24.0 / cell).ceil() as usize + k as usize;
+            let mut h = vec![NO_MATERIAL; nx * ny];
+            for j in 0..ny {
+                if y0 + (j as f64 + 0.5) * cell >= 0.0 {
+                    for i in 0..nx {
+                        h[j * nx + i] = 0.0;
+                    }
+                }
+            }
+            let mut g = StockGrid { x0: -10.0, y0, cell, nx, ny, h, top: 0.0, bottom: -20.0, cov: Vec::new(), fill: Vec::new() };
+            let mut floor_err = vec![f32::NAN; nx * ny];
+            let mut first_cut = vec![f32::NAN; nx * ny];
+            let mut last_cut = vec![f32::NAN; nx * ny];
+            let step = cell / 4.0;
+            let (mut vol_mid, mut zero_steps, mut steps_mid) = (0.0f64, 0usize, 0usize);
+            let mut x = 0.0;
+            let mut first = true;
+            while x <= 60.0 {
+                let rem = g.cut(x, ae - 3.0, -6.0, 3.0, ToolNose::Square, (1.0, 0.0), !first, &mut floor_err, 0.0, (&mut first_cut, &mut last_cut), 0.0);
+                first = false;
+                if (20.0..50.0).contains(&x) {
+                    vol_mid += rem.volume;
+                    steps_mid += 1;
+                    if rem.volume <= 1e-9 {
+                        zero_steps += 1;
+                    }
+                }
+                x += step;
+            }
+            let expect = ae * 6.0 * 30.0;
+            assert!((vol_mid / expect - 1.0).abs() < 0.05, "cell {} ae {}: volume {:.3} vs geometry {:.3}", cell, ae, vol_mid, expect);
+            assert_eq!(zero_steps, 0, "cell {} ae {}: {} of {} steps removed nothing (aliasing)", cell, ae, zero_steps, steps_mid);
+        }
+    }
+
+    /// 같은 자리를 다시 지나가도(이송 방향으로 스텝이 겹침) 부분 점유 셀을 두 번 깎지 않는다.
+    #[test]
+    fn partial_cells_are_not_cut_twice_by_the_same_tool_position() {
+        let cell = 0.4;
+        let k = 30usize;
+        let (nx, ny) = (60usize, 60usize);
+        let mut h = vec![NO_MATERIAL; nx * ny];
+        for j in k..ny {
+            for i in 0..nx {
+                h[j * nx + i] = 0.0;
+            }
+        }
+        let mut g = StockGrid { x0: 0.0, y0: -(k as f64) * cell, cell, nx, ny, h, top: 0.0, bottom: -20.0, cov: Vec::new(), fill: Vec::new() };
+        let mut fe = vec![f32::NAN; nx * ny];
+        let mut a = vec![f32::NAN; nx * ny];
+        let mut b = vec![f32::NAN; nx * ny];
+        let first = g.cut(12.0, 0.5 - 3.0, -6.0, 3.0, ToolNose::Square, (1.0, 0.0), false, &mut fe, 0.0, (&mut a, &mut b), 0.0);
+        let again = g.cut(12.0, 0.5 - 3.0, -6.0, 3.0, ToolNose::Square, (1.0, 0.0), false, &mut fe, 0.0, (&mut a, &mut b), 0.0);
+        assert!(first.volume > 1.0);
+        assert!(again.volume < 1e-6 * first.volume.max(1.0), "second pass removed {} after {}", again.volume, first.volume);
+        let deeper = g.cut(12.0, 0.5 - 3.0, -8.0, 3.0, ToolNose::Square, (1.0, 0.0), false, &mut fe, 0.0, (&mut a, &mut b), 0.0);
+        // 같은 발자국을 2 mm 더 깊이 내려가면 처음 체적(깊이 6 mm)의 1/3 이 더 지워진다
+        assert!((deeper.volume / (first.volume / 3.0) - 1.0).abs() < 0.05, "deeper {} vs first {}", deeper.volume, first.volume);
     }
 }
 

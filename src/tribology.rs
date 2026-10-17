@@ -505,7 +505,9 @@ pub fn contact_friction(ctx: &CutContext, vc: f64, t_int: f64) -> Friction {
     let coat = &ctx.tool.coating;
     let wp = &ctx.wp;
     let p = pair(&ctx.tool, wp, t_int);
-    let mu_pair = coat.friction * wp.adhesion * p.mu_factor;
+    // 절삭 중 겉보기 마찰: 피삭재 기준값 × 작은 코팅 보정 (`pairref`). 예전에는 코팅의 핀온디스크 마찰 × 피삭재 응착 × √응착 보정이라
+    // DLC·다이아몬드가 μ 0.05~0.10 이 되어 알루미늄 정삭·CFRP 의 kc 가 40 % 깎였다 — 실측 코팅 효과는 절삭력 0~6 %
+    let mu_pair = crate::pairref::cutting_mu(ctx);
     let s = |t: f64| wp.jc_thermal(t).max(0.05);
     let soft = (s(t_int) / s(reference_interface_c(wp))).powf(0.25).clamp(0.75, 1.25);
     let over = ((t_int - coat.oxidation_c) / 250.0).clamp(0.0, 1.0);

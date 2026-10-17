@@ -16,8 +16,12 @@ fn preset(name: &str) -> MachiningProfile {
     MachiningProfile::from_preset(&p, &p.name)
 }
 
+/// 채터가 심한 Ti 정삭 시나리오. 판정 로직 시험용이라 감쇠비를 예전 고정값 0.03 으로 직접 넣어 둔다 —
+/// 기본값은 이제 돌출비로 정하므로(L/D 3.5 → 0.045) 그대로 두면 채터 구간이 줄어 이 시나리오가 성립하지 않는다
 fn titanium_finishing() -> MachiningProfile {
     let mut p = preset("티타늄");
+    p.machine.damping_ratio = 0.03;
+    p.machine.damping_user = true;
     p.conditions.cutting_speed_m_min = 66.0;
     p.conditions.feed_rate_mm_min = 298.3;
     p.conditions.feed_per_tooth_mm = 0.0355;
@@ -171,10 +175,102 @@ fn aluminum_profile_within_tolerance_skips_and_saves_logs() {
     assert!(r.report.max_workpiece_defl_um < 1000.0, "thin wall artifact {}", r.report.max_workpiece_defl_um);
     let csv = wearlog::bins_csv(&r.report.wear_log);
     assert_eq!(csv.lines().count(), r.report.wear_log.len() + 1);
-    let summary = serde_json::json!({ "line": r.outcome.report_line, "log": r.log });
-    let files = wearcomp::save_job_files(&dir.join("wear_logs"), &wearcomp::utc_stamp(wearcomp::now_ms()), &p.name, &csv, &summary);
+    // 감사: 경로가 실제로 깎은 ae·절삭 시간·체적이 기하(여유 0.5 mm, 둘레 360 mm)와 맞아야 하고, 맞지 않으면 플래그가 선다
+    let au = &r.audit;
+    for l in endmill_model::simaudit::lines(au) {
+        println!("{}", l);
+    }
+    let geo_t = au.engagement.geometry_cut_time_s.expect("rect_profile 은 기하 기대 시간을 안다");
+    let geo_ae = au.engagement.geometry_ae_mm.expect("rect_profile 은 기하 기대 ae 를 안다");
+    assert!((au.engagement.executed_ae_mm / geo_ae - 1.0).abs() < 0.10, "ae {} vs 기하 {}", au.engagement.executed_ae_mm, geo_ae);
+    assert!((au.engagement.sim_cut_time_s / geo_t - 1.0).abs() < 0.04, "절삭 시간 {} vs 기하 {}", au.engagement.sim_cut_time_s, geo_t);
+    assert!(au.flags.iter().all(|f| !f.id.starts_with("engage_ae_vs") && !f.id.starts_with("engage_time_vs")), "{:?}", au.flags);
+    // 한 작업(약 0.4분)은 길들이기 시상수(약 10분)보다 훨씬 짧아 VB 성장은 길들이기 항이 지배한다 — 로그에 그렇게 남아야 한다
+    assert!(au.wear.breakin_share > 0.5 && au.wear.steady_um_min < au.wear.job_rate_um_min);
+    assert!(au.flags.iter().any(|f| f.id == "wear_breakin_dominates"));
+    // 알루미늄 보정(문헌 대표값): 길들이기 시상수 0.5~5분, 공칭 비에너지 약 1.5 J/mm³(0.9~2.2), 경로 수명·체적은 문헌 대역의 몇 배 안
+    // (이전 기준 수명 240분 앵커는 경로 수명 841분·2,100 cm³ 와 시상수 9.6분을 만들었다)
+    assert!(au.wear.breakin_tau_min > 0.5 && au.wear.breakin_tau_min < 5.0, "길들이기 시상수 {}", au.wear.breakin_tau_min);
+    assert!(au.force.nominal.specific_energy_j_mm3 > 0.9 && au.force.nominal.specific_energy_j_mm3 < 2.2, "공칭 비에너지 {}", au.force.nominal.specific_energy_j_mm3);
+    assert!(au.wear.path_life_min > 30.0 && au.wear.path_life_min < 600.0, "경로 수명 {} min", au.wear.path_life_min);
+    assert!(au.wear.path_volume_cm3 > 100.0 && au.wear.path_volume_cm3 < 1500.0, "경로 수명 체적 {} cm³", au.wear.path_volume_cm3);
+    assert!(au.inputs.kr_floor >= 0.40, "알루미늄 반경비 하한 {}", au.inputs.kr_floor);
+    // 치수 기준 교체(공차 20 µm → VB 약 0.11 mm)가 VB 한계(0.2 mm)보다 먼저 오고, 그 개수가 로그에 따로 남는다
+    assert!(au.wear.vb_dim_mm > 0.0 && au.wear.vb_dim_mm < au.wear.vb_limit_mm);
+    let dim_parts = au.wear.parts_by_dimension.expect("치수 기준 교체 개수");
+    assert!(dim_parts > 0.0 && dim_parts < au.wear.parts_left_p50.unwrap());
+    assert!(au.flags.iter().any(|f| f.id == "wear_dimension_before_vb"));
+    // 축방향 힘, 벽이 만들어지는 순간의 업/다운밀링 법선 힘 (rect_profile 은 전부 업밀링), 채터 파상도 참고 대역
+    assert!(au.force.axial_force_modeled && au.force.executed.fa_mean_n > 0.0 && au.force.executed.fa_peak_n >= au.force.executed.fa_mean_n);
+    assert!(au.deflection.path_down_share < 1e-9, "다운밀링 비율 {}", au.deflection.path_down_share);
+    assert!(au.deflection.wall_down_force_n > 2.0 * au.deflection.wall_up_force_n && au.deflection.wall_down_um > 2.0 * au.deflection.wall_up_um, "{:?}", au.deflection);
+    assert!(au.flags.iter().any(|f| f.id == "deflection_mode_sensitivity"));
+    assert!(au.inputs.runout_um > 0.0 && (au.deflection.runout_overcut_um + 0.5 * au.inputs.runout_um).abs() < 1e-9, "{}", au.deflection.runout_overcut_um);
+    assert!(au.flags.iter().any(|f| f.id == "deflection_runout_overcut_excluded"));
+    if au.dynamics.margin_executed < 1.0 {
+        assert!(au.dynamics.chatter_waviness_low_um > 0.0 && au.dynamics.chatter_waviness_high_um > au.dynamics.chatter_waviness_low_um);
+    }
+    // 조합 기준값: 어떤 피삭재·코팅 그룹의 기준값을 썼고 근거가 약한 항목이 무엇인지 로그에 남는다
+    assert_eq!(au.pair.wp_group, "aluminum");
+    assert!(au.pair.breakin_tau_min < 5.0 && au.pair.breakin_vb_um > 0.0 && (au.pair.vb_limit_mm - au.wear.vb_limit_mm).abs() < 1e-12);
+    assert!(au.flags.iter().any(|f| f.id == "pair_reference_low_confidence"));
+    let summary = r.summary_json();
+    assert!(summary.get("audit").is_some() && summary.get("line").is_some() && summary.get("log").is_some());
+    // test_cuda.bat sets ENDMILL_WEAR_LOG_DIR so the files land in the app's real wear_logs folder.
+    let log_dir = std::env::var_os("ENDMILL_WEAR_LOG_DIR").map(PathBuf::from).unwrap_or_else(|| dir.join("wear_logs"));
+    let files = wearcomp::save_job_files(&log_dir, &wearcomp::utc_stamp(wearcomp::now_ms()), &p.name, &csv, &summary);
     assert_eq!(files.len(), 2);
     assert!(files.iter().all(|f| std::path::Path::new(f).exists()));
+}
+
+/// 격자 셀이 스톡 여유보다 커지는 정삭 프리셋(스테인리스·CFRP)도 rect_profile 의 ae·절삭 시간·제거 체적이 기하와 맞아야 한다.
+/// 이전에는 셀 중심만 보는 이산화 때문에 ae 가 기하의 0.5~0.63배, 알루미늄 황삭은 2배(절삭 시간 절반)로 읽혔고,
+/// 소재가 공구 절입보다 얇은 관통 절삭(CFRP 6 mm 판 / ap 10 mm)은 ap 를 10 mm 로 읽어 ae 가 0.6배로 읽혔다.
+/// (볼 노즈는 벽 근처에서 선단 곡면 때문에 전체 깊이를 깎지 않으므로 이 기하 기대가 맞지 않아 제외한다.)
+#[test]
+fn profile_engagement_matches_the_stock_allowance_even_when_the_grid_is_coarse() {
+    for name in ["알루미늄 황삭", "알루미늄 정삭", "티타늄", "스테인리스", "탄소강", "CFRP"] {
+        let p = preset(name);
+        assert!(!matches!(p.endmill_setting.nose, endmill_model::profile::ToolNose::Ball), "{}: 볼 노즈는 이 기하 기대가 맞지 않는다", name);
+        let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, None);
+        let (_, rep, _) = endmill_model::viewport::build_report_prog(&p, "rect_profile", &ctx, &mut |_| true).unwrap();
+        let au = &rep.engage_audit;
+        let w = &p.workpiece_setup;
+        let ae_geo = w.stock_allowance_mm.min(p.endmill_setting.diameter_mm / 2.0);
+        let len = 2.0 * (w.width_mm + w.height_mm);
+        let t_geo = len / (p.conditions.feed_rate_mm_min / 60.0);
+        let ap_geo = p.conditions.axial_doc_mm.min(w.thickness_mm);
+        let v_geo = ae_geo * ap_geo * len;
+        assert!((au.ap_mean_mm / ap_geo - 1.0).abs() < 0.03, "{}: 맞물림 깊이 {:.2} vs 소재 두께로 제한한 {:.2}", name, au.ap_mean_mm, ap_geo);
+        println!(
+            "[ENGAGE] {:<12} 셀 {:.3} mm (여유 {:.1}칸) ae {:.3}/{:.3} mm · 절삭 {:.1}/{:.1} s · 제거 {:.0}/{:.0} mm³ · 자체 제거 0 스텝 {}",
+            name, au.cell_mm, au.allowance_cells, au.ae_model_mm, ae_geo, au.cut_time_s, t_geo, au.removed_mm3, v_geo, au.steps_cutting_no_own_removal
+        );
+        assert!((au.ae_model_mm / ae_geo - 1.0).abs() < 0.08, "{}: ae {:.3} vs 기하 {:.3} (셀 {:.3})", name, au.ae_model_mm, ae_geo, au.cell_mm);
+        // 사각 외곽의 모서리에서는 공구가 둘레보다 조금 더 오래 소재에 닿는다 (실제 접촉 길이가 둘레보다 길다)
+        assert!((au.cut_time_s / t_geo - 1.0).abs() < 0.05, "{}: 절삭 시간 {:.2} vs 기하 {:.2}", name, au.cut_time_s, t_geo);
+        assert!((au.removed_mm3 / v_geo - 1.0).abs() < 0.06, "{}: 제거 {:.0} vs 기하 {:.0}", name, au.removed_mm3, v_geo);
+        assert_eq!(au.steps_cutting_no_own_removal, 0, "{}", name);
+    }
+}
+
+/// 볼 노즈는 벽 근처에서 선단 곡면 때문에 스톡 여유를 전체 깊이에서 깎지 않으므로 ae 의 기하 기대값이 맞지 않는다.
+/// 감사는 이를 '신뢰불가' 로 오판하지 말고 기대값을 세우지 않은 채 정보 플래그로 알려야 한다 (길이·시간 대조는 그대로).
+#[test]
+fn audit_does_not_expect_the_straight_wall_allowance_from_a_ball_nose() {
+    let p = preset("금형강");
+    assert!(matches!(p.endmill_setting.nose, endmill_model::profile::ToolNose::Ball));
+    let dir = temp_dir("ball");
+    let sds = SdsStore::open(&dir.join("sds"));
+    let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, Some(&sds));
+    let (_, rep, _) = endmill_model::viewport::build_report_prog(&p, "rect_profile", &ctx, &mut |_| true).unwrap();
+    let log = wearcomp::analyze_job(&p, &ctx, &rep, None, &sds);
+    let au = endmill_model::simaudit::build(&p, &ctx, &rep, &log, None, "rect_profile");
+    assert!(au.engagement.geometry_ae_mm.is_none() && au.engagement.geometry_cut_time_s.is_some());
+    assert!(au.flags.iter().any(|f| f.id == "engage_geometry_ball_nose" && f.severity == 0), "{:?}", au.flags);
+    assert!(au.flags.iter().all(|f| f.id != "engage_ae_vs_geometry"), "{:?}", au.flags);
+    let geo_t = au.engagement.geometry_cut_time_s.unwrap();
+    assert!((au.engagement.sim_cut_time_s / geo_t - 1.0).abs() < 0.06, "절삭 시간 {} vs 기하 {}", au.engagement.sim_cut_time_s, geo_t);
 }
 
 #[test]
@@ -229,7 +325,11 @@ fn ttm_and_laya_models_are_actually_used_in_the_job() {
 
 #[test]
 fn titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked() {
-    let p = titanium_finishing();
+    // Ti 반경력을 실측 계수(Krc/Ktc 0.37, Kte ×1.7, Kre/Kte 1.9)로 바로잡자 1차 벽 휨과 잔여량이 커져 분할 패스의 칩이 최소 칩 두께를
+    // 넘게 되었다 — '모든 절삭이 막힌' 판정 시나리오를 유지하려고 이송을 0.75 배로 줄인다
+    let mut p = titanium_finishing();
+    p.conditions.feed_per_tooth_mm *= 0.75;
+    p.conditions.feed_rate_mm_min *= 0.75;
     let dir = temp_dir("ti-fin");
     let mut sds = SdsStore::open(&dir.join("sds"));
     let r = wearcomp::run_pipeline(&p, "pocket_zigzag", &mut sds, None, None, &CompOptions::default(), None, None, &mut |_, _| true).unwrap();
@@ -242,6 +342,7 @@ fn titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked() {
     assert!(d.zones.iter().filter(|z| z.needs).all(|z| (z.wear_bias_um - d.radial_used_um).abs() < 1e-9 && z.wear_bias_um > 0.0));
     assert!(d.zones.iter().filter(|z| z.needs).all(|z| z.execute.h_max_um.min(z.fresh.h_max_um) >= d.h_min_um - 1e-9));
     let chip = d.gates.iter().find(|g| g.id == "min_chip").unwrap();
+    println!("[GATES] {:?}", d.gates.iter().map(|g| format!("{} s{} {:?} v{:.2}/{:.2} {}", g.id, g.severity, g.blocks, g.value, g.limit, g.message.chars().take(160).collect::<String>())).collect::<Vec<_>>());
     assert!(chip.blocks.contains(&CompAction::ExecuteReduced) && chip.blocks.contains(&CompAction::Split) && !chip.blocks.contains(&CompAction::Execute));
     let tol = d.residual.tolerance_um;
     assert!(d.zones.iter().filter(|z| z.needs).all(|z| {
@@ -261,6 +362,10 @@ fn titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked() {
         d.residual.p90_um
     );
     assert!(o.after_all_p50_um <= o.after_p50_um + 1e-9);
+    // 마모된 공구 → 공구 교체 제안: 새 공구 1회 패스의 휨이 공차의 절반 안이어야 하므로 이 하위 시나리오는 공차를 ±20 µm 로 둔다
+    // (Ti 반경력을 실측 계수로 바로잡은 뒤 1회 패스 휨이 약 7 µm 라 ±10 µm 에서는 교체가 선택지에서 빠지는 것이 맞다)
+    let mut p = p.clone();
+    p.workpiece_setup.tolerance_mm = Some(0.02);
     let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, None);
     let mut opts = CompOptions::default();
     opts.measured_radial_um = Some(40.0);
@@ -374,7 +479,9 @@ fn air_code_that_collides_with_coolant_is_never_emitted() {
 
 #[test]
 fn fresh_tool_single_pass_is_not_offered_on_slender_walls() {
-    let p = titanium_finishing();
+    // 두꺼운 벽에서 공구 교체가 나오려면 새 공구 1회 패스 휨이 공차의 절반 안이어야 한다 — Ti 반경력 보정 뒤 약 7 µm 라 공차 ±20 µm 로 둔다
+    let mut p = titanium_finishing();
+    p.workpiece_setup.tolerance_mm = Some(0.02);
     let dir = temp_dir("slender");
     let sds = SdsStore::open(&dir.join("sds"));
     let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, Some(&sds));
@@ -383,7 +490,9 @@ fn fresh_tool_single_pass_is_not_offered_on_slender_walls() {
     let mut opts = CompOptions::default();
     opts.measured_radial_um = Some(40.0);
     let stocky = wearcomp::evaluate(&p, &ctx, &rep, &log, &opts, None);
-    assert_eq!(stocky.rule_action, CompAction::ToolChange);
+    let gates: Vec<String> = stocky.gates.iter().map(|g| format!("{} s{} {:?} v{:.2}/{:.2}", g.id, g.severity, g.blocks, g.value, g.limit)).collect();
+    println!("[GATES] {:?} allowed {:?} reasons {:?}", gates, stocky.allowed, stocky.reasons);
+    assert_eq!(stocky.rule_action, CompAction::ToolChange, "{:?} {:?}", stocky.reasons, gates);
     let mut slender = rep.clone();
     for s in slender.seg_walls.iter_mut() {
         s.wall_mm = s.ap_mm / 20.0;
@@ -558,6 +667,79 @@ fn runout_is_averaged_over_a_revolution_in_down_and_up_milling() {
     }
 }
 
+/// `runout_um` 은 날끝 총 흔들림(TIR) 이다 — 편심 e = TIR/2, 2날 공구에서 날 사이 칩 두께 차이는 2e = TIR (Kline & DeVor 1983).
+/// 슬롯(전체 맞물림)의 최대 칩 두께는 fz + TIR 이어야 한다. 이전에는 같은 값을 편심으로 읽어 fz + 2·TIR 이 됐다
+/// (프리셋 TIR 10 µm → 20 µm 과대, 피크/평균 힘 4.3).
+#[test]
+fn runout_um_is_total_indicated_runout_not_eccentricity() {
+    let p = preset("알루미늄 황삭");
+    assert!(!matches!(p.endmill_setting.nose, endmill_model::profile::ToolNose::Ball), "볼 노즈는 칩 두께가 sin κ 로 줄어 이 기하 기대가 맞지 않는다");
+    let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, None);
+    let rpm = p.conditions.spindle_rpm as f64;
+    let co = physics::cutting_coeffs_at(&ctx, 200.0, 0.03);
+    let d = ctx.tool.diameter_mm;
+    let slot = Engagement::side(2.0, d, d, false);
+    let fz = 0.05;
+    let mut two = ctx.tool.clone();
+    two.flutes = 2;
+    two.runout_um = 0.0;
+    assert_eq!(two.runout_ecc_mm(), 0.0);
+    let f0 = physics::mechanistic_forces(&two, &co, fz, rpm, &slot, 180, 12);
+    assert!((f0.h_max_mm - fz).abs() < 0.02 * fz, "런아웃 0: h_max {} vs fz {}", f0.h_max_mm, fz);
+    for tir_um in [4.0, 10.0, 20.0] {
+        let mut t = two.clone();
+        t.runout_um = tir_um;
+        assert!((t.runout_ecc_mm() * 1000.0 - tir_um / 2.0).abs() < 1e-12, "편심은 TIR 의 절반");
+        let f = physics::mechanistic_forces(&t, &co, fz, rpm, &slot, 180, 12);
+        let expect = fz + tir_um / 1000.0;
+        assert!((f.h_max_mm - expect).abs() < 0.03 * expect, "TIR {} µm: h_max {} vs fz+TIR {}", tir_um, f.h_max_mm, expect);
+        // 평균 칩 두께는 날 사이 재분배일 뿐이므로 합 힘은 TIR 의 크기만큼 크게 달라지지 않는다 (한 바퀴 평균)
+        assert!((f.f_res_mean - f0.f_res_mean).abs() < 0.25 * f0.f_res_mean, "TIR {} µm: 평균 힘 {} vs 런아웃 0 {}", tir_um, f.f_res_mean, f0.f_res_mean);
+    }
+}
+
+/// 축방향(공구를 뽑아 올리는) 힘: 헬릭스 경사 절삭 항 (Kac/Ktc = 0.35·tan β) + 날끝 항. 이전에는 계산하지 않았다.
+#[test]
+fn axial_force_is_positive_follows_depth_of_cut_and_helix() {
+    let p = preset("알루미늄 황삭");
+    let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, None);
+    let rpm = p.conditions.spindle_rpm as f64;
+    let co = physics::cutting_coeffs_at(&ctx, 200.0, 0.03);
+    assert!(co.kac_ratio > 0.0 && co.kae > 0.0);
+    let d = ctx.tool.diameter_mm;
+    let fz = p.conditions.feed_per_tooth_mm;
+    let f1 = physics::mechanistic_forces(&ctx.tool, &co, fz, rpm, &Engagement::side(3.0, 0.5 * d, d, false), 96, 12);
+    let f2 = physics::mechanistic_forces(&ctx.tool, &co, fz, rpm, &Engagement::side(6.0, 0.5 * d, d, false), 96, 12);
+    assert!(f1.fa_mean > 0.0 && f1.fa_peak >= f1.fa_mean, "{} {}", f1.fa_mean, f1.fa_peak);
+    // 한 바퀴 평균은 슬라이스마다 독립이라 축방향 절입에 정확히 비례한다
+    assert!((f2.fa_mean / f1.fa_mean - 2.0).abs() < 0.1, "축력은 축방향 절입에 비례: {} → {}", f1.fa_mean, f2.fa_mean);
+    // 축력은 접선력의 일부다: Kac/Ktc ≤ 0.6, Kae = 0.3·Kte
+    let ft_mean = f1.torque_mean_nm * 1000.0 / (0.5 * d);
+    assert!(f1.fa_mean < 0.7 * ft_mean, "축력 {} vs 접선력 {}", f1.fa_mean, ft_mean);
+    let mut ctx0 = ctx.clone();
+    ctx0.tool.helix_deg = 0.0;
+    let co0 = physics::cutting_coeffs_at(&ctx0, 200.0, 0.03);
+    assert_eq!(co0.kac_ratio, 0.0, "헬릭스 0 이면 경사 절삭 항이 없다");
+    let f0 = physics::mechanistic_forces(&ctx0.tool, &co0, fz, rpm, &Engagement::side(3.0, 0.5 * d, d, false), 96, 12);
+    assert!(f0.fa_mean > 0.0 && f0.fa_mean < 0.6 * f1.fa_mean, "헬릭스 0: {} vs {}", f0.fa_mean, f1.fa_mean);
+}
+
+/// 알루미늄 직교절삭 칩 두께 28 µm 의 단위 폭당 접선력은 MPM 교차검증(25~36 N/mm)과 AA2024 직교 실측(1.4~1.9 J/mm³ → 41~55 N/mm)
+/// 을 모두 담는 대역(28~55 N/mm)에 있어야 하고, 반경/접선 비는 엔드밀 실측(Krc/Ktc 0.33~0.52)과 맞아야 한다.
+/// (kc11 700 → 600, kr 하한 0.15 → 0.40 으로 보정 — Rubeo & Schmitz 2016 외 6세트 엔드밀 계수)
+#[test]
+fn aluminum_orthogonal_force_sits_between_mpm_and_measured_specific_energy() {
+    let p = preset("알루미늄 황삭");
+    let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, None);
+    assert_eq!(ctx.wp.key, "aluminum");
+    let h = 0.028;
+    let co = physics::cutting_coeffs_at(&ctx, p.conditions.cutting_speed_m_min, h);
+    let (ft, fr) = physics::slice_forces(&co, h, 1.0, 0.0, 0.0);
+    assert!(ft > 28.0 && ft < 55.0, "Ft {} N/mm", ft);
+    assert!(fr / ft > 0.33 && fr / ft < 0.7, "Fr/Ft {}", fr / ft);
+    assert!(co.kr >= 0.40, "kr {}", co.kr);
+}
+
 #[test]
 fn cancelling_the_simulation_stops_early() {
     let p = preset("탄소강");
@@ -602,6 +784,7 @@ fn wear_log_resampling_conserves_volume_and_orders_time() {
             wp_c: 25.0,
             seg0: i,
             seg1: i,
+            ..Default::default()
         });
     }
     let log = wearlog::analyze(&bins, &[1.0, 2.0, 3.0], None, None, &[], 0.3);

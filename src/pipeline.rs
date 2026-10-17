@@ -1042,6 +1042,7 @@ impl Workspace {
         }
         if let Some(z) = zeta {
             m.damping_ratio = z;
+            m.damping_user = true;
         }
         self.profile.modified_at = format!("{}", now_ms() / 1000);
         self.invalidate_process();

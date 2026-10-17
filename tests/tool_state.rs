@@ -15,6 +15,16 @@ fn preset(name: &str) -> MachiningProfile {
     MachiningProfile::from_preset(&p, &p.name)
 }
 
+/// 공구 교체 장부(인계·과금) 시나리오용 알루미늄 황삭. 이 시험들은 2차 보정으로 공구 교체가 허용되는 경우를 다루므로
+/// 새 공구 1회 패스가 안정하도록 감쇠비를 0.04 로 직접 넣는다 — 돌출비 기본값(Ø6 L/D 6 → 0.024)과 문헌 마찰로 올린 kc(+7 %)에서는
+/// 새 공구 패스의 채터 여유가 1 아래(0.92)로 내려가 공구 교체가 선택지에서 빠지고 판정이 보류가 된다 (물리적으로는 맞는 판정)
+fn al_tool_change_case() -> MachiningProfile {
+    let mut p = preset("알루미늄 황삭");
+    p.machine.damping_ratio = 0.04;
+    p.machine.damping_user = true;
+    p
+}
+
 fn temp_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("endmill-toolstate-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -370,7 +380,7 @@ fn second_pass_wear_is_charged_reverted_on_replan_and_chained_replans_keep_the_r
 
 #[test]
 fn tool_change_waits_for_reset_then_charges_the_new_tool() {
-    let p = preset("알루미늄 황삭");
+    let p = al_tool_change_case();
     let dir = temp_dir("change");
     let mut store = Store::open(&dir.join("library")).unwrap();
     let mut sds = SdsStore::open(&dir.join("sds"));
@@ -386,7 +396,9 @@ fn tool_change_waits_for_reset_then_charges_the_new_tool() {
     let gate = j2.comp.draft.gates.iter().find(|g| g.id == "thermal_fatigue").expect("thermal fatigue gate");
     assert_eq!(gate.severity, 2);
     assert!(gate.blocks.contains(&CompAction::Split) && !gate.blocks.contains(&CompAction::ToolChange));
-    assert_eq!(j2.comp.decision.final_action, CompAction::ToolChange, "{:?}", j2.comp.draft.reasons);
+    let gates: Vec<String> = j2.comp.draft.gates.iter().map(|g| format!("{} s{} {:?}", g.id, g.severity, g.blocks)).collect();
+    println!("[GATES] {:?} allowed {:?}", gates, j2.comp.draft.allowed);
+    assert_eq!(j2.comp.decision.final_action, CompAction::ToolChange, "{:?} {:?}", j2.comp.draft.reasons, gates);
     assert!(j2.comp.vb_after_mm < 0.5 * limit, "the new tool starts its second pass fresh: {}", j2.comp.vb_after_mm);
     assert!(j2.comp.samples.first().map(|s| s.vb_mm < 1e-9).unwrap_or(false), "second-pass samples must start from a new edge");
     assert!(j2.comp.vb_after_mm < j2.comp.draft.vb_now_mm, "{} vs worn {}", j2.comp.vb_after_mm, j2.comp.draft.vb_now_mm);
@@ -460,7 +472,7 @@ fn presets_keep_separate_tools_and_spec_changes_retire_the_old_one() {
 
 #[test]
 fn a_spec_change_while_a_tool_change_is_pending_charges_that_second_pass_to_the_new_tool() {
-    let p = preset("알루미늄 황삭");
+    let p = al_tool_change_case();
     let dir = temp_dir("pendingspec");
     let mut store = Store::open(&dir.join("library")).unwrap();
     let mut sds = SdsStore::open(&dir.join("sds"));
@@ -491,7 +503,7 @@ fn a_spec_change_while_a_tool_change_is_pending_charges_that_second_pass_to_the_
 
 #[test]
 fn a_flute_count_change_drops_a_pending_second_pass_that_no_longer_fits() {
-    let p = preset("알루미늄 황삭");
+    let p = al_tool_change_case();
     let dir = temp_dir("pendingflutes");
     let mut store = Store::open(&dir.join("library")).unwrap();
     let mut sds = SdsStore::open(&dir.join("sds"));
@@ -519,7 +531,7 @@ fn a_flute_count_change_drops_a_pending_second_pass_that_no_longer_fits() {
 
 #[test]
 fn a_reset_during_a_tool_change_job_hands_its_second_pass_to_the_new_tool() {
-    let p = preset("알루미늄 황삭");
+    let p = al_tool_change_case();
     let dir = temp_dir("midreset");
     let mut store = Store::open(&dir.join("library")).unwrap();
     let mut sds = SdsStore::open(&dir.join("sds"));
@@ -544,7 +556,7 @@ fn a_reset_during_a_tool_change_job_hands_its_second_pass_to_the_new_tool() {
 
 #[test]
 fn replanning_after_a_reset_charges_only_the_new_second_pass_to_the_new_tool() {
-    let p = preset("알루미늄 황삭");
+    let p = al_tool_change_case();
     let dir = temp_dir("afterreset");
     let mut store = Store::open(&dir.join("library")).unwrap();
     let mut sds = SdsStore::open(&dir.join("sds"));
@@ -844,9 +856,15 @@ fn the_path_factor_ignores_break_in_so_an_early_tool_change_forecast_holds() {
         parts += 1;
         ctx.tool.flank_wear_mm = r.vb_end_mm;
     }
+    // 길들이기가 사라지는 첫 부품들(시상수 2분, 부품당 절삭 약 2.8분) 사이에서 정상 경로계수가 흔들리면 안 된다.
+    // 그 뒤의 완만한 감소는 플랭크 마모가 커지며 공정감쇠가 늘어 채터 마모 배수가 줄어드는 실제 효과라 따로 본다
+    let window = &ks[..ks.len().min(4)];
+    let wmin = window.iter().cloned().fold(f64::INFINITY, f64::min);
+    let wmax = window.iter().cloned().fold(0.0, f64::max);
+    assert!(wmax / wmin < 1.02, "the steady path factor must not drift as break-in fades: {:?}", ks);
     let kmin = ks.iter().cloned().fold(f64::INFINITY, f64::min);
     let kmax = ks.iter().cloned().fold(0.0, f64::max);
-    assert!(kmax / kmin < 1.05, "the steady path factor must not drift as break-in fades: {:?}", ks);
+    assert!(kmax / kmin < 1.12, "wear-dependent drift stays small over the tool life: {:?}", ks);
     let (r0, segs0) = first.unwrap();
     let opts = CompOptions::default();
     let log = wearcomp::analyze_job(&p, &ctx0, &r0, None, &sds);
@@ -1033,7 +1051,10 @@ fn coating_breakthrough_moves_an_incompatible_coating_toward_the_substrate() {
     assert_eq!(dlc0.coating_blend, 1.0);
     assert!(dlc1.coating_exposure > 0.8 && dlc1.coating_blend < 0.7, "exposure {} blend {}", dlc1.coating_exposure, dlc1.coating_blend);
     let altin = rate_at(WorkpieceMaterial::CarbonSteel, "AlTiN", 0.1);
-    assert!(altin.coating_exposure > 0.8 && (altin.coating_blend - 1.0).abs() < 1e-12, "a compatible coating keeps its calibrated benefit");
+    // 노출률 = 1 − (코팅 두께 / sin 여유각) / 플랭크 폭 — 탄소강 기본 여유각 8° 에서 3 µm 코팅은 21.6 µm 이 지나야 벗겨진다
+    let strip_um = 3.0 / (8f64).to_radians().sin();
+    assert!((altin.coating_exposure - (1.0 - strip_um / 100.0)).abs() < 1e-6, "exposure {}", altin.coating_exposure);
+    assert!(altin.coating_exposure > 0.75 && (altin.coating_blend - 1.0).abs() < 1e-12, "a compatible coating keeps its calibrated benefit");
     let diamond = rate_at(WorkpieceMaterial::CarbonSteel, "Diamond", 0.1);
     assert!((diamond.coating_blend - 1.0).abs() < 1e-12, "a thick CVD diamond layer delaminates instead of wearing through");
     assert!(toolwear::exposed_wear_rate(3.0, 1.0, 0.5) < 1.6 && toolwear::exposed_wear_rate(3.0, 1.0, 0.0) == 3.0);

@@ -3327,6 +3327,8 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         let s = endmill_model::toolwear::summarize_state(&row.field_for(&ctx.tool), &ctx.tool, p.conditions.axial_doc_mm, ctx.vb_limit_mm(), row.thermal_damage, row.life_used_max);
         tool_brief(row, start_vb, &s)
     });
+    // 시뮬레이션 감사: 공칭 해석 vs 경로, 격자·결합 정합성, 길들이기/정상 마모 분해, 동역학·열·휨 분해와 자동 플래그
+    let audit = endmill_model::simaudit::build(&p, &ctx, &report, &log, Some(&comp), &pattern);
     let summary = serde_json::json!({
         "stamp": stamp,
         "profile": p.name,
@@ -3340,6 +3342,7 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         "residual": comp.draft.residual,
         "zones": comp.draft.zones,
         "after": { "p50_um": comp.after_p50_um, "min_um": comp.after_min_um, "max_um": comp.after_max_um, "all_p50_um": comp.after_all_p50_um, "p50_basis": "worst_zone" },
+        "audit": audit,
         "wear_log": log,
         "models": { "ttm": models_info.ttm, "laya": models_info.laya },
         "refs": refs,

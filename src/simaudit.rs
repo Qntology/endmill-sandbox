@@ -1,0 +1,1358 @@
+//! 시뮬레이션 감사 — 로그에 찍힌 수치가 서로 맞는지, 모델이 어디까지 믿을 만한지를 한 곳에 모은다.
+//!
+//! 저장되는 곳: `wear_logs/*.json` 의 `audit` 키, 테스트 로그의 `[AUDIT]` 줄 (`lines`).
+//! 이 모듈은 값을 바꾸지 않는다. 이미 계산된 결과를 다시 읽어
+//!  1) 공칭 해석(프리셋 ae)과 실제 경로 시뮬레이션(경로가 실제로 깎는 ae)의 조건 차이,
+//!  2) 격자 이산화·결합 판독이 기하와 맞는지 (체적·시간·ae),
+//!  3) VB 성장 중 길들이기 항과 정상 마모 항의 비율, 교체 개수 계산의 근거,
+//!  4) 힘·열·동역학·휨 각각의 분해 값과 이 모델이 아직 다루지 않는 항,
+//! 을 나란히 놓고, 어긋나는 곳을 `flags` 로 남긴다. 임계값은 상수로 두고 근거를 주석으로 적는다.
+use crate::loadsim::{EngageAudit, LoadSimReport};
+use crate::physics::{self, CutAnalysis, CutContext, Engagement, ThermalBody};
+use crate::profile::{MachiningProfile, ToolNose};
+use crate::wearcomp::CompOutcome;
+use crate::wearlog::WearLog;
+use serde::{Deserialize, Serialize};
+
+pub const AUDIT_VERSION: u32 = 2;
+
+/// 경로 ae 를 격자가 읽은 값과 기하 기대값(알 수 있는 패턴만)이 이 비율 이상 다르면 주의
+pub const AE_GEOMETRY_TOL: f64 = 0.15;
+/// 절삭 시간이 기하 기대(길이/이송)와 이 비율 이상 다르면 주의
+pub const TIME_GEOMETRY_TOL: f64 = 0.06;
+/// 모델에 들어간 ae(스텝별 판독)와 체적으로 읽은 평균 ae 가 이 비율 이상 다르면 주의
+pub const AE_READ_TOL: f64 = 0.12;
+/// 격자 셀이 실행 ae 의 이 배수를 넘으면 경계 셀 면적 가중 근사의 오차가 단위 시험 범위(±5%)를 벗어날 수 있다
+pub const MAX_CELL_OVER_AE: f64 = 3.0;
+/// VB 성장 중 길들이기 항 비율이 이 값을 넘으면 '마모 속도' 로그를 정상 마모율로 읽으면 안 된다
+pub const BREAKIN_SHARE_WARN: f64 = 0.5;
+/// 교체 개수(물리 궤적)와 작업 평균 마모율로 단순 환산한 개수가 이 배수 이상 다르면 설명이 필요하다
+pub const PARTS_RATIO_WARN: f64 = 3.0;
+/// ZOA(영차 근사) 채터 한계는 반경 절입이 이 비율(ae/D)보다 작고 날 통과 주파수가 고유진동수에 가까우면 flip(주기 2배) 로브를
+/// 놓친다 (Altintas·Stépán·Merdol·Dombovari 2008: ae > D/4 에서 충분)
+pub const ZOA_MIN_IMMERSION: f64 = 0.25;
+/// 비에너지(절삭동력/MRR) 허용 띠 — 금속 절삭 일반 범위 (J/mm³)
+pub const SPECIFIC_ENERGY_BAND: (f64, f64) = (0.3, 8.0);
+/// 평균 힘 대비 피크 힘이 이 값을 넘으면 날이 한 개씩만 물리는 단속이 강하다
+pub const PEAK_OVER_MEAN_INFO: f64 = 5.0;
+/// 평균 칩 두께가 이보다 얇으면 크기 효과(Kienzle h^-mc)와 날끝 밀림 몫 때문에 비에너지가 일반 범위 위로 올라가는 것이 정상이다 (µm)
+pub const SMALL_CHIP_UM: f64 = 15.0;
+/// 초경 엔드밀 길들이기(초기 마모) 시상수의 문헌 범위 (분). 시상수는 피삭재별 기준값(`WorkpieceProps::breakin_tau_min`)이다
+pub const BREAKIN_TAU_BAND: (f64, f64) = (0.5, 5.0);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditFlag {
+    pub id: String,
+    /// 0 정보 · 1 주의 · 2 이 항목의 예측을 그대로 믿으면 안 됨
+    pub severity: u8,
+    pub value: f64,
+    pub expected: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditInputs {
+    pub profile: String,
+    pub pattern: String,
+    pub material: String,
+    pub stock_mm: [f64; 3],
+    pub allowance_mm: f64,
+    pub tolerance_um: f64,
+    pub d_mm: f64,
+    pub flutes: u32,
+    pub helix_deg: f64,
+    pub loc_mm: f64,
+    pub oal_mm: f64,
+    pub shank_mm: f64,
+    pub stickout_mm: f64,
+    pub stickout_over_d: f64,
+    pub rake_deg: f64,
+    pub clearance_deg: f64,
+    pub edge_um: f64,
+    pub core_ratio: f64,
+    /// 입력된 런아웃 TIR (µm)
+    pub runout_um: f64,
+    /// 모델이 쓰는 편심 e = TIR/2 (µm) — 2날 공구의 날 사이 칩 두께 오프셋은 2e = TIR
+    pub runout_ecc_um: f64,
+    /// 이 소재의 반경비(kr) 하한
+    pub kr_floor: f64,
+    pub coating: String,
+    pub coating_um: f64,
+    pub rpm: f64,
+    pub vc_m_min: f64,
+    pub feed_mm_min: f64,
+    pub fz_mm: f64,
+    pub ap_mm: f64,
+    pub ae_planned_mm: f64,
+    pub holder_k_n_per_um: f64,
+    pub damping_ratio: f64,
+    pub holder_mass_kg: f64,
+    pub max_power_kw: f64,
+    pub frf_measured: bool,
+    pub coolant: String,
+    pub coolant_flow_l_min: f64,
+    pub coolant_c: f64,
+    pub ambient_c: f64,
+    pub humidity_pct: f64,
+    /// 적용된 보정 계수 [동력, 마모, 휨, 온도]
+    pub calibration: [f64; 4],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditEngagement {
+    pub planned_ae_mm: f64,
+    pub planned_ae_over_d: f64,
+    pub executed_ae_mm: f64,
+    pub executed_ae_by_volume_mm: f64,
+    pub executed_ae_over_d: f64,
+    pub executed_engage_deg: f64,
+    /// 패턴에서 기하로 알 수 있을 때만 (현재 rect_profile)
+    pub geometry_ae_mm: Option<f64>,
+    pub geometry_cut_len_mm: Option<f64>,
+    pub geometry_cut_time_s: Option<f64>,
+    pub sim_cut_len_mm: f64,
+    pub sim_cut_time_s: f64,
+    pub sim_removed_mm3: f64,
+    pub total_time_s: f64,
+    /// 격자 셀 / 실행 ae — 1 보다 크면 ae 가 셀 한 칸보다 좁아 경계 셀 면적 가중(상자 필터) 근사에 의존한다
+    pub cell_over_ae: f64,
+    pub grid: EngageAudit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ForceView {
+    pub ae_mm: f64,
+    pub engage_deg: f64,
+    pub f_mean_n: f64,
+    pub f_peak_n: f64,
+    pub peak_over_mean: f64,
+    pub power_kw: f64,
+    pub specific_energy_j_mm3: f64,
+    pub h_mean_um: f64,
+    pub h_max_um: f64,
+    pub teeth_in_cut: f64,
+    /// 날끝 문지름(kte)·플랭크 접촉이 접선력에서 차지하는 비율
+    pub edge_share: f64,
+    pub flank_share_radial: f64,
+    pub ploughing_share: f64,
+    /// 축방향(공구를 뽑아 올리는) 힘 평균·피크 (N)
+    pub fa_mean_n: f64,
+    pub fa_peak_n: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditForce {
+    /// 프리셋 조건(ae 그대로)의 공칭 해석
+    pub nominal: ForceView,
+    /// 경로가 실제로 깎은 ae 로 같은 모델을 다시 돌린 값
+    pub executed: ForceView,
+    /// 경로 시뮬레이션 빈의 시간 가중 평균 힘 / 최대 피크
+    pub path_mean_n: f64,
+    pub path_peak_n: f64,
+    pub kc11_eff: f64,
+    pub mc: f64,
+    pub kr: f64,
+    pub kte_n_mm: f64,
+    pub kre_n_mm: f64,
+    pub mu: f64,
+    pub shear_deg: f64,
+    pub softening: f64,
+    pub strain_rate_per_s: f64,
+    /// 축방향 힘 항(kac_ratio, kae)을 계산하는가
+    pub axial_force_modeled: bool,
+    pub kac_ratio: f64,
+    pub kae_n_mm: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditThermal {
+    pub interface_dry_c: f64,
+    pub interface_wet_c: f64,
+    pub executed_interface_c: f64,
+    pub coolant_reduction_pct: f64,
+    pub cooling_effectiveness: f64,
+    pub h_film_w_m2k: f64,
+    pub h_eff_w_m2k: f64,
+    pub boiling: String,
+    pub chip_conduction_w_m2k: f64,
+    pub contact_length_mm: f64,
+    pub transient_factor: f64,
+    pub barrier_interface: f64,
+    pub barrier_tool_heat: f64,
+    pub tool_body_c: f64,
+    pub tool_body_rise_k: f64,
+    pub tool_radial_growth_um: f64,
+    pub engagement_ms: f64,
+    pub workpiece_heat_share: f64,
+    pub path_temp_mean_c: f64,
+    pub path_temp_max_c: f64,
+    pub path_temp_first_bin_c: f64,
+    pub path_temp_last_bin_c: f64,
+    pub wp_end_c: f64,
+    /// 공구 몸체 온도를 시간에 따라 적분하는가 (현재는 정상상태 한 값)
+    pub tool_body_time_resolved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditWear {
+    pub vb_start_mm: f64,
+    pub vb_end_mm: f64,
+    pub vb_limit_mm: f64,
+    pub job_cut_min: f64,
+    /// 작업 전체 평균 VB 속도 (정상 + 길들이기)
+    pub job_rate_um_min: f64,
+    pub steady_um_min: f64,
+    pub breakin_avg_um_min: f64,
+    pub breakin_share: f64,
+    pub breakin_vb_mm: f64,
+    pub breakin_tau_min: f64,
+    /// 이 작업이 끝난 시점에 길들이기 항이 얼마나 소진됐는가 (0~1)
+    pub breakin_done: f64,
+    pub kappa: f64,
+    pub nominal_rate_um_min: f64,
+    pub nominal_life_min: f64,
+    pub nominal_linear_life_min: f64,
+    pub path_factor: f64,
+    pub path_life_min: f64,
+    pub chatter_wear_job: f64,
+    pub chatter_wear_nominal: f64,
+    pub dominant: String,
+    pub mechanisms: Vec<(String, f64)>,
+    pub parts_left_p50: Option<f64>,
+    pub parts_left_p90: Option<f64>,
+    pub parts_source: String,
+    /// 교체 개수를 작업 평균 VB 속도로 단순 환산 (길들이기 항을 정상 마모로 오해한 값)
+    pub parts_naive_total_rate: f64,
+    /// 정상 마모율만으로 (길들이기 VB 를 이미 소진했다고 보고) 환산
+    pub parts_steady_rate_only: f64,
+    /// 경로 물리 궤적이 말하는 남은 절삭 시간(분)과 부품당 절삭 시간(분)
+    pub path_remaining_min: f64,
+    pub part_cut_min: f64,
+    /// 반경 마모(VB·tan 여유각)가 공차를 다 쓰는 VB (mm). VB 한계보다 작으면 치수 기준 수명이 먼저 온다
+    pub vb_dim_mm: f64,
+    /// 치수 기준(VB_dim)으로 환산한 교체까지 부품 수 — 경로 물리 궤적 사용
+    pub parts_by_dimension: Option<f64>,
+    /// 경로 평균 재료 제거율 (cm³/min), 새 공구 경로 수명 동안 깎는 체적 (cm³), 그때의 비마모 (µm/cm³)
+    pub mrr_cm3_min: f64,
+    pub path_volume_cm3: f64,
+    pub specific_wear_um_cm3: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditDynamics {
+    pub fn_hz: f64,
+    pub k_n_per_um: f64,
+    pub zeta: f64,
+    pub m_eff_g: f64,
+    pub holder_share: f64,
+    pub tooth_hz: f64,
+    pub fn_over_tooth: f64,
+    pub kt_n_mm2: f64,
+    pub ap_mm: f64,
+    pub ap_lim_mm: f64,
+    pub ap_crit_mm: f64,
+    pub margin_executed: f64,
+    pub margin_nominal: f64,
+    pub margin_path_min: f64,
+    pub chatter_fraction: f64,
+    pub chatter_probability: f64,
+    pub frf_measured: bool,
+    pub process_damping_gain: f64,
+    pub immersion_over_d: f64,
+    pub zoa_reliable: bool,
+    pub forced_sle_um: f64,
+    pub forced_amplitude_um: f64,
+    /// 채터(margin<1)가 벽면 오차 값에 반영되는가 — 지금은 마모 가속과 Ra 에만 반영
+    pub chatter_in_wall_error: bool,
+    /// margin<1 일 때의 파상도(떨림 자국) 참고 대역 (µm): 한계에서 0.15·h_max, 한계 +15% 부근부터 공구가 절삭에서 이탈하는 수준(≈ h_max).
+    /// 그 이상은 예측하지 않고 플래그만 낸다 (Dombovari 외 2008·2019 / 자체 시간영역 시험). 벽면 오차에는 더하지 않는다
+    pub chatter_waviness_low_um: f64,
+    pub chatter_waviness_high_um: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditDeflection {
+    pub tool_tip_stiffness_n_per_um: f64,
+    pub beam_compliance_um_per_n: f64,
+    pub holder_compliance_um_per_n: f64,
+    pub holder_share: f64,
+    pub spindle_taper_compliance_modeled: bool,
+    pub load_point_from_holder_mm: f64,
+    pub wall_defl_nominal_um: f64,
+    pub wall_defl_top_um: f64,
+    pub wall_defl_bottom_um: f64,
+    pub wall_mean_path_um: f64,
+    pub wall_max_path_um: f64,
+    pub fixture_um: f64,
+    pub thermal_wp_um: f64,
+    pub force_at_wall_over_mean: f64,
+    /// 같은 실행 ae·ap 로 업밀링/다운밀링일 때 벽이 만들어지는 순간의 법선 힘 (N)과 공구 끝 휨 (µm).
+    /// 업밀링은 진입(칩 0)에서, 다운밀링은 이탈에서 벽이 만들어지며 헬릭스 지연 때문에 그 순간에도 일부 슬라이스가 물려 있다.
+    /// 업밀링은 접선·반경 성분이 상쇄되어 작고 다운밀링은 더해져 10배 가까이 커진다 (프로브 시험: 알루미늄 Ø6 ae 0.5 → 1.4 vs 14.9 µm)
+    pub wall_up_force_n: f64,
+    pub wall_up_um: f64,
+    pub wall_down_force_n: f64,
+    pub wall_down_um: f64,
+    /// 이 경로에서 다운밀링으로 깎은 벽 구간의 비율 (0 = 전부 업밀링)
+    pub path_down_share: f64,
+    /// 가장 긴 날이 벽을 만드는 반경 런아웃 과삭 (µm, 음수=과삭) — 벽면 오차 값에는 더하지 않았다.
+    /// 회전 상태 레이저 공구 측정으로 반경을 잡으면 상쇄되고, 정지 상태 측정이면 그대로 남는다 (Kline & DeVor 1983)
+    pub runout_overcut_um: f64,
+}
+
+/// 아직 실측으로 확정되지 않은 모델 항목과, 그 값을 확정하는 가장 싼 측정 (실측 장비가 생겼을 때의 우선순위)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MeasureNext {
+    /// 확정되는 모델 파라미터·출력
+    pub target: String,
+    /// 지금 값의 출처 ("모델 추정" / "문헌 대표값" 등)
+    pub basis: String,
+    pub measurement: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SimAudit {
+    pub version: u32,
+    pub inputs: AuditInputs,
+    pub engagement: AuditEngagement,
+    pub force: AuditForce,
+    pub thermal: AuditThermal,
+    pub wear: AuditWear,
+    pub dynamics: AuditDynamics,
+    pub deflection: AuditDeflection,
+    pub flags: Vec<AuditFlag>,
+    pub measure_next: Vec<MeasureNext>,
+    /// 이 작업에 쓴 공구–피삭재 조합 기준값과 근거 (`pairref`)
+    #[serde(default)]
+    pub pair: crate::pairref::PairSummary,
+}
+
+fn f(x: f64) -> f64 {
+    if x.is_finite() {
+        x
+    } else {
+        0.0
+    }
+}
+
+fn force_view(ctx: &CutContext, co: &physics::CuttingCoeffs, fz: f64, rpm: f64, ap: f64, ae: f64, feed_mm_min: f64) -> ForceView {
+    let d = ctx.tool.diameter_mm;
+    let eng = Engagement::side(ap, ae.clamp(1e-6, d), d, false);
+    let r = physics::mechanistic_forces(&ctx.tool, co, fz, rpm, &eng, 72, 12);
+    let mrr = ae * ap * feed_mm_min / 60.0;
+    ForceView {
+        ae_mm: f(ae),
+        engage_deg: f(eng.span().to_degrees()),
+        f_mean_n: f(r.f_res_mean),
+        f_peak_n: f(r.f_res_peak),
+        peak_over_mean: f(r.f_res_peak / r.f_res_mean.max(1e-9)),
+        power_kw: f(r.cutting_power_kw),
+        specific_energy_j_mm3: f(r.cutting_power_kw * 1000.0 / mrr.max(1e-9)),
+        h_mean_um: f(r.h_mean_mm * 1000.0),
+        h_max_um: f(r.h_max_mm * 1000.0),
+        teeth_in_cut: f(r.teeth_in_cut),
+        edge_share: f(r.rubbing_share),
+        flank_share_radial: f(r.flank_share),
+        ploughing_share: f(r.ploughing_share),
+        fa_mean_n: f(r.fa_mean),
+        fa_peak_n: f(r.fa_peak),
+    }
+}
+
+fn nominal_view(nominal: &CutAnalysis, feed_mm_min: f64) -> ForceView {
+    let fo = &nominal.forces;
+    ForceView {
+        ae_mm: f(nominal.ae_mm),
+        engage_deg: f(nominal.engage_angle_deg),
+        f_mean_n: f(fo.f_res_mean),
+        f_peak_n: f(fo.f_res_peak),
+        peak_over_mean: f(fo.f_res_peak / fo.f_res_mean.max(1e-9)),
+        power_kw: f(fo.cutting_power_kw),
+        specific_energy_j_mm3: f(fo.cutting_power_kw * 1000.0 / (nominal.ae_mm * nominal.ap_mm * feed_mm_min / 60.0).max(1e-9)),
+        h_mean_um: f(fo.h_mean_mm * 1000.0),
+        h_max_um: f(fo.h_max_mm * 1000.0),
+        teeth_in_cut: f(fo.teeth_in_cut),
+        edge_share: 0.0,
+        flank_share_radial: 0.0,
+        ploughing_share: f(nominal.ploughing_share),
+        fa_mean_n: f(fo.fa_mean),
+        fa_peak_n: f(fo.fa_peak),
+    }
+}
+
+fn flag(flags: &mut Vec<AuditFlag>, id: &str, severity: u8, value: f64, expected: &str, message: String) {
+    flags.push(AuditFlag {
+        id: id.into(),
+        severity,
+        value: f(value),
+        expected: expected.into(),
+        message,
+    });
+}
+
+/// 감사 결과를 만든다. `out` 이 없으면 보정 판정·교체 개수 항목은 비운다.
+pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, log: &WearLog, out: Option<&CompOutcome>, pattern_key: &str) -> SimAudit {
+    let body = ThermalBody::of_setup(&profile.workpiece_setup, &ctx.wp);
+    let nominal = physics::analyze_cut(ctx, &profile.conditions, true, body);
+    let c = &profile.conditions;
+    let w = &profile.workpiece_setup;
+    let t = &ctx.tool;
+    let d = t.diameter_mm;
+    let rpm = c.spindle_rpm as f64;
+    let au = &rep.engage_audit;
+    let mut flags: Vec<AuditFlag> = Vec::new();
+
+    // ---- 입력 ----
+    let inputs = AuditInputs {
+        profile: profile.name.clone(),
+        pattern: pattern_key.to_string(),
+        material: w.effective_material().key(),
+        stock_mm: [w.width_mm, w.height_mm, w.thickness_mm],
+        allowance_mm: w.stock_allowance_mm,
+        tolerance_um: ctx.tolerance_mm * 1000.0,
+        d_mm: d,
+        flutes: t.flutes,
+        helix_deg: t.helix_deg,
+        loc_mm: t.loc_mm,
+        oal_mm: t.oal_mm,
+        shank_mm: t.shank_mm,
+        stickout_mm: t.stickout_mm,
+        stickout_over_d: f(t.stickout_mm / d.max(1e-9)),
+        rake_deg: t.rake_deg,
+        clearance_deg: t.clearance_deg,
+        edge_um: t.edge_radius_um,
+        core_ratio: t.core_ratio,
+        runout_um: t.runout_um,
+        runout_ecc_um: t.runout_ecc_mm() * 1000.0,
+        kr_floor: ctx.wp.kr_floor,
+        coating: t.coating.name.clone(),
+        coating_um: t.coating.thickness_um,
+        rpm,
+        vc_m_min: c.cutting_speed_m_min,
+        feed_mm_min: c.feed_rate_mm_min,
+        fz_mm: nominal.fz_mm,
+        ap_mm: c.axial_doc_mm,
+        ae_planned_mm: c.radial_doc_mm,
+        holder_k_n_per_um: t.holder_stiffness_n_per_um,
+        damping_ratio: t.damping_ratio,
+        holder_mass_kg: t.holder_mass_kg,
+        max_power_kw: ctx.machine.max_power_kw,
+        frf_measured: t.measured_fn_hz.is_some() && t.measured_k_n_per_um.is_some(),
+        coolant: ctx.coolant.method.label().to_string(),
+        coolant_flow_l_min: ctx.coolant.flow_l_min,
+        coolant_c: ctx.coolant.temperature_c,
+        ambient_c: ctx.env.ambient_c,
+        humidity_pct: ctx.env.humidity_pct,
+        calibration: [ctx.calib.power, ctx.calib.wear, ctx.calib.deflection, ctx.calib.temperature],
+    };
+
+    // ---- 결합·격자 ----
+    let ae_exec = if au.ae_model_mm > 1e-6 { au.ae_model_mm } else { c.radial_doc_mm };
+    let ap_exec = if au.ap_mean_mm > 1e-6 { au.ap_mean_mm } else { nominal.ap_mm };
+    // 볼 노즈는 선단 곡면 때문에 벽 근처에서 전체 깊이를 깎지 않는다(깎는 폭이 깊이마다 다름) — ae 기하 기대는 세우지 않고 길이·시간만 비교한다
+    let ball_nose = t.nose == ToolNose::Ball;
+    let (geo_ae, geo_len, geo_time) = if pattern_key == "rect_profile" {
+        let ae = if ball_nose { None } else { Some(w.stock_allowance_mm.max(0.0).min(d / 2.0)) };
+        let len = 2.0 * (w.width_mm + w.height_mm);
+        (ae, Some(len), Some(len / (c.feed_rate_mm_min / 60.0).max(1e-9)))
+    } else {
+        (None, None, None)
+    };
+    let engagement = AuditEngagement {
+        planned_ae_mm: c.radial_doc_mm,
+        planned_ae_over_d: f(c.radial_doc_mm / d.max(1e-9)),
+        executed_ae_mm: f(ae_exec),
+        executed_ae_by_volume_mm: f(au.ae_volume_mm),
+        executed_ae_over_d: f(ae_exec / d.max(1e-9)),
+        executed_engage_deg: f(Engagement::side(ap_exec, ae_exec.clamp(1e-6, d), d, false).span().to_degrees()),
+        geometry_ae_mm: geo_ae,
+        geometry_cut_len_mm: geo_len,
+        geometry_cut_time_s: geo_time,
+        sim_cut_len_mm: f(au.cut_len_mm),
+        sim_cut_time_s: f(au.cut_time_s),
+        sim_removed_mm3: f(au.removed_mm3),
+        total_time_s: f(rep.total_time_min * 60.0),
+        cell_over_ae: f(au.cell_mm / ae_exec.max(1e-9)),
+        grid: au.clone(),
+    };
+    if ball_nose && pattern_key == "rect_profile" {
+        flag(
+            &mut flags,
+            "engage_geometry_ball_nose",
+            0,
+            ae_exec,
+            "정보",
+            format!(
+                "볼 노즈는 선단 곡면 때문에 벽 근처에서 깎는 폭이 깊이마다 달라 ae 의 기하 기대값(스톡 여유 {:.2} mm)을 세우지 않았다 — 읽은 평균 ae {:.3} mm 는 격자가 깊이 방향으로 평균한 값. 길이·시간은 그대로 대조한다",
+                w.stock_allowance_mm, ae_exec
+            ),
+        );
+    }
+    if let Some(g) = geo_ae {
+        if g > 1e-9 && (ae_exec / g - 1.0).abs() > AE_GEOMETRY_TOL {
+            flag(
+                &mut flags,
+                "engage_ae_vs_geometry",
+                2,
+                ae_exec / g,
+                "1.00 ± 0.15",
+                format!("경로가 실제로 깎는 ae 를 격자에서 {:.3} mm 로 읽었으나 기하 기대값은 {:.3} mm (비 {:.2}) — 결합각·힘·마모가 이 비율만큼 어긋남", ae_exec, g, ae_exec / g),
+            );
+        }
+    }
+    if let Some(gt) = geo_time {
+        if gt > 1e-9 && (au.cut_time_s / gt - 1.0).abs() > TIME_GEOMETRY_TOL {
+            flag(
+                &mut flags,
+                "engage_time_vs_geometry",
+                2,
+                au.cut_time_s / gt,
+                "1.00 ± 0.06",
+                format!("절삭 시간 {:.2} s 가 기하 기대 {:.2} s (둘레/이송) 와 다름 — 스텝을 '공중'으로 잘못 분류했거나 격자가 거칠다", au.cut_time_s, gt),
+            );
+        }
+    }
+    if au.ae_volume_mm > 1e-9 && (au.ae_model_mm / au.ae_volume_mm - 1.0).abs() > AE_READ_TOL {
+        flag(
+            &mut flags,
+            "engage_read_mismatch",
+            1,
+            au.ae_model_mm / au.ae_volume_mm,
+            "1.00 ± 0.12",
+            format!("모델에 들어간 ae {:.3} mm 와 제거 체적으로 읽은 평균 ae {:.3} mm 가 다름 (윈도우 {:.2} mm / {:.0} 셀)", au.ae_model_mm, au.ae_volume_mm, au.window_len_mean_mm, au.window_cells_mean),
+        );
+    }
+    if engagement.cell_over_ae > MAX_CELL_OVER_AE {
+        flag(
+            &mut flags,
+            "engage_grid_coarse",
+            if engagement.cell_over_ae > 2.0 * MAX_CELL_OVER_AE { 1 } else { 0 },
+            engagement.cell_over_ae,
+            "<= 3",
+            format!(
+                "격자 셀 {:.3} mm 가 실행 ae {:.3} mm 의 {:.1}배 (스톡 여유 {:.2} mm = {:.1}칸) — 경계 셀을 면적 가중으로 읽어 단위 시험은 셀/ae ≤ 3 에서 ±5% 이내지만 그보다 거칠면 ae·결합각 오차가 커진다",
+                au.cell_mm, ae_exec, engagement.cell_over_ae, w.stock_allowance_mm, au.allowance_cells
+            ),
+        );
+    }
+    if au.steps_cutting_no_own_removal > 0 {
+        flag(
+            &mut flags,
+            "engage_no_own_removal",
+            1,
+            au.no_own_removal_fraction,
+            "0",
+            format!("절삭으로 센 스텝 중 {:.1}% 가 그 스텝 자체의 제거량이 0 이었다 — 면적 가중 제거에서는 생기지 않아야 하는 값 (격자·스텝 설정 확인)", au.no_own_removal_fraction * 100.0),
+        );
+    }
+
+    // ---- 힘 ----
+    let co = &nominal.coeffs;
+    let exec_view = force_view(ctx, co, nominal.fz_mm, rpm, ap_exec, ae_exec, c.feed_rate_mm_min);
+    let bins = &rep.wear_log;
+    let tw: f64 = bins.iter().map(|b| b.dt_s).sum::<f64>().max(1e-12);
+    let path_mean_n = bins.iter().map(|b| b.force_n * b.dt_s).sum::<f64>() / tw;
+    let path_peak_n = bins.iter().map(|b| b.force_peak_n).fold(0.0, f64::max);
+    let path_temp_mean = bins.iter().map(|b| b.temp_c * b.dt_s).sum::<f64>() / tw;
+    let force = AuditForce {
+        nominal: nominal_view(&nominal, c.feed_rate_mm_min),
+        executed: exec_view.clone(),
+        path_mean_n: f(path_mean_n),
+        path_peak_n: f(path_peak_n),
+        kc11_eff: f(co.kc11),
+        mc: f(co.mc),
+        kr: f(co.kr),
+        kte_n_mm: f(co.kte),
+        kre_n_mm: f(co.kre),
+        mu: f(co.mu),
+        shear_deg: f(co.shear_angle_deg),
+        softening: f(co.softening),
+        strain_rate_per_s: f(co.strain_rate),
+        axial_force_modeled: true,
+        kac_ratio: f(co.kac_ratio),
+        kae_n_mm: f(co.kae),
+    };
+    let se = exec_view.specific_energy_j_mm3;
+    if se < SPECIFIC_ENERGY_BAND.0 || se > SPECIFIC_ENERGY_BAND.1 {
+        // 얇은 칩(정삭·저절입)에서는 일반 범위 위로 올라가는 것이 크기 효과라 모델 오류 신호가 아니다
+        let size_effect = se > SPECIFIC_ENERGY_BAND.1 && exec_view.h_mean_um < SMALL_CHIP_UM;
+        flag(
+            &mut flags,
+            "force_specific_energy",
+            if size_effect { 0 } else { 1 },
+            se,
+            "0.3 ~ 8 J/mm³",
+            if size_effect {
+                format!(
+                    "비에너지 {:.1} J/mm³ 가 일반 범위(0.3~8)를 넘지만 평균 칩 두께가 {:.1} µm 로 얇다 — 크기 효과(Kienzle h^-mc)와 날끝 밀림 몫 {:.0}% 때문에 올라가는 값 (정삭·미세 절삭은 10 J/mm³ 이상이 보고됨)",
+                    se,
+                    exec_view.h_mean_um,
+                    exec_view.edge_share * 100.0
+                )
+            } else {
+                format!("비에너지 {:.2} J/mm³ 가 금속 절삭 일반 범위를 벗어남 (평균 칩 두께 {:.1} µm)", se, exec_view.h_mean_um)
+            },
+        );
+    }
+    if exec_view.peak_over_mean > PEAK_OVER_MEAN_INFO {
+        flag(
+            &mut flags,
+            "force_peak_over_mean",
+            0,
+            exec_view.peak_over_mean,
+            "< 5",
+            format!("피크/평균 힘 {:.1} — 날이 한 개씩 짧게 물리는 단속 절삭, 평균 힘으로 휨을 읽으면 과소평가", exec_view.peak_over_mean),
+        );
+    }
+    if path_mean_n > 1e-9 && exec_view.f_mean_n > 1e-9 && (path_mean_n / exec_view.f_mean_n - 1.0).abs() > 0.35 {
+        flag(
+            &mut flags,
+            "force_path_vs_executed",
+            0,
+            path_mean_n / exec_view.f_mean_n,
+            "1.0 안팎",
+            format!("경로 평균 힘 {:.1} N 와 실행 ae 로 다시 돌린 평균 힘 {:.1} N 차이 — 코너·진입에서 ae 가 변한 구간이 길다", path_mean_n, exec_view.f_mean_n),
+        );
+    }
+
+    // ---- 열 ----
+    let vce = nominal.vc_effective_m_min;
+    let eng_exec = Engagement::side(ap_exec, ae_exec.clamp(1e-6, d), d, false);
+    let f_exec = physics::mechanistic_forces(t, co, nominal.fz_mm, rpm, &eng_exec, 72, 12);
+    let th_exec = physics::thermal(ctx, co, &f_exec, vce, rpm, &eng_exec, body.mass_kg, body.area_m2);
+    let tn = &nominal.thermal;
+    let ambient = ctx.coolant.ambient_c();
+    let thermal = AuditThermal {
+        interface_dry_c: f(tn.interface_dry_c),
+        interface_wet_c: f(tn.interface_c),
+        executed_interface_c: f(th_exec.interface_c),
+        coolant_reduction_pct: f(tn.coolant_reduction_pct),
+        cooling_effectiveness: f(tn.cooling.effectiveness),
+        h_film_w_m2k: f(tn.cooling.h_film),
+        h_eff_w_m2k: f(tn.cooling.h_eff),
+        boiling: tn.cooling.boiling_state.clone(),
+        chip_conduction_w_m2k: f(tn.cooling.conduction),
+        contact_length_mm: f(tn.cooling.contact_length_mm),
+        transient_factor: f(tn.transient_factor),
+        barrier_interface: f(tn.barrier.interface),
+        barrier_tool_heat: f(tn.barrier.tool_heat),
+        tool_body_c: f(tn.tool_body_c),
+        tool_body_rise_k: f(tn.tool_body_c - ambient),
+        tool_radial_growth_um: f(tn.tool_radial_growth_um),
+        engagement_ms: f(tn.engagement_time_ms),
+        workpiece_heat_share: f(tn.heat_to_workpiece_share),
+        path_temp_mean_c: f(path_temp_mean),
+        path_temp_max_c: f(rep.max_temp_c),
+        path_temp_first_bin_c: f(bins.first().map(|b| b.temp_c).unwrap_or(0.0)),
+        path_temp_last_bin_c: f(bins.last().map(|b| b.temp_c).unwrap_or(0.0)),
+        wp_end_c: f(rep.wp_temp_end_c),
+        tool_body_time_resolved: false,
+    };
+    if tn.cooling.effectiveness < 0.1 && ctx.coolant.is_liquid() {
+        flag(
+            &mut flags,
+            "thermal_coolant_ineffective",
+            0,
+            tn.cooling.effectiveness,
+            "정보",
+            format!("{} 이지만 계면 냉각 효과 {:.0}% — 칩 전도({:.1e} W/m²K)가 막 대류({:.1e})보다 훨씬 커서 날끝 온도에는 거의 영향이 없고 공구 몸체 쪽만 식는다는 모델", ctx.coolant.method.label(), tn.cooling.effectiveness * 100.0, tn.cooling.conduction, tn.cooling.h_eff),
+        );
+    }
+    if tn.interface_c - ambient > 100.0 && thermal.tool_body_rise_k < 20.0 {
+        // 집중 열용량 추정(공구로 들어가는 열 η_t = 3~8% ÷ (대류 hA + 홀더 전도 G)): 플러드 1~5 K, 건식·공기 25~80 K — 플러드면 모델과 같은 자릿수
+        let liquid = ctx.coolant.is_liquid();
+        flag(
+            &mut flags,
+            "thermal_tool_body_flat",
+            if liquid { 0 } else { 1 },
+            thermal.tool_body_rise_k,
+            if liquid { "집중 열용량 추정 1~5 K" } else { "집중 열용량 추정 25~80 K" },
+            format!(
+                "공구 몸체 온도 상승 {:.1} K 는 정상상태 한 값(시간 적분 없음)이다 — {}",
+                thermal.tool_body_rise_k,
+                if liquid { "플러드에서는 집중 열용량 추정(1~5 K)과 같은 자릿수라 열 변형 오차(0.1 µm 대)는 무시해도 된다" } else { "건식·공기·MQL 은 집중 열용량 추정(25~80 K)보다 낮을 수 있고 시상수가 6~30 s 라 짧은 작업은 정상상태에 못 미친다" }
+            ),
+        );
+    }
+
+    // ---- 마모 ----
+    let tr = &nominal.trajectory;
+    let job_min = rep.cut_time_min.max(1e-12);
+    let growth_min = if rep.growth_cut_min > 1e-12 { rep.growth_cut_min } else { job_min };
+    let steady = rep.growth_calib_mm / growth_min * 1000.0;
+    let breakin_avg = rep.growth_fixed_mm / growth_min * 1000.0;
+    let total_growth = (rep.growth_calib_mm + rep.growth_fixed_mm).max(1e-12);
+    let job_rate = (rep.vb_end_mm - rep.vb_start_mm) / job_min * 1000.0;
+    let age_end = rep.wear_age0_min + rep.cut_time_min;
+    let tau = tr.break_in_tau_min.max(1e-9);
+    let limit = ctx.vb_limit_mm();
+    let part_cut_min = rep.cut_time_min;
+    let (path_factor, path_life, p50, p90, source, remaining) = match out {
+        Some(o) => {
+            let dr = &o.draft;
+            let rem = dr.path_trajectory.minutes_between(o.vb_after_mm, dr.vb_limit_mm);
+            (dr.path_factor, dr.path_trajectory.life_min, o.parts_left_p50, o.parts_left_p90, o.parts_source.clone(), rem)
+        }
+        None => (0.0, 0.0, None, None, String::new(), 0.0),
+    };
+    let naive = if job_rate > 1e-12 && part_cut_min > 1e-12 { (limit - rep.vb_end_mm).max(0.0) * 1000.0 / job_rate / part_cut_min } else { 0.0 };
+    let steady_only = if steady > 1e-12 && part_cut_min > 1e-12 {
+        (limit - rep.vb_end_mm.max(tr.break_in_vb_mm)).max(0.0) * 1000.0 / steady / part_cut_min
+    } else {
+        0.0
+    };
+    // 치수 기준 수명: 반경 마모 ΔR = VB·tan(여유각) 이 공차를 다 쓰는 VB. VB 한계(0.2/0.3 mm)보다 작으면 그쪽이 먼저 온다
+    let tan_clear = t.clearance_deg.to_radians().tan().max(1e-6);
+    let vb_dim = ctx.tolerance_mm / tan_clear;
+    let parts_dim = match out {
+        Some(o) if vb_dim < limit && part_cut_min > 1e-9 => Some(o.draft.path_trajectory.minutes_between(o.vb_after_mm, vb_dim) / part_cut_min),
+        _ => None,
+    };
+    let mrr_cm3_min = rep.removed_volume_cm3 / job_min;
+    let path_volume = path_life * mrr_cm3_min;
+    let specific_wear = if path_volume > 1e-9 { limit * 1000.0 / path_volume } else { 0.0 };
+    let wear = AuditWear {
+        vb_start_mm: f(rep.vb_start_mm),
+        vb_end_mm: f(rep.vb_end_mm),
+        vb_limit_mm: f(limit),
+        job_cut_min: f(job_min),
+        job_rate_um_min: f(job_rate),
+        steady_um_min: f(steady),
+        breakin_avg_um_min: f(breakin_avg),
+        breakin_share: f(rep.growth_fixed_mm / total_growth),
+        breakin_vb_mm: f(tr.break_in_vb_mm),
+        breakin_tau_min: f(tr.break_in_tau_min),
+        breakin_done: f(1.0 - (-age_end / tau).exp()),
+        kappa: f(tr.kappa),
+        nominal_rate_um_min: f(nominal.wear.vb_rate_mm_per_min * 1000.0),
+        nominal_life_min: f(tr.life_min),
+        nominal_linear_life_min: f(tr.linear_life_min),
+        path_factor: f(path_factor),
+        path_life_min: f(path_life),
+        chatter_wear_job: f(rep.chatter_wear_factor),
+        chatter_wear_nominal: f(nominal.wear.chatter_factor),
+        dominant: nominal.wear.dominant.clone(),
+        mechanisms: nominal.wear.mechanisms.iter().map(|m| (m.key.clone(), f(m.share))).collect(),
+        parts_left_p50: p50,
+        parts_left_p90: p90,
+        parts_source: source,
+        parts_naive_total_rate: f(naive),
+        parts_steady_rate_only: f(steady_only),
+        path_remaining_min: f(remaining),
+        part_cut_min: f(part_cut_min),
+        vb_dim_mm: f(vb_dim),
+        parts_by_dimension: parts_dim.map(|v| f(v.floor())),
+        mrr_cm3_min: f(mrr_cm3_min),
+        path_volume_cm3: f(path_volume),
+        specific_wear_um_cm3: f(specific_wear),
+    };
+    if vb_dim < limit {
+        flag(
+            &mut flags,
+            "wear_dimension_before_vb",
+            1,
+            vb_dim,
+            &format!("VB 한계 {:.3} mm", limit),
+            format!(
+                "공차 {:.0} µm 를 반경 마모(VB·tan {:.0}° 여유각)가 다 쓰는 VB 는 {:.3} mm 로 VB 한계 {:.2} mm 보다 작다 — 치수 기준으로는 교체까지 {}개 (VB 한계 기준 {})",
+                ctx.tolerance_mm * 1000.0,
+                t.clearance_deg,
+                vb_dim,
+                limit,
+                parts_dim.map(|v| format!("{:.0}", v.floor())).unwrap_or_else(|| "-".into()),
+                wear.parts_left_p50.map(|v| format!("{:.0}개", v)).unwrap_or_else(|| "-".into())
+            ),
+        );
+    }
+    // 알루미늄 Ø6~8 초경 엔드밀의 문헌 범위 (Grigoriev 외 2020 외 R3 조사): 정상 VB 속도 0.4~7 µm/min, VB 0.2 까지 30~200분,
+    // 공구당 100~700 cm³, 비마모 0.1~2.3 µm/cm³. 측정은 대부분 건식 무코팅·작은 MRR 이고 VB 한계에 실제로 도달시키는 조건이라
+    // 긴 수명(코팅·가벼운 정삭) 쪽은 자료가 드물다 — 그쪽으로 벗어난 값은 주의(노랑)까지만, 짧은 수명 쪽(10분 미만·400 µm/min 초과 등)은 신뢰불가(빨강)
+    if ctx.wp.key == "aluminum" && d <= 8.5 && path_life > 0.0 {
+        let band = |id: &str, v: f64, lo: f64, hi: f64, red_lo: f64, red_hi: f64, unit: &str, long_life_is_high: bool, flags: &mut Vec<AuditFlag>| {
+            if v < lo || v > hi {
+                let long_life_side = if long_life_is_high { v > hi } else { v < lo };
+                flag(
+                    flags,
+                    id,
+                    if v < red_lo || v > red_hi { 2 } else { 1 },
+                    v,
+                    &format!("{:.1} ~ {:.1} {}", lo, hi, unit),
+                    format!(
+                        "{:.2} {} 은 알루미늄 Ø≤8 mm 초경 엔드밀 문헌 범위 {:.1}~{:.1} {} 를 벗어난다 — {} (절대값이 아니라 자릿수 점검용)",
+                        v,
+                        unit,
+                        lo,
+                        hi,
+                        unit,
+                        if long_life_side {
+                            "공구 수명을 길게 읽는 쪽: 문헌 시험은 대부분 건식·무코팅·저 MRR 로 VB 한계에 도달시키는 조건이라 이쪽은 자료가 드물다 (코팅·가벼운 정삭이면 가능하나 VB 계열 실측으로 확인)"
+                        } else {
+                            "공구 수명을 짧게 읽는 쪽: 같은 조건 문헌 실측보다 마모가 빠르다고 모델이 말한다"
+                        }
+                    ),
+                );
+            }
+        };
+        let never = f64::NEG_INFINITY;
+        let always = f64::INFINITY;
+        band("wear_band_steady_rate", steady, 0.4, 7.0, never, 15.0, "µm/min", false, &mut flags);
+        band("wear_band_life_time", path_life, 30.0, 200.0, 10.0, always, "min", true, &mut flags);
+        band("wear_band_volume", path_volume, 100.0, 700.0, 30.0, always, "cm³", true, &mut flags);
+        band("wear_band_specific", specific_wear, 0.1, 2.3, never, 7.0, "µm/cm³", false, &mut flags);
+    }
+    if wear.breakin_share > BREAKIN_SHARE_WARN {
+        flag(
+            &mut flags,
+            "wear_breakin_dominates",
+            1,
+            wear.breakin_share,
+            "< 0.5",
+            format!(
+                "이번 작업 VB 성장 {:.2} µm 중 {:.0}% 가 길들이기 항(VB {:.0} µm, τ {:.1} min) — 로그의 'steady {:.2} µm/min' 은 정상 마모율이 아니라 정상 {:.2} + 길들이기 {:.2} µm/min 의 합",
+                (rep.vb_end_mm - rep.vb_start_mm) * 1000.0,
+                wear.breakin_share * 100.0,
+                tr.break_in_vb_mm * 1000.0,
+                tr.break_in_tau_min,
+                job_rate,
+                steady,
+                breakin_avg
+            ),
+        );
+    }
+    // 수명의 반경 절입 의존: 일정 칩 두께에서 실측 수명은 T ∝ ae^−1.0 (Ti-6Al-4V TiAlN, Heliyon 2020 의 맞춤 R² 0.97, Wu 외 2019 도
+    // 같은 경향). 이 모델은 결합 시간 비율(작은 ae 에서 ≈ ae^0.5)만큼만 바뀐다 — 열이 지배하는 소재에서 기준 ae 와 많이 다르면 남긴다
+    {
+        use crate::pairref::WpGroup;
+        let g = WpGroup::of(&ctx.wp);
+        let ae_ref = (ctx.wp.ae_ratio * d).max(1e-6);
+        let ratio = ae_exec / ae_ref;
+        if matches!(g, WpGroup::Titanium | WpGroup::Nickel | WpGroup::Stainless | WpGroup::Hardened) && (ratio < 0.5 || ratio > 2.0) {
+            let span = |ae: f64| Engagement::side(ap_exec, ae.clamp(1e-6, d), d, false).span().max(1e-9);
+            let model = span(ae_ref) / span(ae_exec);
+            let measured = 1.0 / ratio.max(1e-9);
+            let gap = measured / model;
+            flag(
+                &mut flags,
+                "wear_ae_scaling_gap",
+                0,
+                gap,
+                "1.0 (실측 T ∝ ae^−1)",
+                format!(
+                    "실행 ae {:.2} mm 는 기준 상태 ae {:.2} mm 의 {:.2}배 — 일정 칩 두께에서 실측 수명은 ae^−1 로 {:.2}배가 되는데 이 모델은 결합 시간 비율로 {:.2}배만 바뀌어, 수명을 실측 경향보다 {:.1}배 {} 읽을 수 있다 (Ti-6Al-4V 실측 근거, 다른 소재는 미확인 — 공구 열 누적이 결합각에 따라 커지는 효과가 모델에 없음)",
+                    ae_exec,
+                    ae_ref,
+                    ratio,
+                    measured,
+                    model,
+                    if gap >= 1.0 { gap } else { 1.0 / gap },
+                    if gap >= 1.0 { "짧게" } else { "길게" }
+                ),
+            );
+        }
+    }
+    if wear.breakin_tau_min > BREAKIN_TAU_BAND.1 || wear.breakin_tau_min < BREAKIN_TAU_BAND.0 {
+        flag(
+            &mut flags,
+            "wear_breakin_tau_assumed",
+            0,
+            wear.breakin_tau_min,
+            "0.5 ~ 5 min (문헌)",
+            format!(
+                "길들이기 시상수 {:.1} min 가 초경 엔드밀 길들이기 문헌 범위(0.5~5분)를 벗어난다 (피삭재 기준값 {:.1} min, 선형 수명 {:.0} min) — 절삭 0.5·2·5·10분의 VB 를 재서 확정",
+                wear.breakin_tau_min, ctx.wp.breakin_tau_min, tr.linear_life_min
+            ),
+        );
+    }
+    if let Some(n) = wear.parts_left_p50 {
+        if naive > 1e-9 && n > PARTS_RATIO_WARN * naive {
+            flag(
+                &mut flags,
+                "wear_parts_vs_job_rate",
+                0,
+                n / naive,
+                "설명 필요",
+                format!("교체까지 {:.0}개는 작업 평균 VB 속도로 환산한 {:.0}개의 {:.1}배 — 평균 속도에 길들이기 항이 섞여 있고 물리 궤적은 정상 마모율만으로 {:.0}분을 더 본다", n, naive, n / naive, remaining),
+            );
+        }
+    }
+    if rep.vb_start_mm <= 0.0 && wear.job_cut_min < 0.2 * wear.breakin_tau_min {
+        flag(
+            &mut flags,
+            "wear_job_short_vs_breakin",
+            0,
+            wear.job_cut_min / wear.breakin_tau_min.max(1e-9),
+            "정보",
+            format!("한 작업({:.2} min)이 길들이기 시상수({:.1} min)의 {:.0}% 뿐 — 이 작업 하나의 VB 기울기로는 정상 마모를 구분할 수 없다", wear.job_cut_min, wear.breakin_tau_min, 100.0 * wear.job_cut_min / wear.breakin_tau_min.max(1e-9)),
+        );
+    }
+
+    // ---- 동역학 ----
+    let modal = crate::dynamics::tool_modal(t, ap_exec, ctx.calib.deflection);
+    let st = crate::dynamics::stability(t, co, &eng_exec, f_exec.h_mean_mm, rpm, ap_exec, ctx.calib.deflection, ctx.machine.max_rpm, vce, ctx.wp.process_damping);
+    let tooth_hz = rpm / 60.0 * t.flutes as f64;
+    let immersion = ae_exec / d.max(1e-9);
+    let dynamics = AuditDynamics {
+        fn_hz: f(modal.fn_hz),
+        k_n_per_um: f(modal.k_n_per_um),
+        zeta: f(modal.zeta),
+        m_eff_g: f(modal.m_eff_kg * 1000.0),
+        holder_share: f(modal.holder_share),
+        tooth_hz: f(tooth_hz),
+        fn_over_tooth: f(modal.fn_hz / tooth_hz.max(1e-9)),
+        kt_n_mm2: f(st.kt_n_mm2),
+        ap_mm: f(ap_exec),
+        ap_lim_mm: f(st.ap_lim_mm),
+        ap_crit_mm: f(st.ap_crit_mm),
+        margin_executed: f(st.margin),
+        margin_nominal: f(nominal.stability.margin),
+        margin_path_min: f(rep.min_chatter_margin),
+        chatter_fraction: f(rep.chatter_fraction),
+        chatter_probability: f(rep.chatter_probability),
+        frf_measured: st.measured,
+        process_damping_gain: f(st.process_damping_gain),
+        immersion_over_d: f(immersion),
+        zoa_reliable: immersion >= ZOA_MIN_IMMERSION,
+        forced_sle_um: f(nominal.forced.sle_um),
+        forced_amplitude_um: f(nominal.forced.amplitude_um),
+        chatter_in_wall_error: false,
+        chatter_waviness_low_um: if st.margin > 0.0 && st.margin < 1.0 { f(0.15 * exec_view.h_max_um) } else { 0.0 },
+        chatter_waviness_high_um: if st.margin > 0.0 && st.margin < 1.0 { f(exec_view.h_max_um) } else { 0.0 },
+    };
+    if rep.min_chatter_margin > 0.0 && rep.min_chatter_margin < 1.0 {
+        flag(
+            &mut flags,
+            "dynamics_chatter_not_in_wall",
+            if rep.min_chatter_margin < 0.5 { 2 } else { 1 },
+            rep.min_chatter_margin,
+            ">= 1",
+            format!(
+                "채터 여유 최소 {:.2} (경로의 {:.0}% 가 한계 밖)인데 벽면 오차 {:.1} µm 에는 정적 휨·열·마모만 들어가고 채터 떨림 자국은 없다 — 이 벽 오차는 안정 절삭일 때의 값. 불안정이면 떨림 자국이 {:.1}~{:.1} µm (한계에서 0.15·h_max, 공구가 절삭에서 이탈하는 수준 ≈ h_max) 더해질 수 있고, 한계의 1.3배 넘게 깊으면 크기를 예측하지 못한다",
+                rep.min_chatter_margin,
+                rep.chatter_fraction * 100.0,
+                rep.mean_wall_error_um,
+                dynamics.chatter_waviness_low_um,
+                dynamics.chatter_waviness_high_um
+            ),
+        );
+    }
+    if !dynamics.zoa_reliable && dynamics.margin_executed > 0.0 {
+        // 같은 조건(Ø6 2날 35° 헬릭스 알루미늄, kr 0.2~0.45)의 반정수화(SD) 시험 계산은 ae/D 0.08~0.17 에서 ZOA 의 0.86~1.13배.
+        // kr 0.35 부근 ae/D 0.08 에서만 ZOA 가 0.68~0.81 로 과대(특이 봉우리), 이 소재는 kr 하한을 0.40 으로 둬 그 구간을 피한다.
+        // 헬릭스가 ap 를 날 피치 길이(πD/(N·tanβ))보다 얕게 만들면 flip 불안정도 없다.
+        flag(
+            &mut flags,
+            "dynamics_zoa_low_immersion",
+            0,
+            immersion,
+            ">= 0.25 이면 ZOA 신뢰",
+            format!(
+                "반경 절입 ae/D = {:.2} 로 작아 ZOA 안정 한계의 오차는 ±15% 안팎(반정수화 시험 계산 0.86~1.13배)이다 — 여유 {:.2} 는 방향성과 자릿수로 읽을 것 (날 통과 {:.0} Hz, 고유진동수 {:.0} Hz, 비 {:.1}; 날 통과가 고유진동수보다 훨씬 낮아 flip 로브 영역 밖)",
+                immersion,
+                dynamics.margin_executed,
+                tooth_hz,
+                modal.fn_hz,
+                modal.fn_hz / tooth_hz.max(1e-9)
+            ),
+        );
+    }
+    // 감쇠비: 사용자가 넣지 않았으면 돌출비 기본값 ζ ≈ 0.28·(L/D)^−1.38 (실측 L/D 3.75 → 0.05, 5.8 → 0.026, 12 → 0.009).
+    // 같은 공구라도 재클램프·스핀들 예열로 ±10 % 이상 바뀌고(NIST 반복 시험), 가공 중에는 +30~60 % — 한계 깊이는 ζ 에 비례한다
+    if !ctx.machine.damping_is_user() {
+        let ld = t.stickout_mm / d.max(1e-9);
+        flag(
+            &mut flags,
+            "dynamics_zeta_default",
+            0,
+            modal.zeta,
+            "탭 테스트",
+            format!(
+                "감쇠비 {:.3} 는 돌출비 L/D {:.1} 의 공구 끝 모드 기본값(실측 3건 맞춤, 홀더 {}) — 정지 상태 충격 시험 기준이라 가공 중 값보다 보수적이고, 공구마다 ±50 % 는 다를 수 있다. 탭 테스트로 확정",
+                modal.zeta,
+                ld,
+                profile.endmill_setting.holder.label()
+            ),
+        );
+    }
+    if !dynamics.frf_measured {
+        flag(
+            &mut flags,
+            "dynamics_frf_estimated",
+            0,
+            modal.fn_hz,
+            "탭 테스트",
+            format!("고유진동수 {:.0} Hz · 강성 {:.2} N/µm · 감쇠비 {:.3} 는 공구·홀더 모델 추정값 (홀더 {:.0} N/µm 가정) — 채터 여유의 로그 표준편차 0.4 로 취급", modal.fn_hz, modal.k_n_per_um, modal.zeta, t.holder_stiffness_n_per_um),
+        );
+    }
+
+    // ---- 휨 ----
+    let comp = physics::tool_compliance(t, ap_exec, ctx.calib.deflection);
+    let total_c = 1.0 / comp.stiffness_n_per_um.max(1e-9);
+    let holder_c = ctx.calib.deflection / t.holder_stiffness_n_per_um.max(1e-9);
+    let force_at_wall = rep.max_wall_defl_um.max(1e-12);
+    // 벽이 만들어지는 순간의 법선 힘: 업밀링과 다운밀링을 같은 실행 ae·ap 로 나란히 계산한다
+    let eng_up = Engagement::side(ap_exec, ae_exec.clamp(1e-6, d), d, false);
+    let eng_dn = Engagement::side(ap_exec, ae_exec.clamp(1e-6, d), d, true);
+    let f_up = physics::mechanistic_forces(t, co, nominal.fz_mm, rpm, &eng_up, 48, 10);
+    let f_dn = physics::mechanistic_forces(t, co, nominal.fz_mm, rpm, &eng_dn, 48, 10);
+    let (wall_up_um, wall_up_n) = crate::loadsim::wall_deflection(t, ctx.calib.deflection, &f_up, &eng_up).unwrap_or((0.0, 0.0));
+    let (wall_dn_um, wall_dn_n) = crate::loadsim::wall_deflection(t, ctx.calib.deflection, &f_dn, &eng_dn).unwrap_or((0.0, 0.0));
+    let (down_n, all_n) = rep.seg_walls.iter().fold((0.0f64, 0.0f64), |a, s| (a.0 + if s.down { s.n as f64 } else { 0.0 }, a.1 + s.n as f64));
+    let down_share = if all_n > 0.0 { down_n / all_n } else { 0.0 };
+    let deflection = AuditDeflection {
+        tool_tip_stiffness_n_per_um: f(comp.stiffness_n_per_um),
+        beam_compliance_um_per_n: f((total_c - holder_c).max(0.0)),
+        holder_compliance_um_per_n: f(holder_c),
+        holder_share: f(holder_c / total_c.max(1e-12)),
+        spindle_taper_compliance_modeled: false,
+        load_point_from_holder_mm: f(comp.load_point_from_holder_mm),
+        wall_defl_nominal_um: f(nominal.wall.deflection_um),
+        wall_defl_top_um: f(nominal.wall.deflection_top_um),
+        wall_defl_bottom_um: f(nominal.wall.deflection_bottom_um),
+        wall_mean_path_um: f(rep.mean_wall_error_um),
+        wall_max_path_um: f(rep.max_wall_error_um),
+        fixture_um: f(nominal.fixture_deflection_um),
+        thermal_wp_um: f(nominal.error_budget_um.thermal_workpiece_um),
+        force_at_wall_over_mean: f(force_at_wall / (path_mean_n.max(1e-9) * total_c)),
+        wall_up_force_n: f(wall_up_n),
+        wall_up_um: f(wall_up_um),
+        wall_down_force_n: f(wall_dn_n),
+        wall_down_um: f(wall_dn_um),
+        path_down_share: f(down_share),
+        runout_overcut_um: f(-0.5 * t.runout_um),
+    };
+    {
+        let (lo, hi) = (wall_up_um.abs().min(wall_dn_um.abs()), wall_up_um.abs().max(wall_dn_um.abs()));
+        if hi > 2.0 && hi > 3.0 * lo.max(0.3) {
+            flag(
+                &mut flags,
+                "deflection_mode_sensitivity",
+                0,
+                hi / lo.max(0.3),
+                "정보",
+                format!(
+                    "이 경로는 다운밀링 구간 {:.0}% (나머지 업밀링). 같은 ae {:.2} mm 라도 벽 순간 법선 힘이 업밀링 {:.1} N → 휨 {:.1} µm, 다운밀링 {:.1} N → {:.1} µm 로 절삭 방향이 벽 휨을 {:.0}배 가른다 (업밀링은 진입에서 접선·반경 성분이 상쇄, 다운밀링은 이탈에서 더해짐)",
+                    down_share * 100.0,
+                    ae_exec,
+                    wall_up_n,
+                    wall_up_um,
+                    wall_dn_n,
+                    wall_dn_um,
+                    hi / lo.max(0.3)
+                ),
+            );
+        }
+        if t.runout_um > 0.5 {
+            flag(
+                &mut flags,
+                "deflection_runout_overcut_excluded",
+                0,
+                deflection.runout_overcut_um,
+                "정보",
+                format!(
+                    "런아웃 TIR {:.1} µm 면 가장 긴 날이 벽을 {:.1} µm 과삭한다(편심 e = TIR/2) — 벽면 오차 값에는 넣지 않았다. 공구 반경을 회전 상태 레이저로 재면 상쇄되고 정지 상태 측정이면 그대로 남는다",
+                    t.runout_um,
+                    0.5 * t.runout_um
+                ),
+            );
+        }
+    }
+    if deflection.holder_share < 0.05 {
+        flag(
+            &mut flags,
+            "deflection_holder_negligible",
+            0,
+            deflection.holder_share,
+            "정보",
+            format!("공구 끝 컴플라이언스 {:.3} µm/N 중 홀더·스핀들 몫 {:.0}% — 스핀들·테이퍼 접촉 컴플라이언스는 모델에 따로 없고 홀더 스프링 한 개({:.0} N/µm)로 대신함", total_c, deflection.holder_share * 100.0, t.holder_stiffness_n_per_um),
+        );
+    }
+
+    // ---- 공칭 vs 경로 조건 차이 ----
+    if c.radial_doc_mm > 1e-9 && (ae_exec / c.radial_doc_mm - 1.0).abs() > 0.3 {
+        flag(
+            &mut flags,
+            "nominal_vs_path_regime",
+            0,
+            ae_exec / c.radial_doc_mm,
+            "정보",
+            format!(
+                "공칭 해석은 프리셋 ae {:.2} mm (결합 {:.0}°)로, 경로는 실제 ae {:.2} mm (결합 {:.0}°)로 깎음 — 공칭 수명 {:.0}분·채터 여유 {:.2} 와 경로 값은 서로 다른 조건의 값",
+                c.radial_doc_mm, nominal.engage_angle_deg, ae_exec, engagement.executed_engage_deg, tr.life_min, nominal.stability.margin
+            ),
+        );
+    }
+    let _ = log;
+
+    // ---- 다음 실측 ----
+    let mut measure_next: Vec<MeasureNext> = Vec::new();
+    let mut want = |target: &str, basis: &str, measurement: &str| {
+        measure_next.push(MeasureNext { target: target.into(), basis: basis.into(), measurement: measurement.into() });
+    };
+    if !dynamics.frf_measured {
+        want(
+            "채터 여유·안정 로브 (fn, 강성, 감쇠비)",
+            "공구·홀더 모델 추정 (홀더 스프링 + 집중질량, ζ 가정)",
+            "탭 테스트(충격 해머 + 가속도계)로 공구 끝 FRF 실측 → 앱 '탭 테스트' 입력. 돌출 길이 1~2 가지로 반복하면 돌출 스케일링도 확인됨",
+        );
+    }
+    want(
+        "비절삭저항·날끝 힘 (kc11, mc, kte, kre, kr) · 평균/피크 힘",
+        "문헌 대표값 + 마찰각 모델",
+        "공구동력계(또는 스핀들 동력 로그)로 같은 조건의 평균 힘·동력 실측. 칩 두께를 3점(fz 변경) 바꾸면 kc11·mc 와 날끝 항이 분리됨",
+    );
+    want(
+        "플랭크 마모 VB 성장 (κ, 길들이기 VB_b·τ, 코팅 효과)",
+        "기준 상태 정규화 + 조합 기준 길들이기 (크기 µm·시상수 분, 실측이 적은 소재는 가정값)",
+        "절삭 0.5·2·5·10분마다 공구 현미경으로 VB 측정 (휴대폰 파노라마 + 마스크도 가능) → 길들이기와 정상 마모를 분리해 입력",
+    );
+    want(
+        "날끝/칩 온도 (thermal_factor, 냉각 효과)",
+        "Loewen–Shaw 형 해석식 × 냉각 유효도",
+        "IR 카메라(칩 배출 쪽) 또는 공구-칩 열전대로 건식/플러드 한 쌍 측정. 계면 온도가 해석식의 절반 이하면 thermal_factor 를 낮춤",
+    );
+    want(
+        "벽면 치수 오차 분해 (휨 · 마모 · 열 · 채터)",
+        "정적 휨 + 반경 마모 + 열팽창 합 (채터 떨림 자국 제외)",
+        "CMM 또는 마이크로미터로 1차 벽 높이별 3점 측정, 같은 조건 안정(ap 절반) 가공과 비교하면 채터 몫이 분리됨",
+    );
+    if wear.breakin_share > BREAKIN_SHARE_WARN {
+        want(
+            "교체까지 개수",
+            "물리 궤적(정상 마모율만으로 환산) — 한 작업이 길들이기 시상수보다 훨씬 짧음",
+            "동일 조건으로 누적 10~30분 가공 후 VB 를 한 번 더 측정하면 정상 마모율이 직접 나옴 (SDS 원장에 '실측 VB' 로 입력)",
+        );
+    }
+    drop(want);
+
+    // ---- 조합 기준값 ----
+    let pair = crate::pairref::summary(&profile.endmill_setting, ctx, nominal.vc_effective_m_min);
+    if !pair.low_confidence.is_empty() {
+        flag(
+            &mut flags,
+            "pair_reference_low_confidence",
+            0,
+            pair.low_confidence.len() as f64,
+            "정보",
+            format!("이 조합({} × {})의 기준값 중 실측 근거가 약한 항목: {}", pair.wp_group, pair.coat_group, pair.low_confidence.join(" / ")),
+        );
+    }
+
+    SimAudit {
+        version: AUDIT_VERSION,
+        inputs,
+        engagement,
+        force,
+        thermal,
+        wear,
+        dynamics,
+        deflection,
+        flags,
+        measure_next,
+        pair,
+    }
+}
+
+/// 테스트·콘솔 로그용 사람이 읽는 줄
+pub fn lines(a: &SimAudit) -> Vec<String> {
+    let mut v = Vec::new();
+    let i = &a.inputs;
+    v.push(format!(
+        "[AUDIT] {} · {} · {} Ø{}x{}F 헬릭스 {}° 돌출 {:.0}mm (L/D {:.1}) · {}  Vc {:.0} rpm {:.0} fz {:.4} ap {:.1} ae(설정) {:.2}",
+        i.profile, i.pattern, i.material, i.d_mm, i.flutes, i.helix_deg, i.stickout_mm, i.stickout_over_d, i.coating, i.vc_m_min, i.rpm, i.fz_mm, i.ap_mm, i.ae_planned_mm
+    ));
+    let e = &a.engagement;
+    v.push(format!(
+        "[AUDIT] 결합: ae 설정 {:.2} → 경로 실행 {:.3} mm (체적 {:.3}, ae/D {:.2}, 결합각 {:.1}°) | 기하 기대 {} | 격자 셀 {:.3} 스텝 {:.3} 여유 {:.1}칸 (셀/ae {:.2}) | 절삭 {:.1} mm {:.2} s (전체 {:.1} s) 제거 {:.0} mm³ | 자체 제거 0 인 절삭 스텝 {:.0}%",
+        e.planned_ae_mm,
+        e.executed_ae_mm,
+        e.executed_ae_by_volume_mm,
+        e.executed_ae_over_d,
+        e.executed_engage_deg,
+        match (e.geometry_ae_mm, e.geometry_cut_len_mm, e.geometry_cut_time_s) {
+            (Some(ae), Some(l), Some(t)) => format!("ae {:.3} · {:.0} mm · {:.2} s", ae, l, t),
+            (None, Some(l), Some(t)) => format!("ae 기대 없음(볼 노즈) · {:.0} mm · {:.2} s", l, t),
+            _ => "알 수 없음".to_string(),
+        },
+        e.grid.cell_mm,
+        e.grid.step_mm,
+        e.grid.allowance_cells,
+        e.cell_over_ae,
+        e.sim_cut_len_mm,
+        e.sim_cut_time_s,
+        e.total_time_s,
+        e.sim_removed_mm3,
+        e.grid.no_own_removal_fraction * 100.0
+    ));
+    let fo = &a.force;
+    v.push(format!(
+        "[AUDIT] 힘: 공칭(ae {:.2}) 평균 {:.1}/피크 {:.1} N {:.3} kW {:.2} J/mm³ h {:.1}/{:.1} µm | 실행(ae {:.2}) 평균 {:.1}/피크 {:.1} N (x{:.1}) {:.3} kW {:.2} J/mm³ h {:.1}/{:.1} µm 날끝비 {:.0}% | 경로 평균 {:.1} N 피크 {:.1} N | kc11 {:.0} kte {:.1} kre {:.1} N/mm μ {:.2} 축력 {} (실행 평균 {:.1}/피크 {:.1} N)",
+        fo.nominal.ae_mm,
+        fo.nominal.f_mean_n,
+        fo.nominal.f_peak_n,
+        fo.nominal.power_kw,
+        fo.nominal.specific_energy_j_mm3,
+        fo.nominal.h_mean_um,
+        fo.nominal.h_max_um,
+        fo.executed.ae_mm,
+        fo.executed.f_mean_n,
+        fo.executed.f_peak_n,
+        fo.executed.peak_over_mean,
+        fo.executed.power_kw,
+        fo.executed.specific_energy_j_mm3,
+        fo.executed.h_mean_um,
+        fo.executed.h_max_um,
+        fo.executed.edge_share * 100.0,
+        fo.path_mean_n,
+        fo.path_peak_n,
+        fo.kc11_eff,
+        fo.kte_n_mm,
+        fo.kre_n_mm,
+        fo.mu,
+        if fo.axial_force_modeled { "계산" } else { "미계산" },
+        fo.executed.fa_mean_n,
+        fo.executed.fa_peak_n
+    ));
+    let th = &a.thermal;
+    v.push(format!(
+        "[AUDIT] 열: 계면 건식 {:.0} → 습식 {:.0}°C (저감 {:.1}%, 효과 {:.2}, {}) 실행 ae {:.0}°C | h_film {:.0} h_eff {:.0} 칩전도 {:.1e} W/m²K 접촉 {:.3} mm {:.2} ms 과도 {:.2} | 공구몸체 {:.1}°C (+{:.1} K, 시간적분 {}) | 경로 평균 {:.0} 최대 {:.0} 첫 빈 {:.0} 끝 빈 {:.0}°C 소재 {:.1}°C",
+        th.interface_dry_c,
+        th.interface_wet_c,
+        th.coolant_reduction_pct,
+        th.cooling_effectiveness,
+        th.boiling,
+        th.executed_interface_c,
+        th.h_film_w_m2k,
+        th.h_eff_w_m2k,
+        th.chip_conduction_w_m2k,
+        th.contact_length_mm,
+        th.engagement_ms,
+        th.transient_factor,
+        th.tool_body_c,
+        th.tool_body_rise_k,
+        if th.tool_body_time_resolved { "예" } else { "아니오" },
+        th.path_temp_mean_c,
+        th.path_temp_max_c,
+        th.path_temp_first_bin_c,
+        th.path_temp_last_bin_c,
+        th.wp_end_c
+    ));
+    let w = &a.wear;
+    v.push(format!(
+        "[AUDIT] 마모: VB {:.2}→{:.2} µm / {:.3} min = {:.2} µm/min (정상 {:.2} + 길들이기 {:.2}, 길들이기 {:.0}%) | 길들이기 VB {:.0} µm τ {:.1} min 소진 {:.1}% | κ {:.3} 공칭 {:.2} µm/min 수명 {:.0}/{:.0} min | 경로계수 k {:.3} 경로 수명 {:.0} min | 채터 배수 경로 x{:.2} 공칭 x{:.2} | 교체까지 p50 {} p90 {} (단순 환산 {:.0} · 정상율만 {:.0} · 남은 {:.0} min / 부품 {:.3} min) | 치수 기준 VB_dim {:.0} µm → {} 개 | MRR {:.2} cm³/min 경로 수명 동안 {:.0} cm³ 비마모 {:.2} µm/cm³ | 지배 {}",
+        w.vb_start_mm * 1000.0,
+        w.vb_end_mm * 1000.0,
+        w.job_cut_min,
+        w.job_rate_um_min,
+        w.steady_um_min,
+        w.breakin_avg_um_min,
+        w.breakin_share * 100.0,
+        w.breakin_vb_mm * 1000.0,
+        w.breakin_tau_min,
+        w.breakin_done * 100.0,
+        w.kappa,
+        w.nominal_rate_um_min,
+        w.nominal_life_min,
+        w.nominal_linear_life_min,
+        w.path_factor,
+        w.path_life_min,
+        w.chatter_wear_job,
+        w.chatter_wear_nominal,
+        w.parts_left_p50.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "-".into()),
+        w.parts_left_p90.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "-".into()),
+        w.parts_naive_total_rate,
+        w.parts_steady_rate_only,
+        w.path_remaining_min,
+        w.part_cut_min,
+        w.vb_dim_mm * 1000.0,
+        w.parts_by_dimension.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "-".into()),
+        w.mrr_cm3_min,
+        w.path_volume_cm3,
+        w.specific_wear_um_cm3,
+        w.dominant
+    ));
+    let d = &a.dynamics;
+    v.push(format!(
+        "[AUDIT] 동역학: fn {:.0} Hz k {:.2} N/µm ζ {:.3} m_eff {:.1} g (홀더 몫 {:.0}%) 날통과 {:.0} Hz (fn/f {:.1}) kt {:.0} N/mm² | ap {:.1} → 한계 {:.2} (임계 {:.2}) 여유 실행 {:.2} 공칭 {:.2} 경로 최소 {:.2} 비율 {:.0}% 확률 {:.0}% | ae/D {:.2} ZOA {} FRF {} | 강제진동 SLE {:.2} 진폭 {:.2} µm | 채터→벽 오차 {} (마진<1 일 때 파상도 참고 {:.1}~{:.1} µm)",
+        d.fn_hz,
+        d.k_n_per_um,
+        d.zeta,
+        d.m_eff_g,
+        d.holder_share * 100.0,
+        d.tooth_hz,
+        d.fn_over_tooth,
+        d.kt_n_mm2,
+        d.ap_mm,
+        d.ap_lim_mm,
+        d.ap_crit_mm,
+        d.margin_executed,
+        d.margin_nominal,
+        d.margin_path_min,
+        d.chatter_fraction * 100.0,
+        d.chatter_probability * 100.0,
+        d.immersion_over_d,
+        if d.zoa_reliable { "신뢰" } else { "저절입(부정확)" },
+        if d.frf_measured { "실측" } else { "추정" },
+        d.forced_sle_um,
+        d.forced_amplitude_um,
+        if d.chatter_in_wall_error { "반영" } else { "미반영" },
+        d.chatter_waviness_low_um,
+        d.chatter_waviness_high_um
+    ));
+    let df = &a.deflection;
+    v.push(format!(
+        "[AUDIT] 휨: 공구 끝 강성 {:.2} N/µm (보 {:.3} + 홀더 {:.3} µm/N, 홀더 몫 {:.0}%, 스핀들 테이퍼 {}) 하중점 {:.1} mm | 벽 휨 공칭 {:.2} (상 {:.2}/하 {:.2}) 경로 평균 {:.2} 최대 {:.2} µm | 벽 순간 법선 힘 업 {:.1} N → {:.2} µm / 다운 {:.1} N → {:.2} µm (경로 다운밀링 {:.0}%) | 런아웃 과삭(미반영) {:.1} µm | 고정 {:.2} 소재 열 {:.2} µm",
+        df.tool_tip_stiffness_n_per_um,
+        df.beam_compliance_um_per_n,
+        df.holder_compliance_um_per_n,
+        df.holder_share * 100.0,
+        if df.spindle_taper_compliance_modeled { "모델" } else { "미모델" },
+        df.load_point_from_holder_mm,
+        df.wall_defl_nominal_um,
+        df.wall_defl_top_um,
+        df.wall_defl_bottom_um,
+        df.wall_mean_path_um,
+        df.wall_max_path_um,
+        df.wall_up_force_n,
+        df.wall_up_um,
+        df.wall_down_force_n,
+        df.wall_down_um,
+        df.path_down_share * 100.0,
+        df.runout_overcut_um,
+        df.fixture_um,
+        df.thermal_wp_um
+    ));
+    let pr = &a.pair;
+    v.push(format!(
+        "[AUDIT] 조합 기준값: {} × {} · 홀더 {} | 절삭 μ {:.2} × 코팅 {:.2} · Kr 하한 {:.2} · Kte 배수 {:.2} · Kre/Kte {:.2} · h_min/r {:.2} | 여유각 {:.1}° ({}) 호닝 {:.1} µm 런아웃 {:.1} µm ({}) | ζ {:.3} ({}) 공정감쇠 {:.2} × 여유각 {:.2} | 열 계수 {:.2} | 길들이기 {:.0} µm τ {:.1} min | VB 한계 {:.2} mm — {}",
+        pr.wp_group,
+        pr.coat_group,
+        pr.holder,
+        pr.cut_mu_base,
+        pr.coating_mu_factor,
+        pr.kr_floor,
+        pr.kte_factor,
+        pr.kre_over_kte,
+        pr.min_chip_ratio,
+        pr.clearance_deg,
+        pr.clearance_source,
+        pr.edge_radius_um,
+        pr.runout_um,
+        pr.runout_source,
+        pr.damping_ratio,
+        pr.damping_source,
+        pr.process_damping,
+        pr.pd_clearance_factor,
+        pr.thermal_factor,
+        pr.breakin_vb_um,
+        pr.breakin_tau_min,
+        pr.vb_limit_mm,
+        pr.vb_limit_basis
+    ));
+    for fl in a.flags.iter() {
+        v.push(format!("[AUDIT][{}] {} (값 {:.3}, 기대 {}) — {}", ["정보", "주의", "신뢰불가"][fl.severity.min(2) as usize], fl.id, fl.value, fl.expected, fl.message));
+    }
+    for m in a.measure_next.iter() {
+        v.push(format!("[AUDIT][다음 실측] {} · 현재 근거: {} → {}", m.target, m.basis, m.measurement));
+    }
+    v
+}

@@ -368,7 +368,8 @@ pub fn stability_margin(
         return f64::INFINITY;
     }
     let (a, om) = limit_at(&br, rpm, n_teeth).unwrap_or((crit, 2.0 * PI * modal.fn_hz));
-    let gain = if tool.variable_pitch { 1.4 } else { 1.0 } * process_damping_gain(vc_m_min, om / (2.0 * PI), tool.flank_wear_mm, pd_material);
+    let pd_eff = pd_material * crate::pairref::pd_clearance_factor(tool.clearance_deg);
+    let gain = if tool.variable_pitch { 1.4 } else { 1.0 } * process_damping_gain(vc_m_min, om / (2.0 * PI), tool.flank_wear_mm, pd_eff);
     a * gain / ap
 }
 
@@ -416,7 +417,7 @@ pub fn stability(
     let gain_static = out.pitch_gain;
     let (a_raw, omega_c) = limit_at(&br, rpm, n_teeth).unwrap_or((crit, 2.0 * PI * modal.fn_hz));
     let chatter_hz = omega_c / (2.0 * PI);
-    let pd = process_damping_gain(vc_m_min, chatter_hz, tool.flank_wear_mm, pd_material);
+    let pd = process_damping_gain(vc_m_min, chatter_hz, tool.flank_wear_mm, pd_material * crate::pairref::pd_clearance_factor(tool.clearance_deg));
     out.process_damping_gain = pd;
     out.chatter_hz = chatter_hz;
     out.ap_crit_mm = crit * gain_static;

@@ -1426,9 +1426,22 @@
 	        <div class="form-group"><label>샹크 (mm)</label><input type="number" id="cm-shank" value="8" oninput="toolFormChanged()" /></div>
 	        <div class="form-group"><label>헬릭스 (°)</label><input type="number" id="cm-helix" value="35" oninput="toolFormChanged()" /></div>
 	        <div class="form-group"><label>경사각 레이크 (°)</label><input type="number" id="cm-rake" step="0.5" placeholder="소재 기본" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>여유각 (°)</label><input type="number" id="cm-clear" step="0.5" placeholder="10" oninput="toolFormChanged()" /></div>
+	        <div class="form-group"><label>여유각 (°)</label><input type="number" id="cm-clear" step="0.5" placeholder="소재 기본" oninput="toolFormChanged()" /></div>
 	        <div class="form-group"><label>날끝 호닝 (µm)</label><input type="number" id="cm-edge" step="0.5" placeholder="등급 기본" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>런아웃 (µm)</label><input type="number" id="cm-runout" step="0.5" placeholder="등급 기본" oninput="toolFormChanged()" /></div>
+	        <div class="form-group"><label>런아웃 TIR (µm)</label><input type="number" id="cm-runout" step="0.5" placeholder="홀더·등급 기본" oninput="toolFormChanged()" /></div>
+	        <div class="form-group"><label>홀더</label>
+	          <select id="cm-holder" onchange="toolFormChanged()" title="런아웃을 비우면 홀더 사양 TIR 을 쓴다 (열박음·유압·폴리곤 3, ER UP 5, ER 정밀 10, ER 표준 15, 밀링 척 8, 사이드락 15 µm)">
+	            <option value="Unknown">미지정 (공구 등급으로)</option>
+	            <option value="ShrinkFit">열박음 (슈링크)</option>
+	            <option value="Hydraulic">유압 척</option>
+	            <option value="Polygon">폴리곤 (압입)</option>
+	            <option value="ErUltraPrecision">ER 콜릿 초정밀 (UP)</option>
+	            <option value="ErPrecision">ER 콜릿 정밀</option>
+	            <option value="ErStandard">ER 콜릿 표준</option>
+	            <option value="MillingChuck">밀링 척 (롤러)</option>
+	            <option value="SideLock">사이드락 (웰던)</option>
+	          </select>
+	        </div>
 	      </div>
 	      <label class="ct-check"><input type="checkbox" id="cm-vp" onchange="toolFormChanged()" /> 부등분할 (채터 억제)</label>
 	      <div class="ct-sec">소재 (모재 · 코팅 · 등급)</div>
@@ -4346,7 +4359,7 @@
 	      <div class="spec-item"><div class="label">형상</div><div class="value">${esc(found.shape)}</div></div>
 	      <div class="spec-item"><div class="label">코팅</div><div class="value">${esc(s.coating_name || '무코팅')}</div></div>
 	      <div class="spec-item"><div class="label">모재</div><div class="value">${esc(found.substrate)}</div></div>
-	      <div class="spec-item"><div class="label">레이크 · 여유각</div><div class="value">${s.rake_deg === null || s.rake_deg === undefined ? '소재 기본' : fmt(s.rake_deg, 1) + '°'} · ${s.clearance_deg === null || s.clearance_deg === undefined ? '10°' : fmt(s.clearance_deg, 1) + '°'}</div></div>
+	      <div class="spec-item"><div class="label">레이크 · 여유각</div><div class="value">${s.rake_deg === null || s.rake_deg === undefined ? '소재 기본' : fmt(s.rake_deg, 1) + '°'} · ${s.clearance_deg === null || s.clearance_deg === undefined ? '소재 기본' : fmt(s.clearance_deg, 1) + '°'}</div></div>
 	    </div>
 	  `;
 	}
@@ -4389,6 +4402,7 @@
 	    edge_radius_um: num('cm-edge'),
 	    neck_diameter_mm: neckOn ? num('cm-neck-d') : null,
 	    reach_mm: neckOn ? num('cm-reach') : null,
+	    holder: document.getElementById('cm-holder').value || 'Unknown',
 	  };
 	}
 

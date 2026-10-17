@@ -2951,7 +2951,7 @@ pub fn analyze_job_with(
     let (_, traj) = path_wear(&nominal.trajectory, report);
     let tan_clear = ctx.tool.clearance_deg.to_radians().tan();
     let prior: Vec<(f64, f64)> = tool.map(|t| t.history.clone()).unwrap_or_default();
-    crate::wearlog::analyze_ext(
+    let mut log = crate::wearlog::analyze_ext(
         &report.wear_log,
         &residuals,
         Some(&traj),
@@ -2961,7 +2961,22 @@ pub fn analyze_job_with(
         report.vb_start_mm,
         report.vb_start_mm * tan_clear * 1000.0,
         &prior,
-    )
+    );
+    // 짧은 작업의 VB 성장은 길들이기 항이 지배한다 — 로그의 '정상 마모' 구간 속도를 정상 마모율로 읽지 않도록 표시한다
+    let grown = report.growth_calib_mm + report.growth_fixed_mm;
+    if grown > 1e-9 && report.growth_fixed_mm / grown > 0.5 && report.growth_cut_min > 1e-9 {
+        let share = report.growth_fixed_mm / grown;
+        let steady_um_min = report.growth_calib_mm / report.growth_cut_min * 1000.0;
+        log.notes.push(format!(
+            "이번 작업 VB 성장의 {:.0}% 는 길들이기 항입니다 (정상 마모 {:.2} µm/min 만 장기 수명 예측에 쓰이며, 아래 '정상 마모' 구간 속도에는 길들이기가 섞여 있음)",
+            share * 100.0,
+            steady_um_min
+        ));
+        for ph in log.phases.iter_mut().filter(|p| p.key == "steady") {
+            ph.label = format!("정상 마모 (길들이기 항 {:.0}% 포함)", share * 100.0);
+        }
+    }
+    log
 }
 
 pub struct PipelineResult {
@@ -2971,6 +2986,21 @@ pub struct PipelineResult {
     pub log: WearLog,
     pub outcome: CompOutcome,
     pub sds_lines: Vec<String>,
+    pub audit: crate::simaudit::SimAudit,
+}
+
+impl PipelineResult {
+    /// 저장·비교용 요약 JSON — `wear_logs/*.json` 에 그대로 넣는다 (`line`·`log` 는 기존 키, `audit` 가 새 진단)
+    pub fn summary_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "line": self.outcome.report_line,
+            "log": self.log,
+            "audit": self.audit,
+            "gates": self.outcome.draft.gates,
+            "residual": self.outcome.draft.residual,
+            "parts_left": { "p50": self.outcome.parts_left_p50, "p90": self.outcome.parts_left_p90, "source": self.outcome.parts_source },
+        })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3009,6 +3039,7 @@ pub fn run_pipeline(
     }
     let outcome = finalize(profile, &ctx, &report, &segments, &log, &draft, &decision, opts);
     let sds_lines = record(sds, profile, &log, &outcome, prev_action);
+    let audit = crate::simaudit::build(profile, &ctx, &report, &log, Some(&outcome), pattern_key);
     progress(1.0, "done");
     Ok(PipelineResult {
         view,
@@ -3017,5 +3048,6 @@ pub fn run_pipeline(
         log,
         outcome,
         sds_lines,
+        audit,
     })
 }

@@ -373,10 +373,10 @@ fn phases_of(t: &[f64], vb: &[f64]) -> Vec<WearPhase> {
 }
 
 pub fn bins_csv(bins: &[WearBin]) -> String {
-    let mut s = String::from("t_cut_s,t_s,dt_s,removed_mm3,mrr_mm3_s,force_n,force_peak_n,temp_c,temp_max_c,power_kw,h_um,engage_deg,chatter_min,wall_um,preheat_c,vb_mm,radial_loss_um,wp_c,seg0,seg1\n");
+    let mut s = String::from("t_cut_s,t_s,dt_s,removed_mm3,mrr_mm3_s,force_n,force_peak_n,temp_c,temp_max_c,power_kw,h_um,engage_deg,chatter_min,wall_um,preheat_c,vb_mm,radial_loss_um,wp_c,seg0,seg1,ae_mm,ap_mm,fz_mm,h_max_um,vb_rate_um_min,breakin_um_min,chatter_wear,defl_um\n");
     for b in bins.iter() {
         s.push_str(&format!(
-            "{:.4},{:.4},{:.5},{:.5},{:.4},{:.3},{:.3},{:.2},{:.2},{:.5},{:.4},{:.2},{:.4},{:.3},{:.3},{:.6},{:.4},{:.3},{},{}\n",
+            "{:.4},{:.4},{:.5},{:.5},{:.4},{:.3},{:.3},{:.2},{:.2},{:.5},{:.4},{:.2},{:.4},{:.3},{:.3},{:.6},{:.4},{:.3},{},{},{:.4},{:.3},{:.5},{:.3},{:.4},{:.4},{:.3},{:.4}\n",
             b.t_cut_s,
             b.t_s,
             b.dt_s,
@@ -396,7 +396,15 @@ pub fn bins_csv(bins: &[WearBin]) -> String {
             b.radial_loss_um,
             b.wp_c,
             b.seg0,
-            b.seg1
+            b.seg1,
+            b.ae_mm,
+            b.ap_mm,
+            b.fz_mm,
+            b.h_max_um,
+            b.vb_rate_um_min,
+            b.breakin_um_min,
+            b.chatter_wear,
+            b.defl_um
         ));
     }
     s

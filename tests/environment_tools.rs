@@ -183,7 +183,11 @@ fn calculation_reflects_profile_tool_coolant_and_overrides() {
     let mut tin = p.clone();
     tin.endmill_setting.coating_name = Some("TiN".into());
     let (_, t) = calc::run(&tin, &CalcOverrides::default(), None).unwrap();
-    assert!(t.analysis.tool_life_min.unwrap() < base.analysis.tool_life_min.unwrap());
+    // 코팅 우열은 같은 조건에서 본다: 권장 조건은 코팅마다 속도가 달라(TiN 0.8 / nACo 1.1) 수명끼리 바로 비교할 수 없다
+    let (tin_now, naco_now) = (t.current_analysis.tool_life_min.unwrap(), base.current_analysis.tool_life_min.unwrap());
+    println!("[COAT] Ti 정삭 현재 조건 수명 TiN {:.2} · nACo {:.2} min · 권장 Vc {:.0} / {:.0}", tin_now, naco_now, t.recommended.cutting_speed_m_min, base.recommended.cutting_speed_m_min);
+    assert!(tin_now < naco_now, "TiN {} vs nACo {}", tin_now, naco_now);
+    assert!(t.recommended.cutting_speed_m_min < base.recommended.cutting_speed_m_min);
     let al = profile(MachiningPreset::default_aluminum_roughing());
     let (_, a) = calc::run(&al, &CalcOverrides::default(), None).unwrap();
     assert!(a.recommended.cutting_speed_m_min > 2.0 * base.recommended.cutting_speed_m_min);

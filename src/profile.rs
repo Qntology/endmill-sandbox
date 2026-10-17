@@ -503,6 +503,90 @@ impl ToolSubstrate {
     }
 }
 
+/// 공구 홀더 종류. 런아웃(TIR)의 기본값과 공구 끝 감쇠비 보정에 쓴다 (`Unknown` 이면 예전처럼 공구 등급으로 런아웃을 정한다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HolderType {
+    #[default]
+    Unknown,
+    ShrinkFit,
+    Hydraulic,
+    Polygon,
+    ErUltraPrecision,
+    ErPrecision,
+    ErStandard,
+    MillingChuck,
+    SideLock,
+}
+
+impl HolderType {
+    pub const ALL: [HolderType; 9] = [
+        HolderType::Unknown,
+        HolderType::ShrinkFit,
+        HolderType::Hydraulic,
+        HolderType::Polygon,
+        HolderType::ErUltraPrecision,
+        HolderType::ErPrecision,
+        HolderType::ErStandard,
+        HolderType::MillingChuck,
+        HolderType::SideLock,
+    ];
+
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::ShrinkFit => "shrink_fit",
+            Self::Hydraulic => "hydraulic",
+            Self::Polygon => "polygon",
+            Self::ErUltraPrecision => "er_up",
+            Self::ErPrecision => "er_precision",
+            Self::ErStandard => "er_standard",
+            Self::MillingChuck => "milling_chuck",
+            Self::SideLock => "side_lock",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Unknown => "미지정",
+            Self::ShrinkFit => "열박음 (슈링크)",
+            Self::Hydraulic => "유압 척",
+            Self::Polygon => "폴리곤 (압입)",
+            Self::ErUltraPrecision => "ER 콜릿 초정밀(UP)",
+            Self::ErPrecision => "ER 콜릿 정밀",
+            Self::ErStandard => "ER 콜릿 표준 (DIN 6499 2급)",
+            Self::MillingChuck => "밀링 척 (롤러)",
+            Self::SideLock => "사이드락 (웰던)",
+        }
+    }
+
+    /// 공구 끝 TIR 기본값 (µm, 3×D 부근). 카탈로그 사양: 열박음·유압 ≤3 µm (SCHUNK TENDO Platinum, BIG DAISHOWA),
+    /// ER 콜릿 ISO 15488(구 DIN 6499) 2급 ≤15 µm (d ≤ 10 mm)·정밀 ≤10·UP ≤5 µm (REGO-FIX), 사이드락 >12 µm (열박음의 약 5배).
+    /// 밀링 척·폴리곤은 공개 수치가 없어 각각 8·3 µm 로 둔 가정값이다. `Unknown` 은 `None` (공구 등급으로 정함).
+    pub fn tir_um(&self) -> Option<f64> {
+        match self {
+            Self::Unknown => None,
+            Self::ShrinkFit | Self::Hydraulic | Self::Polygon => Some(3.0),
+            Self::ErUltraPrecision => Some(5.0),
+            Self::ErPrecision => Some(10.0),
+            Self::ErStandard => Some(15.0),
+            Self::MillingChuck => Some(8.0),
+            Self::SideLock => Some(15.0),
+        }
+    }
+
+    /// 공구 끝 감쇠비에 더하는 값. 유압 척의 오일 막 감쇠는 정성적으로만 보고되어 +0.005 로 작게 둔다 (가정, 확신도 낮음).
+    pub fn damping_bonus(&self) -> f64 {
+        match self {
+            Self::Hydraulic => 0.005,
+            _ => 0.0,
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|h| h.key() == key.trim().to_lowercase())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndMillMockupSetting {
     pub name: String,
@@ -519,6 +603,7 @@ pub struct EndMillMockupSetting {
     pub nose: ToolNose,
     #[serde(default)]
     pub stickout_mm: Option<f64>,
+    /// 런아웃 TIR (µm) — 다이얼 게이지로 읽는 공구 끝 전체 흔들림. 물리 모델은 편심 e = TIR/2 로 쓴다 (`ToolGeometry::runout_ecc_mm`).
     #[serde(default)]
     pub runout_um: Option<f64>,
     #[serde(default)]
@@ -535,6 +620,9 @@ pub struct EndMillMockupSetting {
     pub neck_diameter_mm: Option<f64>,
     #[serde(default)]
     pub reach_mm: Option<f64>,
+    /// 공구 홀더 — 런아웃을 직접 넣지 않았을 때 TIR 기본값과 감쇠비 보정에 쓴다
+    #[serde(default)]
+    pub holder: HolderType,
 }
 
 impl EndMillMockupSetting {
@@ -571,6 +659,7 @@ impl EndMillMockupSetting {
             edge_radius_um: None,
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -743,6 +832,7 @@ impl EndMillMockupSetting {
             edge_radius_um: None,
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -768,6 +858,7 @@ impl EndMillMockupSetting {
             edge_radius_um: None,
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -793,6 +884,7 @@ impl EndMillMockupSetting {
             edge_radius_um: None,
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -818,6 +910,7 @@ impl EndMillMockupSetting {
             edge_radius_um: Some(8.0),
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -843,6 +936,7 @@ impl EndMillMockupSetting {
             edge_radius_um: Some(10.0),
             neck_diameter_mm: Some(5.7),
             reach_mm: Some(18.0),
+            holder: HolderType::Unknown,
         }
     }
 
@@ -868,6 +962,7 @@ impl EndMillMockupSetting {
             edge_radius_um: Some(12.0),
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -893,6 +988,7 @@ impl EndMillMockupSetting {
             edge_radius_um: Some(15.0),
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -918,6 +1014,7 @@ impl EndMillMockupSetting {
             edge_radius_um: Some(4.0),
             neck_diameter_mm: None,
             reach_mm: None,
+            holder: HolderType::Unknown,
         }
     }
 
@@ -1168,6 +1265,10 @@ pub struct MachineLimits {
     pub damping_ratio: f64,
     #[serde(default = "default_holder_mass_kg")]
     pub holder_mass_kg: f64,
+    /// 감쇠비를 사용자가 탭 테스트 등으로 직접 넣었는가. 아니면 공구 돌출비(L/D)·홀더로 정한 기본값을 쓴다
+    /// (기존 저장값이 예전 기본 0.03 과 다르면 사용자가 넣은 값으로 본다)
+    #[serde(default)]
+    pub damping_user: bool,
     #[serde(default)]
     pub tip_fn_hz: Option<f64>,
     #[serde(default)]
@@ -1181,7 +1282,17 @@ pub struct MachineLimits {
 }
 
 fn default_damping_ratio() -> f64 {
-    0.03
+    LEGACY_DAMPING_RATIO
+}
+
+/// 예전에 모든 공구에 쓰던 감쇠비 기본값
+pub const LEGACY_DAMPING_RATIO: f64 = 0.03;
+
+impl MachineLimits {
+    /// 감쇠비가 사용자가 넣은 값인가 (플래그가 없던 예전 저장값은 기본 0.03 과 다르면 사용자 값으로 본다)
+    pub fn damping_is_user(&self) -> bool {
+        self.damping_user || (self.damping_ratio - LEGACY_DAMPING_RATIO).abs() > 1e-9
+    }
 }
 
 fn default_holder_mass_kg() -> f64 {
@@ -1201,6 +1312,7 @@ impl Default for MachineLimits {
             spindle_drift_um_per_hr: 0.0,
             damping_ratio: default_damping_ratio(),
             holder_mass_kg: default_holder_mass_kg(),
+            damping_user: false,
             tip_fn_hz: None,
             tip_stiffness_n_per_um: None,
             tip_frf_stickout_mm: None,

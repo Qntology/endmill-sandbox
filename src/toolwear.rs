@@ -272,7 +272,7 @@ pub fn flute_shares(tool: &ToolGeometry, h_mean_mm: f64, mc: f64) -> Vec<f64> {
     if z == 1 || tool.runout_um.abs() < 1e-9 {
         return vec![1.0; z];
     }
-    let r = tool.runout_um / 1000.0;
+    let r = tool.runout_ecc_mm();
     let h = h_mean_mm.max(1e-5);
     let e = (1.0 - mc).clamp(0.3, 1.0);
     let loads: Vec<f64> = (0..z)

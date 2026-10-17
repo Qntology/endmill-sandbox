@@ -292,9 +292,59 @@ Expected folder naming (keyword search):
 * Kienzle power-law specific energy with `mc` exponent
 * Flank-wear land force (σ_flank · VB · db)
 * Edge-force terms (Kte, Kre) with minimum-chip-thickness ploughing ramp
-* Runout per-tooth offset
+* Runout per-tooth chip-thickness offset. `runout_um` is the dial-indicator **TIR** (the "3 µm" of a holder datasheet):
+  eccentricity e = TIR/2, the chip-thickness difference between two flutes is 2e = TIR (Kline & DeVor 1983). A slot with
+  a 10 µm TIR therefore peaks at fz + 10 µm. Earlier versions read the number as e (offset ±2·TIR), which inflated the
+  aluminium roughing preset's mean chip thickness to 28.6 µm and the peak/mean force to 4.3.
+* Axial (tool-lifting) force from the oblique cut: `dFa = Kac·shear + Kae·db`, `Kac/Ktc = 0.35·tan(helix)`
+  (measured 0.2–0.4 on aluminium end mills), `Kae = 0.3·Kte`. Mean and peak are reported in the audit; the axial force does
+  not bend the tool, so it does not enter the wall error.
 * Chip thinning factor for radial immersion < 50 %
 * Work-hardening multiplier on specific energy
+* Aluminium coefficients follow the literature instead of the generic table: `kc11` 600 N/mm² (1.4 J/mm³ at the
+  roughing preset's 33 µm mean chip; AA2024 orthogonal cuts measure 1.4–1.9 J/mm³ at 29 µm and 1.0–1.3 at 100 µm, the
+  MPM cross-check gives 0.9–1.3), radial ratio floor `kr ≥ 0.40` (six end-mill coefficient sets: 0.33–0.52;
+  with a small `kr` the tangential and radial components cancel at the instant the wall is cut and the deflection is
+  under-read), reference life 60 min (Ø6 carbide end mills reach VB 0.2–0.4 mm in 59–342 min and 119–684 cm³; the old
+  240 min anchor gave the roughing preset a path life of 841 min / 2,100 cm³; 60 min gives about 260 min — still above the
+  band, so the audit flags it yellow (`wear_band_life_time`) until a real VB series is entered).
+
+### Tool–Workpiece Pair Reference Values (`src/pairref.rs` + the material table)
+
+Several numbers used to be the same for every tool and workpiece. They now come from per-workpiece reference values
+(`WorkpieceProps`, sources in the code comments) times small tool-side corrections (coating, edge, holder, stickout).
+The audit prints the values that were used for each job (`[AUDIT] 조합 기준값`, JSON `audit.pair`) and lists the entries
+that have no direct measurement behind them (`pair_reference_low_confidence`).
+
+| Value | Before (all pairs) | Now | Main evidence |
+| --- | --- | --- | --- |
+| Tool–chip friction μ | coating pin-on-disc μ × adhesion (DLC on Al 0.10, diamond on CFRP 0.05) | workpiece cutting μ (Al 0.78, C45 0.50, alloy 0.48, hardened 0.42, SS 0.55, Ti 0.45, Ni 0.55, CFRP 0.30) × coating factor 0.88–1.0 | forces measured with coated vs uncoated tools change 0–6 % (C45 AlTiN −0.4…−4 %, Al-Si DLC −4…−6 %); μ back-calculated from cutting forces |
+| Friction → kc factor range | 0.6–1.6 | 0.7–1.3 | same; the new factors match Sandvik's rake correction (1 − γ/100) within a few % |
+| Krc/Ktc floor | 0.15 (Al 0.40) | Al 0.40, C45/alloy 0.33, Ti 0.37, SS/Ni/hardened 0.30, CFRP 0.25 | end-mill coefficient sets (Al ×4, C45 ×3, Ti ×3) |
+| Kre/Kte | 1.4 | Al 0.9, C45/alloy 1.5, Ti 1.9, SS/hardened 1.0, Ni/CFRP 1.4 | Al end-mill sets 0.83–1.0, 1045 orthogonal 1.5–2, Ti end mill 1.9 |
+| Kte | 0.011·kc1.1·√(r/10) | × material factor (Ti 1.7, SS 1.3) | Ti end mill Kte 41 N/mm, orthogonal 24; 304 turning edge intercept 51 N/mm |
+| kc1.1 at 55–65 HRC | 3800 (60), 4200 (65) | Sandvik MC: 3690 (55), 4330 (60), 4750 (63), 4950 (65) | Sandvik tables |
+| h_min / r_edge | hardened 0.20, SS 0.35 | hardened 0.35, SS 0.28 | review of 20 studies (0.08–0.63), 304 FE/tests 0.25–0.30 |
+| Break-in VB_b | 15 % of the VB limit | per pair: Al 15, C45 30, SS 20, hardened 45, Ti 60, Ni 50, CFRP 20 µm × (10 µm/r)^0.25 × (Vc/Vc_ref)^0.5 for Ti/Ni, ≤ 40 % of the limit | HRC 52 sharp ball 31–63 µm in the first 4 s; honed coated 316L no visible wear for 30 min; Ti AlCrN 115 µm in 5 m |
+| Break-in τ | 3 % of the linear life (12–22 min for long-life pairs) | 0.5–2 min of cutting per workpiece | break-in ends within a few metres of feed path |
+| VB limit | 0.2 if tolerance ≤ 20 µm else 0.3 | min(tolerance rule, workpiece criterion: Ti/SS/CFRP 0.2, hardened 0.15, others 0.3) | ISO 8688-2 (0.3 uniform), Ti 0.2 avg, hardened finishing 0.1–0.2, CFRP delamination/uncut fibres |
+| Default clearance | 10° | Al 12, C45/alloy 8, hardened 7, SS 9, Ti 10, Ni 9, CFRP 15° | manufacturer/patent consensus; it changes the radial loss per VB (ΔR = VB·tan α) |
+| Runout TIR | 3 µm premium / 10 µm | by holder: shrink-fit/hydraulic/polygon 3, ER UP 5, ER precision 10, ER standard 15, milling chuck 8, side-lock 15 µm (unknown holder keeps the old rule) | holder catalogues, ISO 15488 collet classes |
+| Tool-tip damping ζ | 0.03 | 0.28·(L/D)^−1.38, 0.010–0.045 (+0.005 hydraulic) unless entered by a tap test | measured 0.05 (L/D 3.75), 0.026 (5.8), 0.009 (12); holder mode 0.02–0.025 |
+| Process damping factor | Al 0.4, steel 1.0, SS 1.1, Ti 1.3 | Al 1.0, steel 1.0, SS 1.8, Ti 1.0, × (tan 10°/tan α)^0.4 | Tyler/Karandikar/Schmitz 2014: C 304 ≈ 3.2× 1018, Ti ≈ 1.06×; C +23–42 % from 15° to 11° relief |
+| Thermal factor | C45 1.0, hardened 1 − 0.015·(HRC−25) | C45 0.88, hardened 0.40 at 58 HRC, CFRP 0.42; Kienzle size effect not extrapolated below a 20 µm chip in the temperature formula | measured interface bands per preset (see below) |
+
+Interface temperatures of the built-in presets against bands built from published measurements (dry): Al roughing
+262 °C (180–350), Al finishing Vc 300 281 °C (220–380; it used to be 202 °C, colder than Vc 165), Ti-6Al-4V 524 °C
+(500–750), C45 555 °C (420–580, was 606), SUS304 585 °C (480–650), Inconel 718 611 °C (550–800), 58 HRC ball 542 °C
+(350–600, was 745), CFRP 276 °C (150–300). The test `preset_interface_temperatures_sit_in_published_bands` keeps them there.
+
+Still weak (logged as low confidence): nickel alloys and CFRP have no published end-mill coefficient set; break-in amounts
+for Al, C45 and CFRP have no direct measurement; milling-chuck and polygon TIR and the hydraulic damping bonus are guesses.
+A structural gap is logged as `wear_ae_scaling_gap`: at constant chip thickness measured life scales as ae^−1
+(Ti-6Al-4V, R² 0.97) while this model scales with the engaged-time fraction (≈ ae^0.5), so it can under-read life at light
+radial engagement on heat-dominated materials. Coolant cooling of steels (measured −10…−20 % flood, −5…−15 % MQL) is
+also weaker in the model (≈ 0–6 %).
 
 ### Thermal Model
 
@@ -317,7 +367,7 @@ Expected folder naming (keyword search):
 
 * 4 mechanisms: abrasion (hard-phase indentation), adhesion (sticking × load), diffusion/ dissolution (Arrhenius, two-zone activation), oxidation (environment-dependent)
 * Reference-state normalisation (AlTiN, flood, 10 mm, S45C baseline)
-* 3-phase trajectory: break-in (exponential decay) → steady → accelerated (force-temperature feedback loop, 1500-step ODE)
+* 3-phase trajectory: break-in (exponential decay, pair-specific size and time constant) → steady → accelerated (force-temperature feedback loop, 1500-step ODE)
 * Coating compatibility factor, runout factor, chip-evacuation factor
 * Calibration via SDS ledger (measured/predicted ratio, shrinkage estimator)
 
@@ -325,14 +375,21 @@ Expected folder naming (keyword search):
 
 * Altintas–Budak analytic stability lobes (2-branch eigenvalue solution)
 * FRF: cantilever beam + holder spring; measured tap-test override with stickout scaling
-* Process damping (wavelength vs. flank wear land)
+* Process damping (wavelength vs. flank wear land, material factor × clearance factor)
 * Variable pitch gain
 * Robust lobe search (±2 % RPM band)
 * Forced vibration: harmonic decomposition of Fx/Fy at tooth-passing harmonics → SLE
 
 ### Toolpath Load Simulation
 
-* Voxel grid (cell ≤ D/20) with per-cell height tracking
+* Voxel grid (cell ≤ min(D/20, allowance/3), capped by the cell budget) with per-cell mean height. The tool disc covers a
+  cell *fractionally* (box filter on the signed distance, nested coverage per cell, stock-edge cells keep their material
+  fraction), so removed volume, radial engagement `ae`, engagement angle and cutting time do not depend on how the cell
+  centres happen to fall against the tool edge. Earlier versions only tested cell centres: with the default step (cell/2)
+  half of the cutting steps removed nothing and were booked as air — cutting time halved and `ae` doubled (aluminium
+  roughing preset on `rect_profile`: ae 0.99 mm instead of 0.50 mm, 12.9 s instead of 25.7 s) — and finishing presets whose
+  cell exceeded the allowance read `ae` at 0.5–0.63× the geometry. Through-cuts clamp the axial engagement to the stock
+  thickness (CFRP 6 mm plate / ap 10 mm used to read ap = 10 mm and ae = 0.6×).
 * 6 patterns with arc interpolation, helical entry, multi-pass contour
 * Per-step: engagement angle, mechanistic force, thermal, wear accumulation, wall/floor error
 * Episode segmentation (k-distance on power/force/deflection/temp/engagement)
@@ -343,6 +400,37 @@ Expected folder naming (keyword search):
   to the stock edge. A finishing preset (ae ≈ 0.03–0.1·D) is therefore cut like pocket roughing at several times its
   radial engagement; the simulation now adds a warning when the pattern stepover differs from the preset ae by more
   than 1.5×. Use the rectangular profile pattern to judge finishing conditions.
+
+### Simulation Audit — cross-checking the logs (`src/simaudit.rs`)
+
+Every pipeline run builds a `SimAudit`. It is saved under the `audit` key of `wear_logs/*.json` (app and
+`test_cuda.bat`), printed as `[AUDIT]` lines in the test logs, and can be produced from the CLI:
+`cargo run --features cuda --example sim_audit -- <preset index> <pattern>` (no argument lists the presets).
+It never changes a result. It re-reads the numbers of one job and states where they disagree, or where the model is
+outside its validity range:
+
+| Section | What it records |
+| --- | --- |
+| `inputs` | tool / workpiece / conditions / machine / coolant / calibration actually used (a JSON is self-contained) |
+| `engagement` | planned `ae` vs. the `ae` the path really cuts (model, by volume, geometric expectation for `rect_profile`), grid cell / step / window, cutting length · time · volume |
+| `force` | nominal (preset `ae`) vs. executed (path `ae`) force · power · specific energy · chip thickness, edge-force share, axial force mean / peak, cutting coefficients |
+| `thermal` | interface dry / wet, cooling effectiveness, film and chip-conduction coefficients, tool-body rise, path temperatures |
+| `wear` | job VB split into **steady** and **break-in**, break-in VB / τ and its progress, κ, path factor k, nominal vs. path life, chatter factors, how "parts until replacement" is built (physical path trajectory vs. the naïve job-average rate), the VB at which the radial wear uses up the tolerance (`vb_dim`) and the part count by that criterion, and — for aluminium Ø ≤ 8 mm — the steady rate / life / volume / specific wear against published bands (yellow outside the band; red only on the short-life side, because published tests are biased toward short lives) |
+| `dynamics` | modal estimate, tooth-passing vs. natural frequency, margins (executed / nominal / path minimum), ZOA validity at low radial immersion (valid from ae/D ≈ 0.25), whether chatter reaches the wall error, and a reference band for the chatter marks that error leaves out (0.15·h_max at the limit … h_max when the tool leaves the cut) |
+| `deflection` | tool-tip compliance split (beam vs. holder), wall deflection nominal / path, the normal force at the moment the wall is cut for **up vs. down milling** at the executed `ae` (and the share of the path cut in each mode), the runout over-cut the wall error leaves out, fixture and thermal terms |
+| `flags[]` | machine-readable warnings: `id`, `severity` (0 info · 1 caution · 2 do not trust), `value`, `expected`, `message` |
+
+Reading the wear numbers: the VB growth of a short job is dominated by the break-in term (VB_b = 15 % of the limit,
+τ = 3 % of the linear life), so the CSV/JSON "steady" rate is *steady + break-in*; `wear_breakin_dominates` says so, and
+`parts_left` comes from the physical path trajectory (steady wear only after break-in), not from that average.
+τ = 3 % of the linear life is an assumption; where it leaves the published 0.5–5 min range (long-life finishing
+conditions) `wear_breakin_tau_assumed` says so. The per-bin CSV gained
+`ae_mm, ap_mm, fz_mm, h_max_um, vb_rate_um_min, breakin_um_min, chatter_wear, defl_um`.
+
+Flags that are deliberately *not* alarms: a specific energy above 8 J/mm³ at a mean chip thickness under 15 µm is the
+size effect (info); a ball-nose tool has no straight-wall `ae` expectation (`engage_geometry_ball_nose`, length and time
+are still compared); chatter marks are never added to the wall error — when the margin is below 1 the audit prints a
+reference band for them and marks the wall error as the stable-cut value (`dynamics_chatter_not_in_wall`).
 
 ### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
 
@@ -403,7 +491,9 @@ endmill-sandbox/
 │   ├── physcal.rs              # MPM physics cross-check (records · opt-in calibration)
 │   ├── tribology.rs            # friction · coating · coolant chemistry
 │   ├── dynamics.rs             # chatter lobes · forced vibration
-│   ├── loadsim.rs              # toolpath load simulation
+│   ├── loadsim.rs              # toolpath load simulation (area-weighted stock grid)
+│   ├── simaudit.rs             # simulation audit: log cross-checks · flags · [AUDIT] lines
+│   ├── pairref.rs              # tool–workpiece pair reference values: friction, break-in, damping, holder runout
 │   ├── toolimage.rs            # image processing (silhouette, edge)
 │   ├── wear.rs                 # SigLIP2 wear comparison
 │   ├── mold.rs                 # heightmap / wall CMM analysis
@@ -434,7 +524,7 @@ endmill-sandbox/
 │   ├── interaction_physics.rs / pipeline_flow.rs / store_flow.rs
 │   ├── environment_tools.rs / tool_state.rs / wear_compensation.rs / physcal_flow.rs
 │   └── vulkan_backend.rs       # Vulkan ↔ CPU parity (feature = "vulkan")
-├── examples/physics_probe.rs / physcal_probe.rs
+├── examples/physics_probe.rs / physcal_probe.rs / sim_audit.rs
 ├── run.bat / build.bat         # Windows CUDA helpers
 ├── _env_rocm.bat / _env_vulkan.bat  # shared MSVC / HIP SDK / protoc / Tauri CLI setup
 ├── {run,build,check,test}_{rocm,vulkan}.bat  # Windows ROCm / Vulkan helpers

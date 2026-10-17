@@ -183,6 +183,7 @@ impl EndMillAttr {
             edge_radius_um: self.edge_radius_um,
             neck_diameter_mm: self.neck_diameter_mm,
             reach_mm: self.reach_mm,
+            holder: crate::profile::HolderType::Unknown,
         }
     }
 
