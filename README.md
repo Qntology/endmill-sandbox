@@ -500,7 +500,9 @@ pocket for 26 minutes past its limit. Every cutting step now runs a tool-life mo
 * **Deterministic failures** (stop in every policy): static overload (max principal stress at the flute end, neck and holder
   face vs. TRS × 0.60–0.70), rotating-bending fatigue (Basquin n = 20, Miner), edge collapse (VB ≥ collapse VB), edge
   plastic deformation (> 1000–1050 °C). **Chipping** is a probability (hazard × chatter, stress, hardness, thermal cracks,
-  overrun and application-fit factors), a failure only for unmonitored policies at 90 %.
+  overrun and application-fit factors). At 90 % the tool counts as chipped whatever the policy: unmonitored policies end in a
+  chipping failure, monitored ones (`stop`, `change_tool`) treat it as a load-monitor breakage alarm and stop or change the
+  tool on the spot — a monitored tool never cuts past the point where the same unmonitored tool fails.
 * **Load-monitor view**: power vs. a fresh edge at the same engagement; `load_monitor_blind` when a 1.2× wear alarm would not
   see the worn tool (thin finishing chips).
 * **Application fit** (geometry, edge, substrate vs. per-material windows) multiplies wear, chipping and BUE; every built-in
@@ -513,6 +515,7 @@ pocket for 26 minutes past its limit. Every cutting step now runs a tool-life mo
   retired; an unfinished first pass holds the second-pass compensation (`pass1_complete` gate).
 * New logs: CSV columns `tool_no, life_used, stress_mpa, stress_ratio, fatigue, chip_p`; audit v4 `tool_life`, `fit`,
   `unknowns` (`[UNKNOWN]` lines: value used, plausible range, effect, cheapest measurement); `[EOL]`, `[MATRIX]` lines.
+  Retired tools keep their cause (`life_end`, `chipping`, `start_worn`, `failure`, `tlm_expired`).
 
 ### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
 

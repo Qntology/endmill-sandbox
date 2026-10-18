@@ -7,7 +7,7 @@
 use endmill_model::appfit;
 use endmill_model::pairmatrix::{self, MatrixCell};
 use endmill_model::physics::{self, CutContext};
-use endmill_model::profile::{EndMillMockupSetting, MachiningPreset, MachiningProfile, ToolLifePolicy};
+use endmill_model::profile::{MachiningPreset, MachiningProfile, ToolLifePolicy};
 use endmill_model::store::Store;
 use endmill_model::toollife;
 use endmill_model::WorkpieceMaterial;
@@ -96,15 +96,29 @@ fn body_breaking_force_has_the_published_scale() {
 #[test]
 fn inconel_pocket_stops_changes_expires_or_breaks_by_policy_instead_of_cutting_on() {
     let limit = CutContext::from_profile(&preset("인코넬")).vb_limit_mm();
-    // 정지: 수명 판정에서 지금 절삭을 마치고 멈춘다 — 한계를 크게 넘겨 깎지 않는다
+    // 감시 없음: 파손으로 끝난다 (붕괴·피로·과부하·치핑 중 하나), 날끝 붕괴 VB 를 넘겨 깎지 않는다
+    let run = simulate(&with_policy("인코넬", ToolLifePolicy::RunToFailure), "pocket_zigzag");
+    print_events("인코넬 포켓 · 감시 없음", &run);
+    let tr = &run.tool_life;
+    assert!(tr.failed && !tr.failure_cause.is_empty(), "an unmonitored worn tool ends in failure");
+    assert!(run.vb_end_mm <= tr.params.vb_collapse_mm * toollife::VB_GUARD_FACTOR + 1e-9);
+    // 정지: 수명 판정(지금 절삭을 마치고) 또는 치핑 감지(즉시)에서 멈춘다 — 한계를 크게 넘겨 깎지 않는다
     let stop = simulate(&with_policy("인코넬", ToolLifePolicy::Stop), "pocket_zigzag");
     print_events("인코넬 포켓 · 정지", &stop);
     let tl = &stop.tool_life;
-    assert!(tl.events.iter().any(|e| e.kind == "life_end"), "the pocket wears the tool out");
-    assert!(tl.unfinished && tl.completed_fraction() < 0.99, "stop leaves the rest of the path uncut");
+    assert!(tl.events.iter().any(|e| e.kind == "life_end" || e.kind == "chip_detected"), "the pocket wears or chips the tool");
+    assert!(tl.unfinished && !tl.failed && tl.completed_fraction() < 0.99, "stop leaves the rest of the path uncut");
     assert!(stop.vb_end_mm <= toollife::HARD_LIMIT_FACTOR * limit + 0.01, "no deep overrun past the limit: {:.3} vs {:.2}", stop.vb_end_mm, limit);
     assert!(stop.warnings.iter().any(|w| w.contains("[공구 수명]")));
-    // 교체 후 계속: 공구 여러 개로 끝까지, 어느 공구도 판정을 크게 넘기지 않는다
+    // 같은 공구는 감시 여부와 관계없이 같은 위험을 겪는다: 감시하는 정책이 감시 없는 공구가 부서지는 지점을 넘어 깎지 않는다
+    assert!(
+        stop.cut_time_min <= run.cut_time_min + 1e-9,
+        "the monitored tool never cuts past the point where the same unmonitored tool fails: {:.3} vs {:.3} min",
+        stop.cut_time_min,
+        run.cut_time_min
+    );
+    assert!(tl.chip_probability < toollife::CHIP_FAILURE_P + 0.05, "a monitored tool is not left cutting with a likely chipped edge: {:.2}", tl.chip_probability);
+    // 교체 후 계속: 공구 여러 개로 끝까지, 어느 공구도 판정을 크게 넘기지 않고 치핑 확률이 파손 수준에 닿으면 바로 바뀐다
     let change = simulate(&with_policy("인코넬", ToolLifePolicy::ChangeTool), "pocket_zigzag");
     print_events("인코넬 포켓 · 교체", &change);
     let tc = &change.tool_life;
@@ -113,8 +127,11 @@ fn inconel_pocket_stops_changes_expires_or_breaks_by_policy_instead_of_cutting_o
         assert!(!tc.unfinished && tc.completed_fraction() > 0.999);
         for r in tc.retired.iter() {
             assert!(r.vb_band_mm <= toollife::HARD_LIMIT_FACTOR * limit + 0.01, "retired tool #{} overran: {:.3}", r.tool_no, r.vb_band_mm);
+            assert!(r.chip_p < toollife::CHIP_FAILURE_P + 0.05, "retired tool #{} kept cutting chipped: {:.2}", r.tool_no, r.chip_p);
             assert!(r.cut_min > 0.0 && !r.field.is_empty());
+            assert!(r.cause == "life_end" || r.cause == "chipping", "retired tool #{} cause {:?}", r.tool_no, r.cause);
         }
+        assert_eq!(tc.retired.iter().filter(|r| r.cause == "chipping").count() as u32, tc.chip_detected);
         assert!(change.vb_end_mm < limit + 0.01);
         assert!(change.cut_time_min >= stop.cut_time_min);
         assert!(change.wear_log.iter().any(|b| b.tool_no == tc.tools_used), "bins carry the tool number");
@@ -123,12 +140,6 @@ fn inconel_pocket_stops_changes_expires_or_breaks_by_policy_instead_of_cutting_o
     let fin = simulate(&with_policy("인코넬", ToolLifePolicy::FinishPart), "pocket_zigzag");
     print_events("인코넬 포켓 · 프로그램 끝까지", &fin);
     assert!(fin.tool_life.expired || fin.tool_life.failed);
-    // 감시 없음: 파손으로 끝난다 (붕괴·피로·과부하·치핑 중 하나), 날끝 붕괴 VB 를 넘겨 깎지 않는다
-    let run = simulate(&with_policy("인코넬", ToolLifePolicy::RunToFailure), "pocket_zigzag");
-    print_events("인코넬 포켓 · 감시 없음", &run);
-    let tr = &run.tool_life;
-    assert!(tr.failed && !tr.failure_cause.is_empty(), "an unmonitored worn tool ends in failure");
-    assert!(run.vb_end_mm <= tr.params.vb_collapse_mm * toollife::VB_GUARD_FACTOR + 1e-9);
 }
 
 #[test]
@@ -230,7 +241,8 @@ fn mid_path_tool_changes_are_recorded_as_separate_tool_instances() {
         println!("[EOL] {}", l);
     }
     let tools = store.rdb.list_tools(true, 20).unwrap();
-    let retired = tools.iter().filter(|t| t.retired_at.is_some() && t.retire_reason.contains("수명 판정")).count();
+    // 경로 중 교체(수명 판정이든 치핑 감지든)로 빠진 공구는 모두 은퇴로 남는다
+    let retired = tools.iter().filter(|t| t.retired_at.is_some() && t.retire_reason.contains("예비 공구로 교체")).count();
     assert!(retired as u32 >= rep.tool_life.tool_changes, "each worn-out tool is retired: {} of {}", retired, rep.tool_life.tool_changes);
     let active = store.rdb.active_tool(&row.slot_key).unwrap().expect("a sister tool is active");
     assert!(active.vb_band_mm < CutContext::from_profile(&p).vb_limit_mm(), "the active instance holds only the last tool's wear: {:.3}", active.vb_band_mm);
@@ -238,10 +250,6 @@ fn mid_path_tool_changes_are_recorded_as_separate_tool_instances() {
 }
 
 // ---------------------------------------------------------------- N:N 행렬
-
-fn tool(model: &str) -> EndMillMockupSetting {
-    EndMillMockupSetting::builtin_tools().into_iter().find(|t| t.model == model).expect("tool")
-}
 
 fn wp(m: WorkpieceMaterial) -> physics::WorkpieceProps {
     physics::WorkpieceProps::of(&m)

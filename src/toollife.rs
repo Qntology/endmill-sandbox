@@ -34,7 +34,9 @@ use std::f64::consts::PI;
 
 /// 경고(교체 준비)를 남기는 수명 사용률 — 2차 보정 게이트의 '현재 플랭크 마모' 주의(0.8 × 한계)와 같은 값
 pub const WARN_FRACTION: f64 = 0.8;
-/// 감시 없는 정책에서 치핑 누적 확률이 이 값을 넘으면 치핑 파손으로 끝낸다
+/// 치핑 누적 확률이 이 값을 넘으면 그 공구는 이가 빠진 것으로 본다. 공구가 겪는 위험은 감시 여부와 관계없이 같고 대응만 다르다:
+/// 감시 없는 정책(프로그램 끝까지 · 감시 없음)은 치핑 파손으로 끝나고, 부하 감시가 있는 정책(정지 · 교체 후 계속)은
+/// 파손 경보가 잡은 것으로 보고 그 자리에서 정지·교체한다 — 감시하는 쪽이 같은 공구로 더 멀리 깎는 일이 없게
 pub const CHIP_FAILURE_P: f64 = 0.9;
 /// 치핑 누적 확률이 이 값을 넘으면 경고를 한 번 남긴다 (정지·교체 정책에서는 검사 권고)
 pub const CHIP_WARN_P: f64 = 0.5;
@@ -255,7 +257,7 @@ pub fn chip_factors(chatter_severity: f64, stress_ratio: f64, wp: &WorkpieceProp
 /// 공구 수명 사건
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolLifeEvent {
-    /// warn · life_end · tool_change · accelerated · chip_risk · failure · stop · start_worn
+    /// warn · life_end · tool_change · accelerated · chip_risk · chip_detected · load_alarm · failure · stop · start_worn
     pub kind: String,
     /// 이 작업에서 몇 번째 공구인가 (1부터)
     pub tool_no: u32,
@@ -300,6 +302,9 @@ pub struct RetiredTool {
     pub seg: usize,
     pub field: WearField,
     pub reason: String,
+    /// 교체한 이유의 키: life_end (수명 판정) · chipping (치핑 감지) · start_worn (시작 전 이미 수명 초과)
+    #[serde(default)]
+    pub cause: String,
 }
 
 /// 경로 시뮬레이션의 공구 수명 요약 (`LoadSimReport::tool_life`)
@@ -352,6 +357,9 @@ pub struct ToolLifeReport {
     /// 부하가 처음 1.2배를 넘은 시각 (s) — 수명 판정보다 먼저면 부하 감시가 마모를 잡아낸다
     #[serde(default)]
     pub load_alarm_t_s: Option<f64>,
+    /// 부하 감시가 치핑을 잡아 정지·교체한 횟수 (정지 · 교체 후 계속 정책에서 누적 치핑 확률이 `CHIP_FAILURE_P` 에 닿은 공구 수)
+    #[serde(default)]
+    pub chip_detected: u32,
     /// 모델이 정할 수 없어 가정으로 둔 것 (로그용)
     pub unknowns: Vec<String>,
 }
@@ -377,8 +385,8 @@ impl ToolLifeReport {
 /// 정책 설명 (로그·UI)
 pub fn policy_label(p: ToolLifePolicy) -> &'static str {
     match p {
-        ToolLifePolicy::Stop => "마모 경보 → 지금 절삭을 마치고 정지 (작업자 교체)",
-        ToolLifePolicy::ChangeTool => "마모 경보 → 지금 절삭을 마치고 예비 공구로 교체 후 계속",
+        ToolLifePolicy::Stop => "마모 경보 → 지금 절삭을 마치고 정지, 치핑 감지 → 즉시 정지 (작업자 교체)",
+        ToolLifePolicy::ChangeTool => "마모 경보 → 지금 절삭을 마치고, 치핑 감지 → 즉시 예비 공구로 교체 후 계속",
         ToolLifePolicy::FinishPart => "공구 수명 관리(횟수·시간) → 프로그램 끝까지 가공, 다음 부품부터 예비 공구",
         ToolLifePolicy::RunToFailure => "감시 없음 — 파손까지 계속 (무엇이 일어나는지 보는 용도)",
     }

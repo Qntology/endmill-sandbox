@@ -1416,8 +1416,15 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
                         ..Default::default()
                     })?;
                     w.version = rdb.save_tool(w)?;
-                    let reason = format!("1차 경로 중 수명 판정 → 예비 공구로 교체 (작업 #{}, 세그먼트 {}, VB {:.3} mm)", job_id, rt.seg, rt.vb_band_mm);
-                    rdb.retire(w, "life_end", &reason, "sim", Some(job_id))?;
+                    let (kind, reason) = match rt.cause.as_str() {
+                        "chipping" => (
+                            "chipping",
+                            format!("1차 경로 중 치핑 감지 → 예비 공구로 교체 (작업 #{}, 세그먼트 {}, VB {:.3} mm, 누적 치핑 확률 {:.0}%)", job_id, rt.seg, rt.vb_band_mm, rt.chip_p * 100.0),
+                        ),
+                        "start_worn" => ("life_end", format!("작업 #{} 시작 전 이미 수명 판정 초과 → 예비 공구로 교체 (VB {:.3} mm)", job_id, rt.vb_band_mm)),
+                        _ => ("life_end", format!("1차 경로 중 수명 판정 → 예비 공구로 교체 (작업 #{}, 세그먼트 {}, VB {:.3} mm)", job_id, rt.seg, rt.vb_band_mm)),
+                    };
+                    rdb.retire(w, kind, &reason, "sim", Some(job_id))?;
                     lines.push(format!("공구 #{} 은퇴: {}", w.id, reason));
                 }
                 let (n, l) = rdb.replace_active(&ident, w.endmill_id.or(inp.endmill_id), &inp.ctx.tool, vb_limit, "life_end", "경로 중 교체된 예비 공구", "sim")?;
@@ -1523,11 +1530,18 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
             w.thermal_damage,
             s.life_used_max * 100.0
         ));
-        // 공구 수명 감시 결과: 부러진 공구와 공구 수명 관리로 만료된 공구는 이 작업을 끝으로 은퇴 (다음 작업은 새 공구 개체)
+        // 공구 수명 감시 결과: 부러진 공구, 치핑 감지로 멈춘 공구, 공구 수명 관리로 만료된 공구는 이 작업을 끝으로 은퇴 (다음 작업은 새 공구 개체).
+        // 치핑은 다음 작업으로 넘어가는 상태가 없어 (작업마다 위험을 0 에서 쌓음) 그대로 두면 이 빠진 공구를 새것처럼 다시 쓰게 된다
         let tlr = &rep.tool_life;
-        if !inp.replan && (tlr.failed || tlr.expired) {
+        let chipped_stop = tlr.unfinished && !tlr.failed && tlr.events.iter().rev().find(|e| e.kind == "stop").map(|e| e.cause == "chipping").unwrap_or(false);
+        if !inp.replan && (tlr.failed || tlr.expired || chipped_stop) {
             let (kind, reason) = if tlr.failed {
                 ("failure", format!("1차 중 공구 파손 ({}) — 작업 #{}: {}", tlr.failure_cause, job_id, tlr.stop_reason().unwrap_or_default()))
+            } else if chipped_stop {
+                (
+                    "chipping",
+                    format!("1차 중 치핑 감지로 정지 ({:.0}% 가공) — 작업 #{}: 이가 빠졌을 가능성이 높아 은퇴, 남은 경로는 새 공구로", tlr.completed_fraction() * 100.0, job_id),
+                )
             } else {
                 ("tlm_expired", format!("공구 수명 관리 만료 — 작업 #{} 을 끝까지 가공한 뒤 은퇴 (다음 작업부터 예비 공구)", job_id))
             };

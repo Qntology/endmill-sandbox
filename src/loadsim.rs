@@ -1578,8 +1578,8 @@ pub fn simulate_segments_prog(
     let mut life_u = vb_start / vb_limit.max(1e-9);
     let (mut warned, mut ended, mut chip_warned, mut accel_noted) = (false, false, false, false);
     let mut stop = false;
-    // 수명 판정에 닿았지만 '지금 절삭을 마칠 때까지' 미룬 정지·교체 (사유)
-    let mut pending_eol: Option<String> = None;
+    // 수명 판정에 닿았지만 '지금 절삭을 마칠 때까지' 미룬 정지·교체 (사유, 원인 키 life_end · chipping)
+    let mut pending_eol: Option<(String, &'static str)> = None;
     let mut cf_acc = [0.0f64; 6];
     let mut cf_t = 0.0f64;
     // 부하 감시: 지금 동력·새 날 동력의 이동 평균과 평균한 시간 (교체하면 새 공구로 다시 학습)
@@ -1612,7 +1612,7 @@ pub fn simulate_segments_prog(
     }
     // 같은 사양 새 공구로 교체: 빠진 공구의 마모 지도·누적량을 남기고 마모·길들이기·열피로·피로·치핑 위험을 처음부터 다시 쌓는다
     macro_rules! change_tool {
-        ($si:expr, $reason:expr) => {{
+        ($si:expr, $reason:expr, $cause:expr) => {{
             wear_acc.flush();
             tl.retired.push(toollife::RetiredTool {
                 tool_no,
@@ -1632,6 +1632,7 @@ pub fn simulate_segments_prog(
                 seg: $si,
                 field: field.clone(),
                 reason: $reason,
+                cause: $cause.into(),
             });
             tool_no += 1;
             tl.tools_used = tool_no;
@@ -1661,9 +1662,9 @@ pub fn simulate_segments_prog(
             lm_t = 0.0;
         }};
     }
-    // 정지·교체 처리 (수명 판정 뒤 지금 절삭을 마쳤거나, 3차 마모 구간이라 즉시)
+    // 정지·교체 처리 (수명 판정 뒤 지금 절삭을 마쳤거나, 3차 마모 구간·치핑 감지라 즉시)
     macro_rules! eol_act {
-        ($si:expr, $p:expr, $reason:expr, $how:expr) => {{
+        ($si:expr, $p:expr, $reason:expr, $cause:expr, $how:expr) => {{
             match policy {
                 ToolLifePolicy::Stop => {
                     tl_event!(
@@ -1673,7 +1674,7 @@ pub fn simulate_segments_prog(
                         0.0,
                         0.0,
                         none_stress,
-                        "life_end",
+                        $cause,
                         format!("이송 정지 ({}, 세그먼트 {}, t {:.1} s) — 공구를 교체한 뒤 남은 경로를 재개하세요", $how, $si, t)
                     );
                     tl.stopped_at_s = Some(t);
@@ -1681,7 +1682,7 @@ pub fn simulate_segments_prog(
                     stop = true;
                 }
                 ToolLifePolicy::ChangeTool => {
-                    change_tool!($si, $reason);
+                    change_tool!($si, $reason, $cause);
                     tl_event!(
                         "tool_change",
                         $si,
@@ -1689,7 +1690,7 @@ pub fn simulate_segments_prog(
                         0.0,
                         0.0,
                         none_stress,
-                        "",
+                        $cause,
                         format!(
                             "새 공구 #{} 장착 ({}, 교체 {:.0} s) — 길들이기 다시 시작, 교체 뒤 벽 위치 단차 불확도 ±{:.1} µm (재클램프 런아웃 + 공구 반경·길이 측정)",
                             tool_no,
@@ -1725,7 +1726,7 @@ pub fn simulate_segments_prog(
                 tl.stopped_seg = Some(0);
             }
             ToolLifePolicy::ChangeTool | ToolLifePolicy::FinishPart => {
-                change_tool!(0usize, "작업 시작 전 수명 판정 초과 공구 교체".to_string());
+                change_tool!(0usize, "작업 시작 전 수명 판정 초과 공구 교체".to_string(), "start_worn");
                 tl_event!("tool_change", 0usize, (0.0, 0.0, 0.0), 0.0, 0.0, none_stress, "", format!("새 공구 #{} 장착 (작업 시작 전, 교체 {:.0} s)", tool_no, tl.change_time_s));
             }
             ToolLifePolicy::RunToFailure => {
@@ -2264,7 +2265,7 @@ pub fn simulate_segments_prog(
                                     "",
                                     format!("{} — 지금 절삭(세그먼트 {})을 마치고 {}", head, si, if policy == ToolLifePolicy::Stop { "정지" } else { "예비 공구로 교체" })
                                 );
-                                pending_eol = Some(head);
+                                pending_eol = Some((head, "life_end"));
                             }
                             ToolLifePolicy::FinishPart => {
                                 tl.expired = true;
@@ -2274,6 +2275,28 @@ pub fn simulate_segments_prog(
                                 tl_event!("life_end", si, *p, sample_force.f_res_peak, th.interface_c, bs, "", format!("{} — 감시 없음: 계속 깎음", head));
                             }
                         }
+                    }
+                    // 치핑 감지: 감시 없는 정책이면 여기서 치핑 파손으로 끝나는 확률. 같은 공구는 감시가 있어도 같은 위험을 겪으므로
+                    // 부하 감시의 파손 경보(이 빠진 날의 칩 하중이 다음 날로 넘어가 피크 부하가 뛴다)가 잡은 것으로 보고 그 자리에서 정지·교체한다
+                    if !toollife::continues_past_limit(policy) && chip_p >= toollife::CHIP_FAILURE_P {
+                        let head = format!(
+                            "공구 #{} 치핑 감지 (부하 감시 파손 경보로 가정) — 누적 치핑 확률 {:.0}% ≥ {:.0}%, 감시가 없었다면 여기서 치핑 파손 · VB {:.3} mm · 수명 사용 {:.0}% · 배수 채터 ×{:.1} 응력 ×{:.1} 경도 ×{:.1} 열균열 ×{:.1} 한계 초과 ×{:.1} 적합도 ×{:.1}",
+                            tool_no,
+                            chip_p * 100.0,
+                            toollife::CHIP_FAILURE_P * 100.0,
+                            vb,
+                            life_u * 100.0,
+                            cf.chatter,
+                            cf.stress,
+                            cf.hardness,
+                            cf.thermal,
+                            cf.worn,
+                            cf.fit
+                        );
+                        tl.chip_detected += 1;
+                        tl_event!("chip_detected", si, *p, sample_force.f_res_peak, th.interface_c, bs, "chipping", head.clone());
+                        pending_eol = Some((head, "chipping"));
+                        act_now = true;
                     }
                     // 강한 경보: 판정의 1.2배를 넘었거나 3차 마모 구간의 절반(가속 시작 ~ 붕괴의 중간)을 넘었으면 지금 절삭이 끝나기를 기다리지 않는다
                     if pending_eol.is_some() && (life_u >= toollife::HARD_LIMIT_FACTOR * end_frac || vb >= 0.5 * (eol.vb_accel_mm + eol.vb_collapse_mm)) {
@@ -2426,8 +2449,9 @@ pub fn simulate_segments_prog(
             });
             last = *p;
             if act_now && !stop {
-                if let Some(reason) = pending_eol.take() {
-                    eol_act!(si, *p, reason, "판정 1.2배·3차 마모 중간 초과라 절삭 중 즉시");
+                if let Some((reason, cause)) = pending_eol.take() {
+                    let how = if cause == "chipping" { "치핑 감지라 절삭 중 즉시" } else { "판정 1.2배·3차 마모 중간 초과라 절삭 중 즉시" };
+                    eol_act!(si, *p, reason, cause, how);
                 }
             }
             if stop {
@@ -2436,8 +2460,8 @@ pub fn simulate_segments_prog(
         }
         // 미뤄 둔 정지·교체는 이 절삭(세그먼트)이 끝난 지금 처리한다
         if !stop {
-            if let Some(reason) = pending_eol.take() {
-                eol_act!(si, last, reason, "지금 절삭을 마친 뒤");
+            if let Some((reason, cause)) = pending_eol.take() {
+                eol_act!(si, last, reason, cause, "지금 절삭을 마친 뒤");
             }
         }
         if stop {
@@ -2497,7 +2521,7 @@ pub fn simulate_segments_prog(
     }
     for e in tl.events.iter() {
         match e.kind.as_str() {
-            "life_end" | "tool_change" | "failure" | "stop" | "start_worn" | "chip_risk" | "accelerated" => warnings.push(format!("[공구 수명] {}", e.message)),
+            "life_end" | "tool_change" | "failure" | "stop" | "start_worn" | "chip_risk" | "chip_detected" | "accelerated" => warnings.push(format!("[공구 수명] {}", e.message)),
             _ => {}
         }
     }

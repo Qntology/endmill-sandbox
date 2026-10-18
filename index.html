@@ -3592,8 +3592,8 @@
 
 	// 공구 수명 관리: 수명 판정(VB 한계 × 비율)에 닿았을 때 기계가 하는 일 — 실제 제어기·부하 감시 동작
 	const TL_POLICIES = [
-	  ['stop', '정지', '마모 경보 → 지금 절삭을 마치고 정지 (작업자가 교체)'],
-	  ['change_tool', '교체 후 계속', '지금 절삭을 마치고 예비 공구로 교체한 뒤 계속 (길들이기 다시 · 교체 단차)'],
+	  ['stop', '정지', '마모 경보 → 지금 절삭을 마치고 정지, 치핑 감지 → 즉시 정지 (작업자가 교체)'],
+	  ['change_tool', '교체 후 계속', '지금 절삭을 마치고(치핑 감지면 즉시) 예비 공구로 교체한 뒤 계속 (길들이기 다시 · 교체 단차)'],
 	  ['finish_part', '프로그램 끝까지', '횟수·시간 공구 수명 관리 — 만료돼도 프로그램은 끝까지, 다음 작업부터 예비 공구'],
 	  ['run_to_failure', '감시 없음', '파손까지 계속 — 무엇이 일어나는지 보는 용도'],
 	];
@@ -3601,7 +3601,7 @@
 	function toolLifeSettingsRow() {
 	  const t = (APP.settings && APP.settings.tool_life) || { policy: 'stop', end_fraction: 1, change_s: 30 };
 	  const cur = TL_POLICIES.find(p => p[0] === t.policy) || TL_POLICIES[0];
-	  return `<div class="ts-row" title="파손(과부하·피로·날끝 붕괴·소성 변형)은 정책과 관계없이 그 자리에서 정지합니다">수명 판정 도달 시
+	  return `<div class="ts-row" title="파손(과부하·피로·날끝 붕괴·소성 변형)은 정책과 관계없이 그 자리에서 정지합니다. 누적 치핑 확률 90 %는 정지·교체 정책에서 치핑 감지(즉시 정지·교체), 나머지 정책에서 치핑 파손입니다">수명 판정 도달 시
 	      <select id="ts-tl-policy" style="max-width:100%;" onchange="toolLifeSet()">${TL_POLICIES.map(([k, l]) => `<option value="${k}" ${t.policy === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
 	    <div class="ts-note">${esc(cur[2])}</div>
 	    <div class="ts-row">판정 <input type="number" id="ts-tl-frac" value="${fmt(t.end_fraction, 2)}" step="0.05" min="0.3" max="2" style="width:56px;" onchange="toolLifeSet()"/> × VB 한계
@@ -3626,7 +3626,7 @@
 	  toolPanelRender();
 	}
 
-	const WEAR_EVENT_LABEL = { pass1: '1차 가공', pass2: '2차 보정', measure: '실측 반영', change_pending: '교체 대기', reset: '초기화', replaced: '사양 변경 교체', life_end: '수명 판정 교체', failure: '파손', tlm_expired: '수명 관리 만료' };
+	const WEAR_EVENT_LABEL = { pass1: '1차 가공', pass2: '2차 보정', measure: '실측 반영', change_pending: '교체 대기', reset: '초기화', replaced: '사양 변경 교체', life_end: '수명 판정 교체', chipping: '치핑 감지 교체', failure: '파손', tlm_expired: '수명 관리 만료' };
 
 	function tsWhen(ms) {
 	  if (!ms) return '-';
@@ -6416,9 +6416,9 @@
 	  const done = tl.total_feed_mm > 0 ? Math.max(0, Math.min(1, 1 - (tl.uncut_feed_mm || 0) / tl.total_feed_mm)) : 1;
 	  const mark = tl.failed ? '⛔ ' : tl.unfinished ? '⚠ ' : (tl.tool_changes > 0 || tl.expired) ? '△ ' : '';
 	  const pol = (TL_POLICIES.find(p => p[0] === tl.policy) || ['', tl.policy])[1];
-	  const ev = (tl.events || []).filter(e => ['life_end', 'tool_change', 'failure', 'stop', 'start_worn'].includes(e.kind));
+	  const ev = (tl.events || []).filter(e => ['life_end', 'chip_detected', 'tool_change', 'failure', 'stop', 'start_worn'].includes(e.kind));
 	  const rows = [
-	    ['공구 수명 감시', `${mark}${tl.state || '-'} · 경로 완료 ${fmt(done * 100, 0)}% · 공구 ${tl.tools_used || 1}개${tl.failed ? ` · 파손(${tl.failure_cause})` : ''}${tl.expired ? ' · 수명 관리 만료' : ''} · ${pol}`],
+	    ['공구 수명 감시', `${mark}${tl.state || '-'} · 경로 완료 ${fmt(done * 100, 0)}% · 공구 ${tl.tools_used || 1}개${tl.failed ? ` · 파손(${tl.failure_cause})` : ''}${tl.chip_detected ? ` · 치핑 감지 ${tl.chip_detected}회` : ''}${tl.expired ? ' · 수명 관리 만료' : ''} · ${pol}`],
 	    ['수명 사용 최대 · VB 한계 / 3차 시작 / 붕괴', `${fmt((tl.life_used_max || 0) * 100, 0)}% · ${fmt(tl.vb_limit_mm, 2)} / ${fmt(tl.params ? tl.params.vb_accel_mm : 0, 2)} / ${fmt(tl.params ? tl.params.vb_collapse_mm : 0, 2)} mm`],
 	    ['몸체 주응력 · 피로 · 치핑 확률', `${fmt(tl.peak_stress_mpa, 0)} MPa (정적 강도 ×${fmt(tl.peak_stress_ratio, 2)}, ${tl.critical_section || '-'}) · ${fmt(tl.fatigue_damage, 3)} · ${fmt((tl.chip_probability || 0) * 100, 0)}%`],
 	    ['부하 감시 (새 날 대비 동력)', `최대 ×${fmt(tl.load_ratio_max || 0, 2)}${tl.load_ratio_at_life_end ? ` · 수명 판정 시점 ×${fmt(tl.load_ratio_at_life_end, 2)}${tl.load_ratio_at_life_end < 1.2 ? ' (1.2배 경보로는 못 잡음)' : ''}` : ''}`],

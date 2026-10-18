@@ -392,6 +392,9 @@ pub struct AuditToolLife {
     pub completed_fraction: f64,
     pub uncut_feed_mm: f64,
     pub expired: bool,
+    /// 몸체 강도의 기준 모재 (`toollife::strength_of` — 코팅이 아니라 초경 등급·HSS)
+    #[serde(default)]
+    pub body_label: String,
     pub trs_mpa: f64,
     pub static_mpa: f64,
     pub fatigue_mpa: f64,
@@ -404,6 +407,9 @@ pub struct AuditToolLife {
     pub load_ratio_max: f64,
     pub load_ratio_at_life_end: Option<f64>,
     pub load_alarm_t_s: Option<f64>,
+    /// 부하 감시가 치핑을 잡아 정지·교체한 횟수
+    #[serde(default)]
+    pub chip_detected: u32,
     pub events: Vec<String>,
 }
 
@@ -1408,6 +1414,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         completed_fraction: f(tlr.completed_fraction()),
         uncut_feed_mm: f(tlr.uncut_feed_mm),
         expired: tlr.expired,
+        body_label: tlr.strength.label.clone(),
         trs_mpa: f(tlr.strength.trs_mpa),
         static_mpa: f(tlr.strength.static_mpa()),
         fatigue_mpa: f(tlr.strength.fatigue_mpa()),
@@ -1420,11 +1427,13 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         load_ratio_max: f(tlr.load_ratio_max),
         load_ratio_at_life_end: tlr.load_ratio_at_life_end.map(f),
         load_alarm_t_s: tlr.load_alarm_t_s.map(f),
+        chip_detected: tlr.chip_detected,
         events: tlr.events.iter().map(|e| format!("{} #{} t {:.1} s (절삭 {:.1} s) seg {} — {}", e.kind, e.tool_no, e.t_s, e.t_cut_s, e.seg, e.message)).collect(),
     };
     if tlr.failed {
         flag(&mut flags, "tool_failure", 2, tlr.completed_fraction(), "파손 없음", format!("{} — 경로의 {:.0}% 에서 정지, 부품 검사 필요", tlr.stop_reason().unwrap_or_default(), tlr.completed_fraction() * 100.0));
     } else if tlr.unfinished {
+        let chipped = tlr.events.iter().rev().find(|e| e.kind == "stop").map(|e| e.cause == "chipping").unwrap_or(false);
         flag(
             &mut flags,
             "path_unfinished",
@@ -1432,7 +1441,8 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             tlr.completed_fraction(),
             "1.0",
             format!(
-                "공구 수명 판정으로 이송 경로 {:.0} / {:.0} mm 에서 정지 ({}) — 이 조건으로 이 경로를 끝내려면 공구 {}개 이상 또는 조건 완화 필요",
+                "{} 이송 경로 {:.0} / {:.0} mm 에서 정지 ({}) — 이 조건으로 이 경로를 끝내려면 공구 {}개 이상 또는 조건 완화 필요",
+                if chipped { "치핑 감지로" } else { "공구 수명 판정으로" },
                 tlr.total_feed_mm - tlr.uncut_feed_mm,
                 tlr.total_feed_mm,
                 tool_life.policy_label,
@@ -1478,6 +1488,26 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
     }
     if tlr.fatigue_damage >= 0.3 && !tlr.failed {
         flag(&mut flags, "body_fatigue_high", 1, tlr.fatigue_damage, "< 0.3", format!("회전 굽힘 피로 누적 {:.2} (1 이면 파손) — 같은 공구로 이 작업을 {:.0}번 더 하면 피로 파손", tlr.fatigue_damage, ((1.0 - tlr.fatigue_damage) / tlr.fatigue_damage.max(1e-9)).floor()));
+    }
+    if tlr.chip_detected > 0 {
+        let cf = &tlr.chip_factors_mean;
+        flag(
+            &mut flags,
+            "chipping_detected",
+            2,
+            tlr.chip_detected as f64,
+            "0",
+            format!(
+                "부하 감시가 치핑을 잡아 {} {}회 (누적 치핑 확률 {:.0}% 도달) — 이 조건은 VB 한계보다 치핑이 공구 수명을 정함, 치핑 지점 앞 벽·바닥 검사 필요. 평균 배수 채터 ×{:.1} · 응력 ×{:.1} · 경도 ×{:.1} · 적합도 ×{:.1} 중 큰 것을 낮추는 조건 변경",
+                if tlr.policy == crate::profile::ToolLifePolicy::ChangeTool { "공구 교체" } else { "정지" },
+                tlr.chip_detected,
+                crate::toollife::CHIP_FAILURE_P * 100.0,
+                cf.chatter,
+                cf.stress,
+                cf.hardness,
+                cf.fit
+            ),
+        );
     }
     if tlr.chip_probability >= crate::toollife::CHIP_WARN_P && !tlr.failed {
         let cf = &tlr.chip_factors_mean;
@@ -1698,10 +1728,14 @@ pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSim
     );
     add(
         "chipping_hazard",
-        format!("기본 위험 {:.0} % (수명까지) × 배수 (채터·응력·경도·열균열·한계 초과·적합도)", tlr.params.chip_base_p * 100.0),
-        "검증된 모델 없음 (확신도 낮음)",
-        format!("치핑 누적 확률 {:.0} %", tlr.chip_probability * 100.0),
-        "같은 조건 공구 10자루 이상의 수명·치핑 기록",
+        format!(
+            "기본 위험 {:.0} % (수명까지) × 배수 (채터·응력·경도·열균열·한계 초과·적합도), 누적 {:.0} % 에서 치핑으로 봄 (감시 정책은 부하 감시가 이때 잡는다고 가정)",
+            tlr.params.chip_base_p * 100.0,
+            crate::toollife::CHIP_FAILURE_P * 100.0
+        ),
+        "검증된 모델 없음 (확신도 낮음) · 작은 치핑·얇은 칩 정삭은 부하 감시가 놓칠 수 있음",
+        format!("치핑 누적 확률 {:.0} % · 치핑 감지 {}회", tlr.chip_probability * 100.0, tlr.chip_detected),
+        "같은 조건 공구 10자루 이상의 수명·치핑 기록, 부하 감시 파손 경보 로그와 날 사진 대조",
     );
     v
 }
@@ -1943,7 +1977,15 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
         tl.tools_used,
         tl.tool_changes,
         tl.completed_fraction * 100.0,
-        if tl.failed { format!(" · 파손({})", tl.failure_cause) } else if tl.expired { " · 수명 관리 만료".to_string() } else { String::new() },
+        if tl.failed {
+            format!(" · 파손({})", tl.failure_cause)
+        } else if tl.chip_detected > 0 {
+            format!(" · 치핑 감지 {}회", tl.chip_detected)
+        } else if tl.expired {
+            " · 수명 관리 만료".to_string()
+        } else {
+            String::new()
+        },
         tl.vb_limit_mm,
         tl.vb_accel_mm,
         tl.vb_collapse_mm,
@@ -1951,7 +1993,7 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
         tl.accel_factor_max,
         tl.life_used_max * 100.0,
         tl.life_used_end * 100.0,
-        a.inputs.coating,
+        if tl.body_label.is_empty() { "-" } else { tl.body_label.as_str() },
         tl.trs_mpa,
         tl.static_mpa,
         tl.fatigue_mpa,

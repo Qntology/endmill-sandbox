@@ -23,17 +23,19 @@ $logs = Get-ChildItem -LiteralPath $LogDir -Filter '*.log' | Where-Object { $_.N
 foreach ($f in $logs) {
     $lines = [System.IO.File]::ReadAllLines($f.FullName, [System.Text.Encoding]::UTF8)
     $picked = New-Object System.Collections.Generic.List[string]
-    foreach ($l in $lines) {
+    foreach ($raw in $lines) {
+        if ($raw -match '^test (.+) \.\.\. FAILED') { $failedTests.Add("$($f.BaseName): $($Matches[1])") }
+        if ($raw -match 'panicked at (.+)$') { $panics.Add("$($f.BaseName): $($Matches[1])") }
+        if ($raw -match '^warning: ' -and $raw -notmatch 'linker stdout' -and $raw -notmatch 'generated \d+ warning') { $warnings++ }
+        # --nocapture 에서는 시험의 첫 출력 줄이 cargo 의 'test <이름> ... ' 뒤에 붙어 나온다 — 그 머리를 떼고 본다
+        $l = $raw -replace '^test \S+ \.\.\. ', ''
         if ($l -match $tag) { $picked.Add($l) }
-        if ($l -match '^test (.+) \.\.\. FAILED') { $failedTests.Add("$($f.BaseName): $($Matches[1])") }
-        if ($l -match 'panicked at (.+)$') { $panics.Add("$($f.BaseName): $($Matches[1])") }
-        if ($l -match '^warning: ' -and $l -notmatch 'linker stdout' -and $l -notmatch 'generated \d+ warning') { $warnings++ }
         if ($l -match '^\[AUDIT\]\[(정보|주의|신뢰불가)\] (\S+)') {
             $audit[$Matches[1]]++
             $k = "$($Matches[1]) $($Matches[2])"
             if ($auditIds.ContainsKey($k)) { $auditIds[$k]++ } else { $auditIds[$k] = 1 }
         }
-        if ($l -match '^\[EOL\].*?\b(failure|stop|tool_change|life_end|start_worn|chip_risk|load_alarm|accelerated|warn)\b\s+#') {
+        if ($l -match '^\[EOL\].*?\b(failure|stop|tool_change|life_end|start_worn|chip_risk|chip_detected|load_alarm|accelerated|warn)\b\s+#') {
             $k = $Matches[1]
             if ($eol.ContainsKey($k)) { $eol[$k]++ } else { $eol[$k] = 1 }
         }

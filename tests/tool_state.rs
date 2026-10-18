@@ -949,14 +949,17 @@ fn tool_change_parts_left_follows_a_fresh_tool_on_the_same_path() {
 #[test]
 fn a_job_that_reaches_the_life_limit_stops_there_and_keeps_the_path_life_consistent() {
     // 예전에는 VB 를 한계의 2배에서 자르고 끝까지 깎았다 (이 시험의 옛 이름: wear cap). 지금은 정지 정책(기본)이 수명 판정에서
-    // 지금 절삭을 마치고 멈춘다 — 그 앞까지의 마모 기록으로 만든 경로 수명이 시뮬레이션의 한계 도달 시각과 맞아야 한다
-    let p = preset("인코넬");
+    // 지금 절삭을 마치고 멈춘다 — 그 앞까지의 마모 기록으로 만든 경로 수명이 시뮬레이션의 한계 도달 시각과 맞아야 한다.
+    // 프리셋 절입 그대로면 포켓 진입(슬롯)의 채터·몸체 응력으로 치핑이 VB 한계보다 먼저 와서 치핑 감지로 멈춘다 —
+    // 이 시험은 마모로 수명이 끝나는 경우를 보므로 절입을 절반으로 (층이 늘어 경로는 길어지고 날 하중·채터는 줄어든다)
+    let mut p = preset("인코넬");
+    p.conditions.axial_doc_mm *= 0.5;
     let ctx = CutContext::from_profile(&p);
     assert_eq!(ctx.machine.tool_life_policy, endmill_model::profile::ToolLifePolicy::Stop);
     let r = simulate(&p, &ctx);
-    if !r.tool_life.events.iter().any(|e| e.kind == "life_end") {
-        return;
-    }
+    let kinds: Vec<&str> = r.tool_life.events.iter().map(|e| e.kind.as_str()).collect();
+    assert!(r.tool_life.events.iter().any(|e| e.kind == "life_end"), "the half-depth pocket wears the tool out before it chips: {:?} chip {:.2}", kinds, r.tool_life.chip_probability);
+    assert_eq!(r.tool_life.chip_detected, 0, "{:?}", kinds);
     assert!(r.tool_life.unfinished, "the worn-out tool stops instead of cutting the rest of the pocket");
     assert!(r.vb_end_mm < endmill_model::toollife::HARD_LIMIT_FACTOR * ctx.vb_limit_mm() + 0.01, "no deep overrun: {:.3}", r.vb_end_mm);
     assert!((r.growth_cut_min - r.cut_time_min).abs() < 1e-9, "no cap is reached any more: {} vs {}", r.growth_cut_min, r.cut_time_min);
