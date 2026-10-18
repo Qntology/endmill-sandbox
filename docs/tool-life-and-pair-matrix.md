@@ -160,13 +160,84 @@ Ti 여유각 8° 가 10° 보다 나쁨, HSS 로 58 HRC 는 부적합, 알루미
 7. **이전 작업의 열피로·몸체 피로·치핑 위험** — 공구 개체에 열피로만 저장되고 몸체 피로·치핑 위험은 작업마다 0 에서 시작 (이어 쓰는 공구는 과소평가).
 8. **런아웃·유효 반경·길이 보정·FRF·날끝 반경·기계 열변위·소재 온도·냉각 도달·고정 강성·로트 경도·코너 이송·공구 수명 분포** —
    `[UNKNOWN]` 항목별 측정 방법 참조.
+9. **공정감쇠 모델의 형태** (`pd_model`) — 이득 1 + (L/λ)² 하나를 모든 모드에 곱한다. 실제로는 공구 끝에 점성 감쇠 c = C·b·N·cos²/V 가 붙어
+   질량이 작은 공구 모드는 크게, 700 Hz 아래 스핀들·홀더 모드는 거의 감쇠를 받지 않는다 (Tunç·Mohammadi·Budak 2018). 모드별로 반복 계산하는 것이 다음 단계.
+   같은 지름·돌출에서도 가장 약한 모드의 k·ζ 가 약 20배 달라 (실측 0.1~1.9 N/µm) 추정 FRF 의 한계 ap 는 대략 ×0.3~×2 로 본다.
+10. **가변 피치 이득** (`variable_pitch_gain`) — 1.4 고정. 실측·예측은 높은 로브에서 ×1.2~1.6, 첫 로브 근처 ×2~5 이지만 설계 회전수에서 ±15~25 % 벗어나면
+    ×0.5 까지 (Budak 2003, Comak 2013, Iglesias 외 2019). 피치 각도와 설계 회전수를 모르면 계산할 수 없다.
+11. **CFRP 적층·손상** (`cfrp_layup` · `cfrp_damage`) — 적층 순서를 입력받지 않아 조도는 준등방 평균(바닥 1.8 µm), 절삭 계수는 섬유각 평균이다
+    (−45° 층 Ra 3~5 µm, Ktc 420~1,240 N/mm² 가 섬유각에 따라 움직임). 교체를 실제로 정하는 박리·미절단 섬유·수지 탄화는 아직 수치 모델이 없다.
+12. **CFRP 채터** (`cfrp_chatter`) — 공정감쇠 배수 3.5 는 '단단한 고정 트리밍은 안정'이라는 실험 보고에 맞춘 추정이다. CFRP 공정감쇠 계수의 측정값은 못 찾음.
+13. **PVD 코팅의 CFRP 이득** (`pvd_in_cfrp`) — 실측은 3 µm AlTiN 이 약 1 분 안에 날끝에서 벗겨지고 그 뒤로 무코팅과 같거나 더 빨리 닳는다. 모델은 보호 코팅 규칙으로
+    코팅 배수를 수명 전체에 쓴다 (기준 공구 AlTiN 의 절대 수명은 실측 3~6 분에 맞춤).
+14. **다이아몬드 × 철계의 국부 온도** (`diamond_ferrous_onset`) — 흑연화 개시 700 °C 는 국부 온도인데 접촉 평균 계면 온도에 적용한다. 경사면 최고 온도가
+    수십~150 °C 높으면 평균 550~650 °C 구간의 용해가 모델보다 빠를 수 있다 (확산 물질 이동 상한 추정 600 °C 30~55 · 700 °C 50~100 µm/min × 결합 시간 비 — 추정값이라 넣지 않음).
+15. **알루미늄의 탄소 코팅 이득** (`carbon_coating_al_benefit`) — 미스트 프리셋 DLC/무코팅 수명비 약 1.6. 건식 단조 Al 실측은 2.2~3.5배 (Grigoriev 외 2019·2020, Huang 외 2021).
+    고Si 주조 Al 의 다이아몬드 코팅 박리는 모델에 없다.
 
-## 7. 출처 (리서치 정리에서 인용, 일부는 2차 자료)
+## 7. 2차 대조 — 앱 실행 로그 (2026-10-18 19:57~19:59, `run.bat`)
+
+`%APPDATA%\com.qntology.endmill-sandbox\wear_logs` 의 작업 10건. CFRP 프리셋 프로필에서 **공구는 그대로 두고 소재만 바꿔** N:N 을 직접 본 시험이다
+(작업 56~61: Ø10 6날 CVD 다이아몬드 10 µm · 경사 8° · 여유 15° → CFRP · 58 HRC · Ti-6Al-4V · C45 ×2 · 알루미늄, 작업 62~65: Ø12 5날 AlTiN → C45 ×3 · CFRP).
+새 로그 열(`tool_no … chip_p`)·감사 v4·치핑 감지 정지·파손 뒤 공구 개체 은퇴는 의도대로 동작했다.
+
+| 어긋남 | 원인 | 보완 |
+|---|---|---|
+| 다이아몬드 공구를 강·Ti·58 HRC 에 대면 VB 성장 **1,191~33,260 µm/min** (58 HRC: 절삭 0.1 s 에 VB 67 µm) | 랜드가 코팅을 뚫으면 모재 마모율로 옮겨 가는 처리(`exposed_wear_rate`)가 **5 µm 이하 코팅만** 적용 → 10 µm CVD 다이아몬드는 다 닳은 뒤에도 Fe 용해 속도가 이어짐 | 두께 제한 제거 (`toolwear::progressive_coating`). 이 처리는 코팅이 모재보다 빨리 닳는 조합에서만 움직여 보호 코팅은 그대로. 관통 뒤 최대 VB 성장 288 µm/min (C45, Vc 180, 날끝 799 °C) |
+| 용도 적합도 치핑 배수 **×3,294** (58 HRC) | 지수식 상한 1e4 | 상한 ×100 (`appfit::CHIP_FACTOR_MAX`, 판정 문턱 ×8 의 열 배 남짓), 자른 사실을 메모로 |
+| 다이아몬드 × Ti 공칭 수명 1.3분 (같은 행렬의 TiAlN·AlTiN·AlCrN·nACo 공구 33~56분) | 탄소계 코팅 × Ti 확산을 온도 시그모이드로 키움 | **TiC·(Ti,V)C 장벽**으로 확산이 막혀 폭주하지 않음 → 무코팅 초경 수준 (Lindvall 외 2023, Abang Kamaruddin 외 2016). 다이아몬드 코팅 엔드밀 Ti-6Al-4V 에어 56 m/min: 약 5분에 일부 박리, VB 0.2 mm 까지 TiAlN 의 약 0.8배 (Qin 외 2014) → 화학 궁합 '주의'(2) |
+| 다이아몬드 × Fe·Ni 용해 시작 450 °C | — | 촉매 흑연화는 700 °C 위에서 빨라짐 (Chen·Zhang·Arsecularatne 2007 약 970 K, Zou 외 2017 DTA 공기 중 740 °C, Shimada 외 2004 1000 K 위 원자 교환·900 K 아래 산화). 그 아래에서도 화학 마모는 큼 (연강 대 황동 약 10⁴배, Thornton·Wilks 1978) → 시작 700 °C, 바닥 몫 유지, 궁합은 온도와 관계없이 '심각'(3) |
+| 반경 마모 감사 문구 'VB·tan 여유각' | 경사각 보정 뒤 문구만 남음 | VB·tanα/(1−tanα·tanγ) 로 |
+
+새 로그: `coating_through` 사건(관통 VB·절삭 시간·날끝 온도, 관통 뒤 마모율이 어떻게 바뀌는지), `[UNKNOWN] coating_life`(코팅 두께·관통 랜드·관통 시각, 박리·CVD 전처리 Co 결핍층은 모델에 없음),
+행렬 칸의 `path_vb_rate_max_um_min`·`path_coating_through_s`·`nonfinite`, 물리 점검 `pairmatrix::check` → `[MATRIX-CHECK]` (시험 단계 14).
+
+확인 못 한 것: CVD 전처리로 Co 가 빠진 4~15 µm 층(VB 로 15~58 µm 구간)은 인성이 24~38 % 떨어지지만(Zhou 외 2024, 미세 드릴) 마모율 배수 자료는 없음 ·
+철 용해의 물질 전달 상한(Kramer·Suh 1980 형 계산, 600 °C 17~55 · 800 °C 330~660 µm/min)은 추정이라 넣지 않음 · 가공(wrought) 알루미늄에서 다이아몬드 마모율(모델 정상 4 µm/min)은 높을 수 있음 ·
+AlTiN 의 CFRP 마모율, CFRP 채터·조도, 기본 FRF 의 현실성은 이어서 확인.
+
+## 8. 3차 대조 — 리서치 반영 (탄소 코팅 마찰 · CFRP · 채터 조도 · 공정감쇠)
+
+2차 보완 뒤의 시험·행렬을 다시 리서치(코팅 화학·코팅 관통, CFRP 트리밍, 무코팅 초경 마모율, 공구 끝 FRF·공정감쇠·가변 피치, 채터 조도)와 대조했다.
+
+| 어긋남 | 원인 | 보완 |
+|---|---|---|
+| 다이아몬드·DLC × 30 HRC 강 계면 **1,046~1,052 °C**, × 스테인리스 812 °C (같은 칸 PVD 공구 683~794 °C) | 탄소 코팅 마찰을 산화·용해 정도만큼 최대 ×4 (1 + over + 2·dissolution) 로 키움 → μ 가 상한 1.2 까지 가 계면 온도를 다시 올리는 되먹임. 철계에서 코팅 마찰 배수는 이미 1.0 (실측 코팅 효과 절삭력 0~6 %) | 무너진 탄소 코팅도 다른 비보호 코팅처럼 +12 % 까지 (`tribology::contact_friction`). 30 HRC 강 724 °C · 스테인리스 594 °C · C45 564 °C, DLC × C45 수명 0.6 → 13.3 분 (무코팅 18.7 분보다 짧음 — 코팅이 먼저 닳고 그 뒤 모재) |
+| 흑연화 개시를 700 °C 로 올린 뒤 다이아몬드 × C45 관통 시험이 경로 안에서 관통하지 못함 | 평균 계면 547~592 °C 는 개시 아래라 바닥 몫(0.25)만 남음 — 화학 궁합은 여전히 '심각'(3), 확산 항은 무코팅의 6배 | 시험을 '뚫린 랜드(띠 폭의 3배)에서 시작해 같은 랜드의 무코팅 공구와 비교'로: 13.3 대 8.5 µm/min (비 1.56 — 노출 몫 2/3 조화 혼합의 기대 1.4~1.5) |
+| CFRP 다이아몬드 공구 수명 **120.6 분**, PVD 공구 22~47 분 | AlTiN 기준 공구의 기준 수명 60 분 — 근거 없음 | TiAlN CFRP 밀링 VBmax 0.67~1.3 µm/날 접촉 m (Ozkan 외 2020) → 5 분. 다이아몬드 10.8 분 → 아래 채터 보정 뒤 17.3 분 (실측 5~18, Hamedanianpour 2013), PVD 2.5~4.9 분 (실측 3~6), DLC 2.9 분 |
+| CFRP 경로 평균 합력 342 N (6 mm 판, 실효 kc1.1 397) | kc1.1 600 | 420 (Kienzle 맞춤 250~420 · Karpat 외 2012 PCD 환산 340) — 실측 환산 215~240 N. thermal_factor 0.42 → 0.5 (kc 과대를 깎던 값), 프리셋 계면 276 → 241 °C |
+| CFRP 과열 판정 180 °C 에 모든 CFRP 절삭이 걸림 | 수지 Tg (가공면 온도)를 날끝 계면 온도와 비교 | 350 °C — 새 공구 300 °C 깨끗, 마모 공구 475 °C 수지 탄화 (Delahaigue 외 2017), 수지 연소 315 °C (Kerrigan·O'Donnell 2016) |
+| CFRP 길들이기 20 µm / 2 분 | — | 30 µm / 0.35 분 (첫 1 m 슬롯에 25~40 µm) |
+| CFRP 조도 바닥 1.0 µm (가정), 강의 마모 곡선 | — | 1.8 µm (준등방 평균: 0°·45°·90° 0.7~1.5, −45° 3~5 µm), 마모 배수 1 (다이아몬드 코팅은 마모될수록 수지가 번져 낮아짐), Rz/Ra 8 (실측 5~14) |
+| 측벽 Ra 중앙 10.2 · 최대 32.7 µm, 64칸 중 57칸 채터 | 채터 Ra = 0.2·max(Rt, 파상도) — 거르지 않은 파상도(산-골 30~180 µm)를 Ra 로 읽음 | 거칠기 필터를 거친 실측 채터 Ra 는 안정의 2~6배, 최대 약 6 µm (Honeycutt·Schmitz 2017, Liu 외 2025, Kurpiel 외 2023) → Ra = 안정 × (1 + 2·(min(ρ,3) − 1)), 파상도는 `chatter_wpv_um` 으로 따로. 아래 공정감쇠와 함께 행렬 Ra 중앙 10.2 → 1.35 µm · 최대 32.7 → 6.2 µm, CFRP 열 2.0~3.5 µm |
+| 공정감쇠 이득 1.08 (AISI 1050, 파장 0.58 mm — 실측 2.5~3.5) | 임계 길이 0.15 mm + 2·VB | 0.75 mm + 0.5·VB (`dynamics::PD_CRITICAL_MM` · `PD_WEAR_COEF`, Mohammadi·Tunç·Budak 2017 · Kurata 외 2010) — C45 프리셋(파장 1.13 mm) 이득 1.44. 마모 항은 계수 C 가 중간 마모까지 10~25 % 만 오른다는 실측(Tyler·Schmitz 2014)에 맞춰 줄임 |
+| CFRP 거의 모든 칸 채터 (행렬 채터 칸 57/64) | 공정감쇠 배수 0.3 — 근거 없음 | 3.5 (행렬 채터 칸 57 → 37, CFRP 8 → 2: 가는 공구 Ø6 두 개만): 단단히 고정한 트리밍은 0차 이론이 채터를 예측하는 조건(필요 이득 3~30배)에서도 안정 (Karpat 2012, Hamedanianpour 2013, Delahaigue 2017), 파장이 긴 저주파 모드는 여전히 채터 (Rusinek·Lajmert 2020) |
+
+내장 프리셋의 채터 여유 (공정감쇠 보정 뒤, 새 공구): 티타늄 2.18 (파장 0.28 mm, 이득 상한 5) · 스테인리스 3.18 · 인코넬 1.77 (스핀들 모드 970 Hz, 파장 0.52 mm) ·
+알루미늄 정삭 3.15 · CFRP 2.21 은 안정, 탄소강 0.63 (이득 1.97, 예전 약 0.33) · 알루미늄 황삭 0.17 (Ø6 2날, k 2.7 N/µm) · 금형강 볼 롱넥 0.06 (k 1.4 N/µm, ap 5.4 mm) 은 채터.
+VB 0.2 mm 에서 탄소강 여유는 0.63 → 0.72 (공정감쇠 마모 항). 이 값들은 추정 FRF 기준이라 실제는 대략 ×0.3~×2 (`[UNKNOWN] pd_model`).
+
+공구 끝 동특성 리서치의 결론: 기본 ζ 식 0.28·(L/D)^−1.38 과 홀더 50 · 스핀들 30 N/µm 은 실측(L/D 3.75 에서 ζ 5.4 %, L/D 4.8 에서 2.3~4.0 %, 지지 강성 약 18 N/µm)과 맞아
+기본값을 옮기지 않았다. 실험실의 최소 한계 ap (알루미늄 0.5~3.5 mm, 강 0.6~2 mm) 도 모델 크기와 같다. 크게 어긋난 것은 공정감쇠(위 표)와 채터 조도였다.
+남은 것: 공구 모드 고유진동수가 짧은 공구에서 낮게(Ø12×35 2.65 kHz, 실측 Ø12×40 3.8 kHz) 나오는 질량 모델, 알루미늄 Kt 가 실측의 1.4~1.7배인 점, 가변 피치 이득 고정 — 6장 9~10.
+
+새 로그: `[UNKNOWN] pd_model · variable_pitch_gain · cfrp_layup · cfrp_chatter · cfrp_damage · pvd_in_cfrp · diamond_ferrous_onset · carbon_coating_al_benefit`,
+`[COAT] C45 다이아몬드 계면 · 흑연화 몫 · 확산 항 · μ` (interaction_physics), `[EOL] 코팅 관통 랜드 … 평균 VB 성장 다이아몬드 · 무코팅` (tool_life_matrix).
+
+## 9. 출처 (리서치 정리에서 인용, 일부는 2차 자료)
 
 ISO 8688-2:1989 (견본) · ISO 3685 · FANUC 30i-A Tool Life Management (A-79409E) · SINUMERIK 840D 공구 감시 · Caron TMAC · Haas Setting 84 ·
 US4633424 · US4723219 · US5631851 · Kuczmaszewski 외 2017 (Mechanik 3/2017) · Matuszak 외 2023 (Materials 16:5361) ·
 Gao 외 2022 (Micromachines 13:1805) · Wojciechowski 외 2023 (Tribol. Int. 181:108313, arXiv 2403.15554) · Usui 외 1984 · Kops & Vo 1990 · Karandikar 2021 (tool life data) ·
 Schmitz 2008 (milling error sources) · Colantonio 외 2025 (IJPHM 16(4)) · Uhlmann 외 2022 (euspen TI22105) · Tan 외 2021 (IJAMT 116) · Dai 외 2020 (Materials 13:2202) ·
 Mičietová 외 2023 (Materials 16:1709) · Abbas 외 2021 (Materials 14:7128) · Hovsepian 외 2006 (Surf. Coat. Technol. 201) · Uddin 외 2017 (Adv. Manuf. 5) ·
-Wei 외 2013 (CrystEngComm 15) · Harvey Tool/Performance · OSG · Kennametal · Mitsubishi Materials ·
+Wei 외 2013 (CrystEngComm 15) · Chen·Zhang·Arsecularatne 2007 (IJMTM 47) · Zou 외 2017 (Crystals 7:116) · Shimada 외 2004 (CIRP Annals 53) ·
+Thornton·Wilks 1978 (Nature 274) · Lindvall 외 2023 (J. Eur. Ceram. Soc. 43) · Abang Kamaruddin 외 2016 (IJAT 10) · Qin 외 2014 (JAMDSM 8) ·
+Zhou 외 2024 (Materials 17:5593) · Hamedanianpour 2013 (ÉTS M.Eng.) · Karpat 외 2012 (IJMTM 56) · Ozkan 외 2020 (Coatings 10:623) ·
+Wang 외 2013 (J. Manuf. Process. 15) · Sturtevant 2013 (WSU MS) · Delahaigue 외 2017 (Fibers 5:46) · Kerrigan·O'Donnell 2016 (Procedia CIRP 55) ·
+Duboust 외 2021 (Proc. IMechE B 235) · Ashworth 외 2022 (Wear 498–499) · Geier·Pereszlai 2020 (PPME 64) · Hintze·Hartmann 2013 (Procedia CIRP 8) ·
+Rusinek·Lajmert 2020 (Materials 13:4105) · Honeycutt·Schmitz 2017 (Procedia Manuf. 10) · Liu 외 2025 (Procedia CIRP 133) · Kurpiel 외 2023 (Sensors 23:9905) ·
+Mohammadi·Tunç·Budak 2017 (Procedia CIRP 58) · Kurata 외 2010 (JAMDSM 4) · Tyler·Schmitz 2014 (NAMRI/SME 42) · Budak 2003 (JMSE 125) ·
+Iglesias 외 2019 (Materials 12:112) · Comak 2013 (Sabancı MSc) · Grigoriev 외 2019 (JPCS 1281) · Huang 외 2021 (Coatings 11:63) · US 6,436,204 B1 ·
+Guo 외 2020 (IJEM 2:012001) · Kümmel 외 2013 (Adv. Tribol.) · Harvey Tool/Performance · OSG · Kennametal · Mitsubishi Materials ·
 Sandvik Coromant · Oerlikon Balzers · Platit · Renishaw NC4 · Blum LaserControl · Haimer · Rego-Fix · BIG KAISER.

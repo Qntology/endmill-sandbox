@@ -457,12 +457,26 @@ fn critical(br: &Branches) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
+/// 새 날의 공정감쇠 임계 파장 (mm, 강 기준 · 여유각 10°). 0.15 → 0.75: 예전 값은 AISI 1050 Ø18 4날 50 % 절입에서 파장 0.58 mm (116 m/min,
+/// 공구 모드 3,352 Hz) 의 이득을 1.08 로 냈지만, 실측은 공정감쇠 없는 예측 0.6 mm 에 대해 1.5 mm 안정 · 2.1 mm 채터 — 이득 2.5~3.5
+/// (Mohammadi·Tunç·Budak 2017 Procedia CIRP 58:198, doi:10.1016/j.procir.2017.03.209). 그 논문의 '141 m/min 아래에서 강함'(파장 0.70 → 2.1),
+/// AISI 1045 의 '126 m/min 아래에서 보임' (Kurata 외 2010 JAMDSM 4:1107) 과도 맞는다. 피삭재 배수는 공정감쇠 계수 C 의 비
+/// (Tyler·Schmitz 2014 NAMRI/SME 42: 1018 강 1.3~2.0 · Ti-6Al-4V 1.2~1.8 · 304 4.1~5.8 ×10⁵ N/m)
+pub const PD_CRITICAL_MM: f64 = 0.75;
+/// 플랭크 마모 1 mm 당 임계 길이 증가 (mm/mm) — `process_damping_gain` 참고
+pub const PD_WEAR_COEF: f64 = 0.5;
+
+/// 공정감쇠 이득 = 1 + (L_c/λ)², λ = Vc/f_채터, L_c = (0.75 + 0.5·VB)·피삭재 배수·여유각 배수, 상한 5.
+/// 마모 항 2·VB → 0.5·VB: 임계 길이를 0.75 로 바로잡은 뒤 2·VB 로 두면 VB 0.2 mm 에서 이득−1 이 2.4배가 된다 — 실측은 계수 C 가
+/// 낮은 마모(FWW < 100 µm)에서 중간 마모(150~250 µm)로 10~25 % (Tyler·Schmitz 2014), VB 두 배에 12~16 % (Kurata 외 2010) 오를 뿐이다
+/// 모든 모드에 같은 이득을 곱하는 근사라 저주파 스핀들 모드(공정감쇠를 거의 안 받음)가 한계를 정하는 경우를 놓칠 수 있다 — 모드별 점성 감쇠
+/// c = C·b·N·cos²/V 를 공구 끝에 달아 반복하는 것이 다음 단계 (`simaudit` 의 pd_model)
 pub fn process_damping_gain(vc_m_min: f64, chatter_hz: f64, flank_wear_mm: f64, material_factor: f64) -> f64 {
     if vc_m_min <= 0.0 || chatter_hz <= 0.0 {
         return 1.0;
     }
     let wavelength = vc_m_min * 1000.0 / 60.0 / chatter_hz;
-    let critical = (0.15 + 2.0 * flank_wear_mm) * material_factor;
+    let critical = (PD_CRITICAL_MM + PD_WEAR_COEF * flank_wear_mm) * material_factor;
     (1.0 + (critical / wavelength.max(1e-6)).powi(2)).min(5.0)
 }
 
@@ -749,7 +763,13 @@ mod tests {
     #[test]
     fn low_speed_process_damping_raises_limit() {
         assert!(process_damping_gain(20.0, 2500.0, 0.0, 1.3) > process_damping_gain(200.0, 2500.0, 0.0, 1.3));
-        assert!(process_damping_gain(40.0, 2500.0, 0.3, 1.0) > process_damping_gain(40.0, 2500.0, 0.0, 1.0));
+        // 40 m/min 은 새 날도 상한(5)이라 마모 효과가 안 보인다 — 파장 0.67 mm 인 100 m/min 에서 본다
+        assert!(process_damping_gain(100.0, 2500.0, 0.3, 1.0) > process_damping_gain(100.0, 2500.0, 0.0, 1.0));
+        // AISI 1050 실측 (파장 0.58 mm 에서 이득 2.5~3.5, Mohammadi 외 2017) 과 고속 C45 (파장 약 1.1 mm 에서 1.2~2배 추정)
+        let g = process_damping_gain(116.0, 3352.0, 0.0, 1.0);
+        assert!(g > 2.3 && g < 3.5, "{}", g);
+        let g = process_damping_gain(180.0, 2650.0, 0.0, 1.0);
+        assert!(g > 1.2 && g < 2.0, "{}", g);
     }
 
     #[test]

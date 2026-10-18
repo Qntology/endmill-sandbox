@@ -228,7 +228,7 @@ pub struct AuditWear {
     /// 경로 물리 궤적이 말하는 남은 절삭 시간(분)과 부품당 절삭 시간(분)
     pub path_remaining_min: f64,
     pub part_cut_min: f64,
-    /// 반경 마모(VB·tan 여유각)가 공차를 다 쓰는 VB (mm). VB 한계보다 작으면 치수 기준 수명이 먼저 온다
+    /// 반경 마모(VB·tanα/(1−tanα·tanγ), `ToolGeometry::radial_per_vb`)가 공차를 다 쓰는 VB (mm). VB 한계보다 작으면 치수 기준 수명이 먼저 온다
     pub vb_dim_mm: f64,
     /// 치수 기준(VB_dim)으로 환산한 교체까지 부품 수 — 경로 물리 궤적 사용
     pub parts_by_dimension: Option<f64>,
@@ -886,9 +886,10 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             vb_dim,
             &format!("VB 한계 {:.3} mm", limit),
             format!(
-                "공차 {:.0} µm 를 반경 마모(VB·tan {:.0}° 여유각)가 다 쓰는 VB 는 {:.3} mm 로 VB 한계 {:.2} mm 보다 작다 — 치수 기준으로는 교체까지 {}개 (VB 한계 기준 {})",
+                "공차 {:.0} µm 를 반경 마모(VB·tanα/(1−tanα·tanγ), 여유 {:.0}° · 경사 {:.0}°)가 다 쓰는 VB 는 {:.3} mm 로 VB 한계 {:.2} mm 보다 작다 — 치수 기준으로는 교체까지 {}개 (VB 한계 기준 {})",
                 ctx.tolerance_mm * 1000.0,
                 t.clearance_deg,
+                t.rake_deg,
                 vb_dim,
                 limit,
                 parts_dim.map(|v| format!("{:.0}", v.floor())).unwrap_or_else(|| "-".into()),
@@ -1653,6 +1654,25 @@ pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSim
             "충격 해머 + 가속도계 탭 테스트 (공구당 약 15 분)",
         );
     }
+    if st.chatter_hz > 0.0 && st.margin.is_finite() {
+        let lam = nominal.vc_effective_m_min * 1000.0 / 60.0 / st.chatter_hz;
+        add(
+            "pd_model",
+            format!("공정감쇠 이득 ×{:.2} (채터 {:.0} Hz · 파장 {:.2} mm — 모든 모드에 같은 이득, 상한 5)", st.process_damping_gain, st.chatter_hz, lam),
+            "공정감쇠 계수 C 1.2~5.8 ×10⁵ N/m (피삭재·여유각·마모, Tyler·Schmitz 2014). 강 공구 모드 이득 2.5~3.5 (파장 0.58 mm, Mohammadi 외 2017), 700 Hz 아래 스핀들·홀더 모드는 거의 받지 못함",
+            format!("채터 여유 {:.2} — 공정감쇠, 가장 약한 모드의 k·ζ (같은 지름·돌출에서도 약 20배 차), 가변 피치 패턴 때문에 실제 한계는 대략 ×0.3~×2", st.margin),
+            "탭 테스트로 FRF 를 넣고, ap 를 두세 단계로 바꿔 시험 절삭 (소리·표면 자국)",
+        );
+    }
+    if t.variable_pitch {
+        add(
+            "variable_pitch_gain",
+            format!("가변 피치 이득 ×{:.1} 고정", st.pitch_gain),
+            "높은 로브(채터/날 통과 ≳ 10)에서 ×1.2~1.6, 첫 로브 근처 ×2~5 — 설계 회전수에서 ±15~25 % 벗어나면 ×0.5 까지 떨어짐 (Budak 2003 JMSE 125:29, Comak 2013 Sabancı 석사논문, Iglesias 외 2019 Materials 12:112)",
+            "채터 여유·추천 회전수 — 피치 각도와 설계 회전수를 모르면 이득을 계산할 수 없음".into(),
+            "공구 제조사에 피치 각도 문의, 또는 회전수를 ±10 % 바꿔 가며 시험 절삭",
+        );
+    }
     add(
         "edge_radius_um",
         format!("{:.1} µm (호닝 + 코팅 {:.1} µm × 0.8 추정{})", t.edge_radius_um, t.coating.thickness_um, if t.geometry_from_workpiece { ", 피삭재 기본값" } else { "" }),
@@ -1720,6 +1740,76 @@ pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSim
         "교체할 때마다 절삭 시간과 VB 기록 → 분포 맞춤",
     );
     let tlr = &rep.tool_life;
+    if t.coating.thickness_um > 0.0 && !t.coating.chem.bare {
+        let through = tlr.events.iter().find(|e| e.kind == "coating_through");
+        add(
+            "coating_life",
+            format!(
+                "{} {:.1} µm · 관통 랜드 {:.0} µm (두께 / sin 여유각){}",
+                t.coating.family,
+                t.coating.thickness_um,
+                crate::toolwear::coating_strip_um(t),
+                through
+                    .map(|e| format!(" · 이번 경로에서 공구 #{} 이 작업 절삭 {:.1} s 에 관통", e.tool_no, e.t_cut_s))
+                    .unwrap_or_else(|| " · 이번 경로에서는 관통 안 함".into())
+            ),
+            "PVD 1~5 µm · CVD 다이아몬드 6~20 µm. 박리(층간 균열)·CVD 전처리의 Co 결핍층은 모델에 없어 실제로는 더 일찍 벗겨질 수 있음",
+            "관통 전에는 코팅 배수(화학 궁합), 뒤에는 드러난 몫만큼 무코팅 초경 마모율 — 맞지 않는 코팅(다이아몬드로 강·Ti)은 관통 시점이, 보호 코팅은 관통 뒤 가속이 수명을 크게 바꿈".into(),
+            "처음 10 s · 1 min · 5 min 뒤 날을 공구 현미경으로 보고 코팅이 벗겨진 폭을 기록 (실측 VB 와 같이 입력)",
+        );
+    }
+    use crate::tribology::WpChem;
+    let chem = ctx.wp.chem;
+    if t.coating.family == "Diamond" && matches!(chem, WpChem::Iron | WpChem::Nickel) {
+        add(
+            "diamond_ferrous_onset",
+            format!("흑연화 개시 700 °C (국부 온도 기준) 를 접촉 평균 계면 {:.0} °C 에 적용, 그 아래는 화학 마모 바닥 몫 0.25", nominal.thermal.interface_c),
+            "정적 시험 700~740 °C (공기 중 DTA 740 °C · Zou 외 2017, 약 970 K · Chen 외 2007). 경사면 최고 온도는 평균보다 수십~150 °C 높을 수 있고, 그 아래에서도 새 면 반응·산화로 화학 마모가 큼 (Thornton·Wilks 1978)",
+            "코팅 관통 시점과 관통 전 마모율 — 평균 550~650 °C 구간에서는 실제 용해가 모델보다 빠를 수 있음 (확산 물질 이동 상한 추정 600 °C 30~55 · 700 °C 50~100 µm/min × 날 결합 시간 비, 리서치 추정값)".into(),
+            "쓰지 않는 조합 — 꼭 써야 하면 처음 10 s · 1 min 뒤 날을 현미경으로 보고 코팅이 없어진 폭을 기록",
+        );
+    }
+    if chem == WpChem::CarbonFiber {
+        add(
+            "cfrp_layup",
+            format!("준등방 적층 평균 — 측벽 Ra 바닥 {:.1} µm, 절삭 계수는 섬유각 평균", crate::surface::ra_floor_um(crate::pairref::WpGroup::Cfrp)),
+            "0°·45°·90° 층 Ra 0.7~1.5 µm · −45°(135°) 층 3~5 µm (새 CVD 공구 3~13 µm), 하향 절삭은 2~6배 거침. Ktc 420~1,240 N/mm² 로 섬유 절단각 약 120° 에서 최대 (Karpat 외 2012)",
+            "측벽 Ra·Rz, 박리·미절단 섬유가 생기는 층, 회전당 힘 변동".into(),
+            "적층 순서(도면) 확인, −45° 층만 따로 조도 측정, 가장자리를 확대해 박리·섬유 돌출 확인",
+        );
+        add(
+            "cfrp_chatter",
+            format!("재생 채터 여유 {:.2} (금속과 같은 0차 해석)", st.margin),
+            "단단히 고정한 Ø6~12 CFRP 트리밍에서는 재생 채터 보고가 없음 — 0차 이론이 채터를 예측하는 슬롯 ap 3.6~10 mm 도 안정 (Hamedanianpour 2013, Karpat 외 2012, Delahaigue 외 2017, Ashworth 외 2022). 채터는 홀더 모드 600~700 Hz 같은 유연한 계에서 보고됨 (Rusinek·Lajmert 2020)",
+            "채터 확률·떨림 자국·Ra — 여유 < 1 이어도 실제로는 안정일 수 있음 (빠진 감쇠 후보: 섬유 탄성 복원, 정량 자료 없음)".into(),
+            "탭 테스트, 시험 절삭의 소리·가속도 스펙트럼에 날 통과 주파수 말고 다른 봉우리가 있는지 확인",
+        );
+        add(
+            "cfrp_damage",
+            "모델 없음 — VB·Ra 만 계산 (Ra 는 다이아몬드 코팅 공구에서 마모될수록 오히려 낮아짐)".into(),
+            "박리·섬유 돌출 깊이 0.1~0.2 mm (마모된 날 r 90 µm, Hintze·Hartmann 2013), −45° 층 뽑힘 구멍 약 40 µm, 마모 공구 날끝 475 °C 에서 수지 탄화 (Delahaigue 2017)",
+            "공구 교체 시점 — 실제로는 VB 0.2 mm 보다 박리·미절단 섬유·탄 자국이 먼저 오는 경우가 많음".into(),
+            "N 개마다 가장자리 확대 사진(박리 길이·섬유 돌출)과 날끝 반경 측정",
+        );
+        if !t.coating.chem.bare && !t.coating.chem.carbon {
+            add(
+                "pvd_in_cfrp",
+                format!("{} 코팅 배수를 수명 전체에 씀 (보호 코팅 규칙)", t.coating.family),
+                "CFRP 에서 3 µm AlTiN 은 약 1 분(드릴 50 구멍) 안에 날끝에서 벗겨지고, 그 뒤로는 무코팅과 같거나 더 빨리 닳음 (Wang 외 2013 · Sturtevant 2013, Ozkan 외 2020)",
+                "PVD 공구의 CFRP 수명 — 기준 공구 AlTiN 의 절대 수명은 실측 3~6 분에 맞췄지만, 무코팅 대비 이득(경도 몫)은 실측보다 큼".into(),
+                "같은 조건에서 무코팅 공구와 VB 0.1 mm 까지의 절삭 길이 비교",
+            );
+        }
+    }
+    if chem == WpChem::Aluminum && t.coating.chem.carbon {
+        add(
+            "carbon_coating_al_benefit",
+            format!("{} 응착 배수 0.45 (무코팅 0.9) — 미스트 프리셋에서 DLC/무코팅 수명비 약 1.6", t.coating.family),
+            "건식 단조 Al 에서 DLC 수명은 무코팅의 2.2~3.5배 (Grigoriev 외 2019·2020, Huang 외 2021). 고Si 주조 Al 에서 10 µm 다이아몬드는 랜드 40~60 µm 에서 관통·박리가 수명을 정함 (US 6,436,204)",
+            "탄소 코팅의 Al 수명 — 단조 Al 건식 실측보다 보수적, 고Si 주조 Al 은 박리를 모델이 다루지 않음".into(),
+            "같은 조건에서 무코팅·DLC 공구 VB 곡선 비교, 고Si 합금은 코팅 박리 시점 기록",
+        );
+    }
     add(
         "tool_body_strength",
         format!("{} 항절력 {:.0} MPa → 정적 {:.0} · 피로 {:.0} MPa", tlr.strength.label, tlr.strength.trs_mpa, tlr.strength.static_mpa(), tlr.strength.fatigue_mpa()),

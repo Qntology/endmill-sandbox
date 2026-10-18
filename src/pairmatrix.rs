@@ -129,6 +129,15 @@ pub struct MatrixCell {
     pub path_wall_max_um: f64,
     pub path_ra_max_um: f64,
     pub path_cut_min: f64,
+    /// 경로 시뮬레이션의 최대 VB 성장 속도 (µm/min) — 코팅이 있으면 랜드가 코팅을 뚫은 뒤(VB > 2 × 관통 랜드)의 빈만, 무코팅이면 전 구간
+    #[serde(default)]
+    pub path_vb_rate_max_um_min: f64,
+    /// 코팅 관통 시각 (그 공구의 작업 절삭 s) — 경로 안에서 뚫리지 않았으면 None
+    #[serde(default)]
+    pub path_coating_through_s: Option<f64>,
+    /// 계산 중 유한하지 않은 값(NaN·∞)이 나온 항목 — 저장할 때 0 으로 바꾸므로 여기에 따로 남긴다
+    #[serde(default)]
+    pub nonfinite: Vec<String>,
     /// 종합 판정 0 적합 · 1 주의 · 2 부적합 과 그 이유
     pub verdict: u8,
     pub reasons: Vec<String>,
@@ -204,6 +213,22 @@ pub fn evaluate_cell(tool: &EndMillMockupSetting, uc: &UseCase, pattern: Option<
         fit_reasons: fit.reasons(),
         ..Default::default()
     };
+    for (k, v) in [
+        ("vc_m_min", a.vc_m_min),
+        ("fz_mm", a.fz_mm),
+        ("life_min", a.wear.tool_life_min),
+        ("mrr_cm3_min", a.mrr_cm3_min),
+        ("interface_c", a.thermal.interface_c),
+        ("chatter_margin", a.stability.margin),
+        ("ra_um", a.surface.wall_ra_um),
+        ("spindle_kw", a.spindle_power_kw),
+        ("fit_wear", fit.wear_factor),
+        ("fit_chip", fit.chip_factor),
+    ] {
+        if !v.is_finite() {
+            cell.nonfinite.push(k.into());
+        }
+    }
     if let Some(pk) = pattern {
         cell.path_pattern = pk.into();
         match crate::viewport::build_report_prog(&p, pk, &ctx, &mut |_| true) {
@@ -220,6 +245,21 @@ pub fn evaluate_cell(tool: &EndMillMockupSetting, uc: &UseCase, pattern: Option<
                 cell.path_wall_max_um = fin(r.max_wall_error_um);
                 cell.path_ra_max_um = fin(r.wall_ra_max_um);
                 cell.path_cut_min = fin(r.cut_time_min);
+                let strip_mm = crate::toolwear::coating_strip_um(&ctx.tool) / 1000.0;
+                cell.path_vb_rate_max_um_min = r.wear_log.iter().filter(|b| b.vb_mm > 2.0 * strip_mm).map(|b| b.vb_rate_um_min).fold(0.0, f64::max);
+                cell.path_coating_through_s = tl.events.iter().find(|e| e.kind == "coating_through").map(|e| e.t_cut_s);
+                for (k, v) in [
+                    ("path_vb_end_mm", r.vb_end_mm),
+                    ("path_stress_ratio", tl.peak_stress_ratio),
+                    ("path_wall_max_um", r.max_wall_error_um),
+                    ("path_ra_max_um", r.wall_ra_max_um),
+                    ("path_vb_rate_max_um_min", cell.path_vb_rate_max_um_min),
+                ] {
+                    if !v.is_finite() {
+                        cell.nonfinite.push(k.into());
+                    }
+                }
+                cell.path_vb_rate_max_um_min = fin(cell.path_vb_rate_max_um_min);
             }
             Err(e) => {
                 cell.path_state = format!("오류: {}", e);
@@ -298,11 +338,11 @@ pub fn rank(cells: &mut [MatrixCell]) {
 }
 
 pub fn csv(cells: &[MatrixCell]) -> String {
-    let mut s = String::from("use_case,material,tool,tool_model,coating,substrate,intended,vc_m_min,fz_mm,ap_mm,ae_mm,rpm,life_min,mrr_cm3_min,life_volume_cm3,life_vs_best,rank,dominant,interface_c,chatter_margin,ra_um,spindle_kw,power_ok,compat_severity,fit_verdict,fit_score,fit_wear,fit_chip,fit_bue,fit_evac,path_pattern,path_state,path_completed,path_failure,path_vb_end_mm,path_life_used_max,path_stress_ratio,path_fatigue,path_chip_p,path_wall_max_um,path_ra_max_um,path_cut_min,verdict,reasons\n");
+    let mut s = String::from("use_case,material,tool,tool_model,coating,substrate,intended,vc_m_min,fz_mm,ap_mm,ae_mm,rpm,life_min,mrr_cm3_min,life_volume_cm3,life_vs_best,rank,dominant,interface_c,chatter_margin,ra_um,spindle_kw,power_ok,compat_severity,fit_verdict,fit_score,fit_wear,fit_chip,fit_bue,fit_evac,path_pattern,path_state,path_completed,path_failure,path_vb_end_mm,path_life_used_max,path_stress_ratio,path_fatigue,path_chip_p,path_wall_max_um,path_ra_max_um,path_cut_min,path_vb_rate_max_um_min,path_coating_through_s,nonfinite,verdict,reasons\n");
     let q = |x: &str| format!("\"{}\"", x.replace('"', "'"));
     for c in cells.iter() {
         s.push_str(&format!(
-            "{},{},{},{},{},{},{},{:.1},{:.4},{:.2},{:.2},{:.0},{:.2},{:.3},{:.1},{:.3},{},{},{:.0},{:.3},{:.3},{:.3},{},{},{},{:.3},{:.3},{:.2},{:.3},{:.3},{},{},{:.3},{},{:.4},{:.3},{:.3},{:.4},{:.3},{:.2},{:.3},{:.3},{},{}\n",
+            "{},{},{},{},{},{},{},{:.1},{:.4},{:.2},{:.2},{:.0},{:.2},{:.3},{:.1},{:.3},{},{},{:.0},{:.3},{:.3},{:.3},{},{},{},{:.3},{:.3},{:.2},{:.3},{:.3},{},{},{:.3},{},{:.4},{:.3},{:.3},{:.4},{:.3},{:.2},{:.3},{:.3},{:.2},{},{},{},{}\n",
             c.use_case,
             q(&c.material),
             q(&c.tool),
@@ -345,6 +385,9 @@ pub fn csv(cells: &[MatrixCell]) -> String {
             c.path_wall_max_um,
             c.path_ra_max_um,
             c.path_cut_min,
+            c.path_vb_rate_max_um_min,
+            c.path_coating_through_s.map(|s| format!("{:.2}", s)).unwrap_or_default(),
+            q(&c.nonfinite.join(" ")),
             c.verdict,
             q(&c.reasons.join(" / "))
         ));
@@ -428,5 +471,123 @@ pub fn lines(cells: &[MatrixCell]) -> Vec<String> {
         v.push(format!("[MATRIX-GRID] {} | {}", t, row.join(" | ")));
     }
     v.push("[MATRIX-GRID] ○ 적합 · △ 주의 · × 부적합 · 숫자 = 그 소재에서의 순위 · * = 내장 프리셋의 의도된 짝".into());
+    v
+}
+
+// ---------------------------------------------------------------- 물리 타당성 점검 (N:N 시험)
+
+/// 이보다 빠른 VB 성장(µm/min)은 물리적으로 말이 안 된다 — 코팅이 뚫린 뒤 무코팅 초경이 가장 나쁜 조합에서 수십~수백 µm/min.
+/// 2026-10-18 앱 로그의 다이아몬드 공구 × 강·Ti (1,191~33,260 µm/min, 코팅 관통 처리 누락)를 다시 잡는 문턱
+pub const VB_RATE_ABSURD_UM_MIN: f64 = 2000.0;
+/// 계면 온도의 물리 상한 (°C) — 이보다 높으면 계산이 녹는점·공구 허용 온도를 넘어 발산한 것
+pub const INTERFACE_ABSURD_C: f64 = 1600.0;
+/// 경로 끝 VB 상한 (mm) — 가장 큰 날끝 붕괴 VB(0.60) × 수치 보호 배수 1.25
+pub const VB_END_ABSURD_MM: f64 = 0.75;
+
+/// N:N 행렬의 칸 하나가 물리·판정 규칙을 어긴 것. severity 2 = 계산 결함(시험 실패), 1 = 현실과 맞는지 볼 것
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatrixIssue {
+    pub severity: u8,
+    pub rule: String,
+    pub cell: String,
+    pub message: String,
+}
+
+/// 탄소계 코팅이 화학적으로 쓰일 수 없는 조합 — 다이아몬드·DLC × 철·니켈, DLC × Ti (400 °C 위 흑연화).
+/// 다이아몬드 × Ti 는 TiC 장벽으로 폭주하지 않아(수명 TiAlN 의 약 0.8배 실측) 여기서 뺀다
+fn incompatible_carbon_coating(c: &MatrixCell) -> bool {
+    let ferrous_or_nickel = matches!(c.use_case.as_str(), "carbon_steel" | "alloy_steel_30" | "stainless" | "inconel" | "hardened_58");
+    match c.coating.as_str() {
+        "Diamond" => ferrous_or_nickel,
+        "DLC" => ferrous_or_nickel || c.use_case == "titanium",
+        _ => false,
+    }
+}
+
+/// 칸마다 물리 타당성(유한값 · 마모 속도 · 온도 · VB 상한 · 배수 상한)과 판정 규칙(탄소계 코팅 × 철·Ti·Ni, HSS × 고경도,
+/// 의도된 짝)을 본다. 공구를 그대로 두고 소재만 바꿔 보는 앱 사용(2026-10-18 로그)과 같은 조합을 64칸 전부 확인한다
+pub fn check(cells: &[MatrixCell]) -> Vec<MatrixIssue> {
+    let mut v: Vec<MatrixIssue> = Vec::new();
+    let mut push = |severity: u8, rule: &str, c: &MatrixCell, message: String| {
+        v.push(MatrixIssue { severity, rule: rule.into(), cell: format!("{} × {}", c.tool, c.use_case), message });
+    };
+    for c in cells.iter() {
+        if !c.nonfinite.is_empty() {
+            push(2, "nonfinite", c, format!("유한하지 않은 값: {}", c.nonfinite.join(", ")));
+        }
+        if c.fit_chip > crate::appfit::CHIP_FACTOR_MAX + 1e-9 {
+            push(2, "fit_chip_cap", c, format!("용도 적합도 치핑 배수 ×{:.0} > 상한 ×{:.0}", c.fit_chip, crate::appfit::CHIP_FACTOR_MAX));
+        }
+        if c.path_vb_rate_max_um_min > VB_RATE_ABSURD_UM_MIN {
+            push(
+                2,
+                "vb_rate_absurd",
+                c,
+                format!(
+                    "경로 VB 성장 {:.0} µm/min > {:.0} — 코팅 {} 관통 {} 뒤에도 이 속도면 코팅 관통 처리나 마모식이 발산",
+                    c.path_vb_rate_max_um_min,
+                    VB_RATE_ABSURD_UM_MIN,
+                    c.coating,
+                    c.path_coating_through_s.map(|s| format!("{:.1} s", s)).unwrap_or_else(|| "없음".into())
+                ),
+            );
+        }
+        if !(c.interface_c > 0.0 && c.interface_c < INTERFACE_ABSURD_C) {
+            push(2, "interface_c", c, format!("계면 온도 {:.0} °C 가 0~{:.0} °C 밖", c.interface_c, INTERFACE_ABSURD_C));
+        }
+        if c.path_vb_end_mm > VB_END_ABSURD_MM {
+            push(2, "vb_end", c, format!("경로 끝 VB {:.3} mm > {:.2} mm — 날끝 붕괴 판정을 지나 깎음", c.path_vb_end_mm, VB_END_ABSURD_MM));
+        }
+        if c.path_state.starts_with("오류") {
+            push(2, "path_error", c, c.path_state.clone());
+        }
+        if incompatible_carbon_coating(c) && c.verdict < 2 {
+            push(2, "chemistry", c, format!("{} 코팅을 {} 에 — 탄소 용해·반응 조합인데 판정이 '{}'", c.coating, c.material, c.verdict_label()));
+        }
+        if c.substrate.starts_with("hss") && c.use_case == "hardened_58" && c.verdict < 2 {
+            push(2, "hss_hardened", c, format!("HSS 공구로 58 HRC — 판정 '{}'", c.verdict_label()));
+        }
+        // 의도된 짝의 '부적합'이 공칭 판정(화학 궁합·용도 적합도)에서 오거나 자기 측면 윤곽 경로에서 부러지면 계산 결함으로 본다.
+        // 포켓·나선 경로에서만 부러지면 용도 밖 경로일 수 있다 — 정삭 볼(58 HRC)은 포켓 진입 슬롯에서 실제로도 부러진다
+        // (tool_life_matrix 의 a_finishing_ball_cannot_rough_a_hardened_pocket) — 그래서 현실 확인(1)으로 남긴다
+        let nominal_unsuitable = c.compat_severity >= 3 || c.fit_verdict >= 2;
+        let own_path = c.path_pattern.is_empty() || c.path_pattern == "rect_profile";
+        if c.intended && c.verdict >= 2 && (nominal_unsuitable || own_path) {
+            push(2, "intended_unsuitable", c, format!("내장 프리셋의 의도된 짝이 '부적합' ({})", c.reasons.join(" / ")));
+        } else if c.intended && c.verdict >= 2 {
+            push(1, "intended_path_failure", c, format!("의도된 짝이 {} 경로에서 '부적합' — 공칭 판정은 '{}' 이하라 용도 밖 경로(포켓 진입 슬롯 등)인지 확인 ({})", c.path_pattern, ["적합", "주의"][c.fit_verdict.min(1) as usize], c.reasons.join(" / ")));
+        }
+        if c.intended && c.rank_in_material > 2 {
+            push(1, "intended_rank", c, format!("의도된 짝이 그 소재에서 {}위", c.rank_in_material));
+        }
+        if !c.path_pattern.is_empty() && c.intended && c.path_completed < 0.999 {
+            push(1, "intended_unfinished", c, format!("의도된 짝이 {} 경로를 {:.0}% 에서 멈춤 ({}{})", c.path_pattern, c.path_completed * 100.0, c.path_state, if c.path_failure.is_empty() { String::new() } else { format!(" · {}", c.path_failure) }));
+        }
+        if c.life_min <= 0.0 {
+            push(1, "life_zero", c, format!("공칭 수명 {:.3} min", c.life_min));
+        }
+    }
+    v
+}
+
+/// `[MATRIX-CHECK]` 줄: 요약 한 줄 + 위반마다 한 줄
+pub fn check_lines(pattern: &str, cells: &[MatrixCell], issues: &[MatrixIssue]) -> Vec<String> {
+    let hard = issues.iter().filter(|i| i.severity >= 2).count();
+    let soft = issues.len() - hard;
+    let through = cells.iter().filter(|c| c.path_coating_through_s.is_some()).count();
+    let worst = cells.iter().map(|c| c.path_vb_rate_max_um_min).fold(0.0, f64::max);
+    let mut v = vec![format!(
+        "[MATRIX-CHECK] 경로 {} · {} 칸 · 위반 {} (계산 결함 {} · 현실 확인 {}) · 코팅 관통 {} 칸 · 관통 뒤 최대 VB 성장 {:.0} µm/min",
+        pattern,
+        cells.len(),
+        issues.len(),
+        hard,
+        soft,
+        through,
+        worst
+    )];
+    for i in issues.iter() {
+        v.push(format!("[MATRIX-CHECK][{}] {} · {} — {}", if i.severity >= 2 { "결함" } else { "확인" }, i.rule, i.cell, i.message));
+    }
     v
 }

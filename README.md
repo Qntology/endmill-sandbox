@@ -249,21 +249,37 @@ cargo tauri build -- --no-default-features --features rocm
 
 ```bash
 cargo test                                   # CPU
-./test_linux.sh vulkan                       # Linux: full suite + Vulkan parity tests (lavapipe if no GPU)
-./test_linux.sh vulkan --test vulkan_backend # Vulkan parity tests only
+./test_linux.sh cpu                          # Linux: every step below, logs in test_logs/<timestamp>_cpu/
+./test_linux.sh vulkan                       # + GPU↔CPU and Vulkan shader parity (lavapipe if no GPU)
+./test_linux.sh vulkan --test vulkan_backend # extra arguments: one cargo test (old behaviour)
 ./test_linux.sh rocm                         # needs /opt/rocm
 ```
 
-On Windows use `test_vulkan.bat` / `test_rocm.bat` (extra arguments are passed to `cargo test`).
+On Windows every backend has the same sequential runner (`test_runner.bat`, called by thin wrappers that set up the
+toolchain): `test_cuda.bat` (NVIDIA), `test_rocm.bat` (AMD HIP), `test_vulkan.bat` (Vulkan) and `test_cpu.bat` (no GPU
+feature). With extra arguments `test_rocm.bat` / `test_vulkan.bat` / `test_cpu.bat` run a single `cargo test` with them.
+A run writes `test_logs\<timestamp>_<backend>\`: one log per step (with its duration), `summary.log` (exit codes, test
+results, failed test names, audit-flag / tool-life-event counts, matrix verdicts per step, N:N check violations per rule,
+`[GPU]` parity lines, `[UNKNOWN]` keys), `highlights.log` (every `[EOL] [MATRIX] [MATRIX-CHECK] [AUDIT] [UNKNOWN] [GPU] …`
+cross-check line in one file), `wear_logs\` (the job CSV/JSON of this run, also mirrored to the app's wear_logs folder),
+`matrix\` (tool × material CSV/JSON per path and `pair_matrix_<path>_check.json`) and `manifest.txt`.
 
-`test_cuda.bat` runs every step in sequence and writes `test_logs\<timestamp>\`: one log per step (with its duration),
-`summary.log` (exit codes, test results, failed test names, audit-flag / tool-life-event / matrix-verdict / `[UNKNOWN]`
-counts), `highlights.log` (every `[EOL] [MATRIX] [AUDIT] [UNKNOWN] …` cross-check line in one file), `wear_logs\` (the job
-CSV/JSON of this run, also mirrored to the app's wear_logs folder), `matrix\` (tool × material CSV/JSON) and `manifest.txt`.
-Steps 11–13 run the tool-life/matrix tests, the audit of every built-in preset and every preset's pocket under the four
-tool-life policies. Options: `QUICK=1` (skip the long steps), `ONLY=04,11`, `LEAN_LINK=1` (link this crate's test binaries
-without PDB debug info — far less link memory and disk on small machines), `NOPAUSE=1`. The summary is written by
-`test_cuda_summary.ps1`.
+| Step | What |
+| --- | --- |
+| 01 | build every test binary and example |
+| 02–09 | integration tests (environment, tool state, wear compensation, store, pipeline, interaction physics, MPM calibration channel) and library unit tests |
+| 10 | MPM solver crate (release) |
+| 11 | tool life, coating break-through and N:N matrix tests (`tests/tool_life_matrix.rs`) |
+| 12 | audit of every built-in preset (`[AUDIT] [EOL] [UNKNOWN]`) |
+| 13 | every preset's pocket under the four tool-life policies (`examples/eol_probe.rs`) |
+| 14 | tool × material N:N matrix — 8 built-in tools × 8 use cases on `MATRIX_PATTERNS` (default rect_profile, pocket_zigzag, helical_pocket) with the physical check `pairmatrix::check` (`[MATRIX-CHECK]`: finite values, no mm/min wear after coating break-through, temperature and VB bounds, the fit cap, diamond/DLC on Fe/Ti/Ni and HSS on 58 HRC judged unsuitable, intended pairs not unsuitable). Any calculation defect fails the step |
+| 15 | ML ops on the GPU backend against the CPU (`tests/gpu_backend.rs`: attention, norms, RoPE, SigLIP patch conv, tiny ModernBERT, matmul time) — skipped on cpu |
+| 16 | Vulkan shader-path parity (`tests/vulkan_backend.rs`) — vulkan only |
+
+The cutting simulation runs on the CPU for every backend, so steps 02–14 must give the same results everywhere; the
+backend only changes the ML parts. Options: `QUICK=1` (skip steps 03, 13, 14), `ONLY=04,11`, `LEAN_LINK=1` (link this
+crate's test binaries without PDB debug info — far less link memory and disk on small machines), `CARGO_BUILD_JOBS=2`,
+`MATRIX_PATTERNS=…`, `APP_WEAR_LOG_DIR=…`, `NOPAUSE=1`. The summary is written by `test_summary.ps1`.
 
 ```bash
 cargo test --test physcal_flow              # MPM cross-check → calibration channel (does not run the solver)
@@ -274,7 +290,10 @@ cargo test --lib physcal                    # record / envelope / reliability un
 — masked attention with `-inf` sliding-window masks, LayerNorm (with/without bias), GeGLU/`gelu_erf`,
 RoPE, `index_select`, SigLIP `conv2d` patch embedding and `interpolate2d`, a tiny ModernBERT forward pass,
 and the memory-pool flush — on the Vulkan device and compares it with the CPU result, both with the
-fork's default path and with native GPU shaders forced on.
+fork's default path and with native GPU shaders forced on. `tests/gpu_backend.rs` (compiled with any of `cuda`,
+`rocm`, `vulkan`) runs the same op patterns on whichever GPU the build targets (`ENDMILL_DEVICE` picks it), prints a
+`[GPU]` line per op with the largest relative error, times a 512×512 matmul against the CPU, and checks that
+`flush_device` leaves the device usable — so CUDA and ROCm get the parity check that only Vulkan had.
 
 ### Model Weights
 
@@ -334,19 +353,24 @@ that have no direct measurement behind them (`pair_reference_low_confidence`).
 | Kte | 0.011·kc1.1·√(r/10) | × material factor (Ti 1.7, SS 1.3) | Ti end mill Kte 41 N/mm, orthogonal 24; 304 turning edge intercept 51 N/mm |
 | kc1.1 at 55–65 HRC | 3800 (60), 4200 (65) | Sandvik MC: 3690 (55), 4330 (60), 4750 (63), 4950 (65) | Sandvik tables |
 | h_min / r_edge | hardened 0.20, SS 0.35 | hardened 0.35, SS 0.28 | review of 20 studies (0.08–0.63), 304 FE/tests 0.25–0.30 |
-| Break-in VB_b | 15 % of the VB limit | per pair: Al 15, C45 30, SS 20, hardened 45, Ti 60, Ni 50, CFRP 20 µm × (10 µm/r)^0.25 × (Vc/Vc_ref)^0.5 for Ti/Ni, ≤ 40 % of the limit | HRC 52 sharp ball 31–63 µm in the first 4 s; honed coated 316L no visible wear for 30 min; Ti AlCrN 115 µm in 5 m |
-| Break-in τ | 3 % of the linear life (12–22 min for long-life pairs) | 0.5–2 min of cutting per workpiece | break-in ends within a few metres of feed path |
+| Break-in VB_b | 15 % of the VB limit | per pair: Al 15, C45 30, SS 20, hardened 45, Ti 60, Ni 50, CFRP 30 µm × (10 µm/r)^0.25 × (Vc/Vc_ref)^0.5 for Ti/Ni, ≤ 40 % of the limit | HRC 52 sharp ball 31–63 µm in the first 4 s; honed coated 316L no visible wear for 30 min; Ti AlCrN 115 µm in 5 m; CVD-diamond CFRP router 25–40 µm within the first metre of slot (Hamedanianpour 2013) |
+| Break-in τ | 3 % of the linear life (12–22 min for long-life pairs) | 0.35–2 min of cutting per workpiece (CFRP 0.35) | break-in ends within a few metres of feed path |
 | VB limit | 0.2 if tolerance ≤ 20 µm else 0.3 | min(tolerance rule, workpiece criterion: Ti/SS/CFRP 0.2, hardened 0.15, others 0.3) | ISO 8688-2 (0.3 uniform), Ti 0.2 avg, hardened finishing 0.1–0.2, CFRP delamination/uncut fibres |
 | Default clearance | 10° | Al 12, C45/alloy 8, hardened 7, SS 9, Ti 10, Ni 9, CFRP 15° | manufacturer/patent consensus; it changes the radial loss per VB (ΔR = VB·tan α) |
 | Runout TIR | 3 µm premium / 10 µm | by holder: shrink-fit/hydraulic/polygon 3, ER UP 5, ER precision 10, ER standard 15, milling chuck 8, side-lock 15 µm (unknown holder keeps the old rule) | holder catalogues, ISO 15488 collet classes |
 | Tool-tip damping ζ | 0.03 | 0.28·(L/D)^−1.38, 0.010–0.045 (+0.005 hydraulic) unless entered by a tap test | measured 0.05 (L/D 3.75), 0.026 (5.8), 0.009 (12); holder mode 0.02–0.025 |
-| Process damping factor | Al 0.4, steel 1.0, SS 1.1, Ti 1.3 | Al 1.0, steel 1.0, SS 1.8, Ti 1.0, × (tan 10°/tan α)^0.4 | Tyler & Schmitz 2014: C 304 ≈ 3.2× 1018, Ti ≈ 1.06×; C +23–42 % from 15° to 11° relief |
-| Thermal factor | C45 1.0, hardened 1 − 0.015·(HRC−25) | C45 0.88, hardened 0.40 at 58 HRC, CFRP 0.42; Kienzle size effect not extrapolated below a 20 µm chip in the temperature formula | measured interface bands per preset (see below) |
+| Process damping factor | Al 0.4, steel 1.0, SS 1.1, Ti 1.3, CFRP 0.3 | Al 1.0, steel 1.0, SS 1.8, Ti 1.0, CFRP 3.5, × (tan 10°/tan α)^0.4 | Tyler & Schmitz 2014: C 304 ≈ 3.2× 1018, Ti ≈ 1.06×; C +23–42 % from 15° to 11° relief; rigid CFRP trimming cut stably where zero-order theory predicts chatter (Karpat 2012, Hamedanianpour 2013, Delahaigue 2017) |
+| Process-damping critical length | 0.15 mm + 2·VB | 0.75 mm + 0.5·VB: gain 1 + (L/λ)², ≤ 5 | AISI 1050 Ø18 4-flute: no-PD limit 0.6 mm, stable at 1.5 mm at λ 0.58 mm (gain 2.5–3.5, Mohammadi, Tunç & Budak 2017); PD strong below ~140 m/min (1045/1050). The old value gave 1.08 there. Wear raises C only 10–25 % from low to moderate wear (Tyler & Schmitz 2014) and 12–16 % per doubling of VB (Kurata 2010), hence 0.5·VB |
+| Thermal factor | C45 1.0, hardened 1 − 0.015·(HRC−25) | C45 0.88, hardened 0.40 at 58 HRC, CFRP 0.5; Kienzle size effect not extrapolated below a 20 µm chip in the temperature formula | measured interface bands per preset (see below) |
+| CFRP kc1.1 | 600 | 420 | 6 mm plate trimming logged 342 N, 1.4–1.6× the measured-equivalent 215–240 N; Kienzle fits kc1.1 250–420, mc 0.09–0.21 (Hamedanianpour 2013), PCD 0° rake ≈ 340 (Karpat 2012) |
+| CFRP reference life (AlTiN reference tool, VB 0.2 mm) | 60 min | 5 min | TiAlN in CFRP milling 0.67–1.3 µm VBmax per metre of edge contact → 3–6 min (Ozkan 2020); PVD coatings gone from the edge within ~1 min (Wang et al. 2013); CVD-diamond routers 5–18 min (Hamedanianpour 2013) — the diamond cell was 120 min |
+| CFRP temperature limit (tool-side interface) | 180 °C (resin Tg) | 350 °C | Tg 150–212 °C is a machined-surface value; clean cuts at 300 °C tool-side with a new tool, resin carbonised at 475 °C with a worn one (Delahaigue 2017), resin burning from 315 °C (Kerrigan & O'Donnell 2016) |
+| Carbon-coating friction once oxidised/dissolved | × (1 + over + 2·dissolution), up to ×4 | × (1 + 0.12·max(over, dissolution)), as other non-protective coatings | on steel the coating factor is already 1.0 (coatings change cutting forces 0–6 %); the old ×4 drove a temperature feedback (diamond/DLC on 30 HRC steel 1,046–1,052 °C vs ~600 °C for PVD tools) |
 
 Interface temperatures of the built-in presets against bands built from published measurements (dry): Al roughing
 262 °C (180–350), Al finishing Vc 300 281 °C (220–380; it used to be 202 °C, colder than Vc 165), Ti-6Al-4V 524 °C
 (500–750), C45 555 °C (420–580, was 606), SUS304 585 °C (480–650), Inconel 718 611 °C (550–800), 58 HRC ball 542 °C
-(350–600, was 745), CFRP 276 °C (150–300). The test `preset_interface_temperatures_sit_in_published_bands` keeps them there.
+(350–600, was 745), CFRP 241 °C (150–300; 276 °C before the kc1.1 correction). The test `preset_interface_temperatures_sit_in_published_bands` keeps them there.
 
 Still weak (logged as low confidence): nickel alloys and CFRP have no published end-mill coefficient set; break-in amounts
 for Al, C45 and CFRP have no direct measurement; milling-chuck and polygon TIR and the hydraulic damping bonus are guesses.
@@ -416,9 +440,13 @@ also weaker in the model (≈ 0–6 %).
   feed per revolution — why measured finishing roughness is 19–38× the geometric feed mark (Wojciechowski 2011/2016).
   Ra = (Ra_envelope + 0.1·h_min + material floor) × wear factor × built-up-edge factor (0.1 = Nowakowski's k 0.4 × the
   ≈ 1/4 ratio between his surface-identified h_min and this model's edge-radius h_min; low confidence); floors from the lowest measured
-  finishing Ra (7075 0.12, steels 0.18, Ti 0.20, Inconel 0.25, 316L 0.30, CFRP 1.0 µm); wear factor 1 up to VB 0.1 mm,
-  +22 % per 0.1 mm to 0.4 mm, steep beyond (4340 data; Inconel from VB 0.25). When the chatter margin is below 1 a
-  waviness W ≈ h_max·ap/ap_lim (≤ 3·h_max) is mixed in with the chatter probability (Ra ≈ 0.2·Rt when vibration dominates).
+  finishing Ra (7075 0.12, steels 0.18, Ti 0.20, Inconel 0.25, 316L 0.30, CFRP 1.8 µm — quasi-isotropic laminate average of
+  0.7–1.5 µm on 0°/45°/90° plies and 3–5 µm on −45° plies); wear factor 1 up to VB 0.1 mm, +22 % per 0.1 mm to 0.4 mm, steep
+  beyond (4340 data; Inconel from VB 0.25; CFRP stays 1 — diamond-coated tools get smoother as they wear while delamination grows).
+  Rz/Ra is 4–7 (CFRP 8, measured 5–14). When the chatter margin is below 1 a waviness W ≈ h_max·ap/ap_lim (≤ 3·h_max) is
+  reported as `chatter_wpv_um` (peak-to-valley, measured 30–110 µm) and the filtered Ra becomes stable Ra × (1 + 2·(min(ρ,3) − 1)),
+  i.e. 1–5× — measured chatter Ra is 2–6× the stable value and at most about 6 µm (Honeycutt & Schmitz 2017). The old
+  Ra ≈ 0.2·max(Rt, W) read unfiltered waviness as Ra and gave 11–33 µm on ordinary presets.
   The path simulation evaluates this at every wall step: wall samples carry `ra_um` and `waviness_um`, segment stats carry
   `ra_um / ra_max_um / waviness_um`, the per-bin CSV gained `ra_um`, and the report has `wall_ra_mean_um / p90 / max`.
 * **Tool-life scatter in the part count.** `parts_left_p90` used to be only 3 % below p50. It now uses a log-normal
@@ -509,6 +537,12 @@ pocket for 26 minutes past its limit. Every cutting step now runs a tool-life mo
   preset pair sits inside its window. `pairmatrix` runs all 8 built-in tools × 8 use cases (nominal + path + tool-life
   monitor) and ranks them (`cargo run --features cuda --example pair_matrix -- <dir> [pattern|none]`,
   test `tests/tool_life_matrix.rs`).
+* **Coating break-through** at any coating thickness: once the flank land passes the coating (thickness / sin α), the exposed
+  share wears at the uncoated-carbide rate when the coating is chemically worse than bare carbide (a `coating_through` event
+  marks the point). Before, only coatings ≤ 5 µm counted, so a 10 µm CVD diamond tool on steel kept its iron-dissolution rate
+  (1,191–33,260 µm/min in the 2026-10-18 app logs; now ≤ 288 µm/min after break-through). Diamond on Fe/Ni graphitizes fast
+  above 700 °C and is always rated severe; diamond on Ti is limited by a TiC barrier (uncoated-level diffusion, rated caution,
+  life ≈ 0.8× TiAlN measured). The fit chip multiplier is capped at ×100.
 * **Rake-corrected edge recession** KE = VB·tanα / (1 − tanα·tanγ) everywhere VB is turned into radius (was VB·tanα: −7 % on
   the 18° aluminium tool).
 * Mid-path tool changes split the wear between tool instances in the job store; broken and tool-life-expired tools are
@@ -611,12 +645,17 @@ endmill-sandbox/
 ├── tests/
 │   ├── interaction_physics.rs / pipeline_flow.rs / store_flow.rs
 │   ├── environment_tools.rs / tool_state.rs / wear_compensation.rs / physcal_flow.rs
-│   └── vulkan_backend.rs       # Vulkan ↔ CPU parity (feature = "vulkan")
-├── examples/physics_probe.rs / physcal_probe.rs / sim_audit.rs
+│   ├── tool_life_matrix.rs     # tool end of life, coating break-through, N:N matrix + physical check
+│   ├── gpu_backend.rs          # GPU ↔ CPU parity for cuda / rocm / vulkan
+│   └── vulkan_backend.rs       # Vulkan shader-path ↔ CPU parity (feature = "vulkan")
+├── examples/physics_probe.rs / physcal_probe.rs / sim_audit.rs / eol_probe.rs / pair_matrix.rs
 ├── run.bat / build.bat         # Windows CUDA helpers
 ├── _env_rocm.bat / _env_vulkan.bat  # shared MSVC / HIP SDK / protoc / Tauri CLI setup
 ├── {run,build,check,test}_{rocm,vulkan}.bat  # Windows ROCm / Vulkan helpers
-├── test_linux.sh               # Linux test runner (cpu | vulkan | rocm | cuda)
+├── test_linux.sh               # Linux test runner (cpu | vulkan | rocm | cuda), same steps as test_runner.bat
+├── test_runner.bat             # Windows sequential test runner shared by every backend
+├── test_cuda.bat / test_rocm.bat / test_vulkan.bat / test_cpu.bat   # backend wrappers (toolchain env + test_runner.bat)
+├── test_summary.ps1            # summary.log / highlights.log / manifest.txt of a test run
 └── .gitignore
 
 ```

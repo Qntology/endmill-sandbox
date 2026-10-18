@@ -905,7 +905,9 @@ fn tool_change_parts_left_follows_a_fresh_tool_on_the_same_path() {
     let fresh_parts = runs.iter().filter(|(_, r, _)| r.vb_end_mm < limit).count();
     let (w0, w1) = (&runs[0].1, &runs[1].1);
     assert!((w1.chatter_wear_factor_fresh - w0.chatter_wear_factor).abs() < 0.02, "a fresh edge on the same path chatters like the first part: {} vs {}", w1.chatter_wear_factor_fresh, w0.chatter_wear_factor);
-    assert!(w1.chatter_wear_factor_fresh > w1.chatter_wear_factor + 0.05, "flank wear adds process damping: {} vs {}", w1.chatter_wear_factor_fresh, w1.chatter_wear_factor);
+    // 플랭크 마모는 공정감쇠를 더할 뿐 빼지 않는다. 그 크기는 작다 — 계수 C 가 중간 마모까지 10~25 % (Tyler·Schmitz 2014) —
+    // 그래서 예전의 '+0.05 이상' 대신 방향만 본다 (Ti 정삭 Vc 60 은 파장 0.28 mm 라 공정감쇠로 안정: 여유 약 2.2)
+    assert!(w1.chatter_wear_factor_fresh >= w1.chatter_wear_factor - 1e-9, "flank wear never removes process damping: {} vs {}", w1.chatter_wear_factor_fresh, w1.chatter_wear_factor);
     assert!((2..12).contains(&fresh_parts), "the titanium finishing preset should wear a tool out within a few parts: {}", fresh_parts);
     let opts = CompOptions::default();
     let plan = |k: usize, force: Option<CompAction>| {
@@ -935,9 +937,10 @@ fn tool_change_parts_left_follows_a_fresh_tool_on_the_same_path() {
     if runs.len() > 2 {
         let (late, _, _) = plan(2, Some(CompAction::ToolChange));
         let flat = nominal1.trajectory.for_path(late.path_factor).life_min;
-        // 방향(새 날이 더 빨리 닳음)을 본다. 공작물 표면 냉각을 문헌값으로 올린 뒤(내부 급유 320 → 3,020 W/m²K)
-        // 열에 의한 마모 몫이 줄어 차이가 3% → 약 2% 로 작아졌다.
-        assert!(late.fresh_life_min < 0.995 * flat, "a fresh edge has less process damping than the worn one, so it wears faster early: {} vs {}", late.fresh_life_min, flat);
+        // 방향(새 날은 공정감쇠가 더 작아 처음에 더 빨리 닳거나 같음)을 본다. 공작물 표면 냉각을 문헌값으로 올린 뒤(내부 급유 320 → 3,020 W/m²K)
+        // 열에 의한 마모 몫이 줄어 차이가 3% → 약 2% 로, 공정감쇠를 실측(마모로 C +10~25 %)에 맞춘 뒤로는 채터가 없어 거의 0 이 됐다
+        // (두 수명은 적분 방식이 달라 채터가 없을 때 0.01 % 안팎 차이가 남는다 — 0.5 % 까지는 같은 값으로 본다)
+        assert!(late.fresh_life_min <= flat * 1.005, "a fresh edge never has more process damping than the worn one: {} vs {}", late.fresh_life_min, flat);
     }
     let p50 = out.parts_left_p50.expect("parts left for the new tool");
     let p90 = out.parts_left_p90.expect("cautious parts left for the new tool");
@@ -1065,8 +1068,15 @@ fn coating_breakthrough_moves_an_incompatible_coating_toward_the_substrate() {
     let strip_um = 3.0 / (8f64).to_radians().sin();
     assert!((altin.coating_exposure - (1.0 - strip_um / 100.0)).abs() < 1e-6, "exposure {}", altin.coating_exposure);
     assert!(altin.coating_exposure > 0.75 && (altin.coating_blend - 1.0).abs() < 1e-12, "a compatible coating keeps its calibrated benefit");
+    // 두꺼운 CVD 다이아몬드(10 µm)도 랜드가 띠 폭 10 / sin 8° = 72 µm 를 지나면 드러난 몫만큼 모재 마모율로 옮겨 간다.
+    // 예전에는 '5 µm 넘는 코팅은 벗겨지지 않고 박리된다'며 이 전환을 막아, 코팅이 다 닳은 뒤에도 Fe 용해 속도가 이어졌다
+    // (2026-10-18 앱 로그 1,191~33,260 µm/min). 박리든 마모든 모재가 드러나면 그 몫은 모재가 깎는다
     let diamond = rate_at(WorkpieceMaterial::CarbonSteel, "Diamond", 0.1);
-    assert!((diamond.coating_blend - 1.0).abs() < 1e-12, "a thick CVD diamond layer delaminates instead of wearing through");
+    let strip_d = 10.0 / (8f64).to_radians().sin();
+    assert!((diamond.coating_exposure - (1.0 - strip_d / 100.0)).abs() < 1e-6, "exposure {}", diamond.coating_exposure);
+    assert!(diamond.coating_blend < 1.0, "the exposed share wears at the substrate rate: blend {}", diamond.coating_blend);
+    let diamond_thin = rate_at(WorkpieceMaterial::CarbonSteel, "Diamond", 0.05);
+    assert!(diamond_thin.coating_exposure == 0.0 && (diamond_thin.coating_blend - 1.0).abs() < 1e-12, "before break-through the coating rate stays");
     assert!(toolwear::exposed_wear_rate(3.0, 1.0, 0.5) < 1.6 && toolwear::exposed_wear_rate(3.0, 1.0, 0.0) == 3.0);
     assert_eq!(toolwear::exposed_wear_rate(0.5, 1.0, 0.9), 0.5);
 }

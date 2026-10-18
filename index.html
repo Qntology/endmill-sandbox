@@ -6416,7 +6416,7 @@
 	  const done = tl.total_feed_mm > 0 ? Math.max(0, Math.min(1, 1 - (tl.uncut_feed_mm || 0) / tl.total_feed_mm)) : 1;
 	  const mark = tl.failed ? '⛔ ' : tl.unfinished ? '⚠ ' : (tl.tool_changes > 0 || tl.expired) ? '△ ' : '';
 	  const pol = (TL_POLICIES.find(p => p[0] === tl.policy) || ['', tl.policy])[1];
-	  const ev = (tl.events || []).filter(e => ['life_end', 'chip_detected', 'tool_change', 'failure', 'stop', 'start_worn'].includes(e.kind));
+	  const ev = (tl.events || []).filter(e => ['coating_through', 'life_end', 'chip_detected', 'tool_change', 'failure', 'stop', 'start_worn'].includes(e.kind));
 	  const rows = [
 	    ['공구 수명 감시', `${mark}${tl.state || '-'} · 경로 완료 ${fmt(done * 100, 0)}% · 공구 ${tl.tools_used || 1}개${tl.failed ? ` · 파손(${tl.failure_cause})` : ''}${tl.chip_detected ? ` · 치핑 감지 ${tl.chip_detected}회` : ''}${tl.expired ? ' · 수명 관리 만료' : ''} · ${pol}`],
 	    ['수명 사용 최대 · VB 한계 / 3차 시작 / 붕괴', `${fmt((tl.life_used_max || 0) * 100, 0)}% · ${fmt(tl.vb_limit_mm, 2)} / ${fmt(tl.params ? tl.params.vb_accel_mm : 0, 2)} / ${fmt(tl.params ? tl.params.vb_collapse_mm : 0, 2)} mm`],

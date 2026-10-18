@@ -1577,6 +1577,8 @@ pub fn simulate_segments_prog(
     let mut plastic_s = 0.0f64;
     let mut life_u = vb_start / vb_limit.max(1e-9);
     let (mut warned, mut ended, mut chip_warned, mut accel_noted) = (false, false, false, false);
+    // 플랭크 랜드가 코팅을 뚫은 시점을 한 번 남긴다 (공구마다)
+    let mut coat_noted = false;
     let mut stop = false;
     // 수명 판정에 닿았지만 '지금 절삭을 마칠 때까지' 미룬 정지·교체 (사유, 원인 키 life_end · chipping)
     let mut pending_eol: Option<(String, &'static str)> = None;
@@ -1657,6 +1659,7 @@ pub fn simulate_segments_prog(
             ended = false;
             chip_warned = false;
             accel_noted = false;
+            coat_noted = false;
             lm_worn = 0.0;
             lm_fresh = 0.0;
             lm_t = 0.0;
@@ -2319,6 +2322,36 @@ pub fn simulate_segments_prog(
                                 accel,
                                 eol.vb_collapse_mm,
                                 eol.accel_mult
+                            )
+                        );
+                    }
+                    // 코팅 관통: 플랭크 랜드가 코팅 두께를 지나 모재가 드러나기 시작한 지점 (`toolwear::coating_exposure`).
+                    // 화학적으로 맞지 않는 코팅(다이아몬드·DLC 의 철·Ti·Ni 용해 등)은 여기부터 드러난 몫이 무코팅 초경 마모율로 옮겨 간다
+                    if !coat_noted && wr.coating_exposure > 0.0 {
+                        coat_noted = true;
+                        tl_event!(
+                            "coating_through",
+                            si,
+                            *p,
+                            sample_force.f_res_peak,
+                            th.interface_c,
+                            bs,
+                            "",
+                            format!(
+                                "공구 #{} 코팅 관통 — 랜드 VB {:.3} mm 가 {} {:.1} µm 코팅(여유각 {:.0}° 에서 랜드 {:.0} µm)을 지남 · 이 공구 절삭 {:.1} s · 날끝 {:.0}°C: {}",
+                                tool_no,
+                                vb,
+                                ctx.tool.coating.family,
+                                ctx.tool.coating.thickness_um,
+                                ctx.tool.clearance_deg,
+                                toolwear::coating_strip_um(&ctx.tool),
+                                cut_time - cut_at_change,
+                                th.interface_c,
+                                if wr.coating_blend < 0.999 {
+                                    "이 피삭재와 화학적으로 맞지 않는 코팅이라 이제부터 드러난 몫은 무코팅 초경 마모율 (코팅이 남은 동안의 용해 속도가 끝남)"
+                                } else {
+                                    "보호 코팅이라 수명 실측으로 맞춘 코팅 배수를 그대로 씀 (관통 뒤 가속은 3차 마모 항이 맡음)"
+                                }
                             )
                         );
                     }
