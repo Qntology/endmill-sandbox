@@ -337,7 +337,7 @@ pub struct VizSettings {
 }
 
 fn default_wear_palette() -> String {
-    "contact".into()
+    "thermal".into()
 }
 
 impl Default for VizSettings {

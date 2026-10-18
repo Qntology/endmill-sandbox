@@ -3006,7 +3006,7 @@
 
 	function vpViz() {
 	  const v = (APP.settings && APP.settings.viz) || {};
-	  return { ramps: v.ramps || {}, mark: v.mark || 'dots', wear_palette: v.wear_palette || 'contact' };
+	  return { ramps: v.ramps || {}, mark: v.mark || 'dots', wear_palette: v.wear_palette || 'thermal' };
 	}
 
 	function vpNiceStep(span, n) {
@@ -3370,7 +3370,7 @@
 
 	function vpWearRgb(radialUm, refUm) {
 	  const viz = vpViz();
-	  return vpPaletteRGB(viz.wear_palette === 'mono' ? 'mono' : (DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'contact'), Math.max(0, Math.min(1, radialUm / Math.max(refUm, 1e-6))));
+	  return vpPaletteRGB(viz.wear_palette === 'mono' ? 'mono' : (DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'thermal'), Math.max(0, Math.min(1, radialUm / Math.max(refUm, 1e-6))));
 	}
 
 	function vpDrawToolWear(ctx, pose, toolVisible) {
@@ -3423,66 +3423,50 @@
 	  }
 	}
 
-	function vpDrawWearInset(w, refUm, tanC) {
-	  const cv = document.getElementById('vp-wear-inset');
+	// 공구 마모 지도 — 날마다 세로 기준선에서 반경 손실 길이만큼 가로 막대를 긋는다(색은 공구 마모 색상표).
+	// 막대 길이로 깊이를, 막대 높이로 위치를 읽는다. cv 를 주면 그 캔버스에 그린다(상황별 비교용).
+	function vpDrawWearInset(w, refUm, tanC, cv = document.getElementById('vp-wear-inset')) {
 	  if (!cv) return;
 	  if (!VP.show.wear || !w) { cv.classList.add('hidden'); return; }
 	  cv.classList.remove('hidden');
 	  const tw = w.tw;
-	  const W = 168, H = 196;
-	  if (cv.width !== W) { cv.width = W; cv.height = H; }
+	  const W = 168, H = 196, dpr = Math.min(2, window.devicePixelRatio || 1);
+	  if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
 	  const ctx = cv.getContext('2d');
+	  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 	  ctx.clearRect(0, 0, W, H);
 	  ctx.fillStyle = uiAlpha(UI.plot, 0.86);
 	  ctx.fillRect(0, 0, W, H);
-	  ctx.font = `600 9px ${UI.sans}`;
-	  ctx.fillStyle = UI.text;
-	  ctx.fillText(w.fresh ? '새 공구 · 마모 지도' : '공구 · 마모 지도', 8, 13);
 	  ctx.font = `9px ${UI.mono}`;
-	  const L = 24, T = 22, B = 34, R = 8;
+	  ctx.fillStyle = UI.text;
+	  ctx.fillText(w.fresh ? '새 공구 마모 지도 (반경 손실 µm)' : '공구 마모 지도 (반경 손실 µm)', 6, 11);
+	  const L = 24, T = 18, B = 34, R = 8;
 	  const gw = W - L - R, gh = H - T - B;
 	  const cw = gw / Math.max(1, w.flutes), rh = gh / Math.max(1, w.nz);
 	  const strip = tw.coating_strip_um || 0;
-	  // 날마다 밝은 공구 몸체를 그리고 반경 손실이 있는 높이에만 색을 올린다 — 흰색은 마모 없음
+	  ctx.lineWidth = 1;
 	  for (let f = 0; f < w.flutes; f++) {
-	    const x0 = L + f * cw + 3, bw = Math.max(6, cw - 6);
-	    const body = ctx.createLinearGradient(x0, 0, x0 + bw, 0);
-	    body.addColorStop(0, '#a3a6ad');
-	    body.addColorStop(0.45, '#eef0f2');
-	    body.addColorStop(1, '#b6b9bf');
-	    ctx.save();
-	    ctx.beginPath();
-	    ctx.roundRect(x0, T, bw, gh, [Math.min(10, bw / 2), Math.min(10, bw / 2), 3, 3]);
-	    ctx.fillStyle = body;
-	    ctx.fill();
-	    ctx.clip();
-	    ctx.filter = 'blur(1.5px)';
+	    const x0 = Math.round(L + f * cw) + 2.5, span = Math.max(4, cw - 8);
+	    ctx.strokeStyle = 'rgba(120,120,140,0.5)';
+	    ctx.beginPath(); ctx.moveTo(x0, T); ctx.lineTo(x0, T + gh); ctx.stroke();
 	    for (let k = 0; k < w.nz; k++) {
 	      const vb = w.vb[f * w.nz + k];
 	      if (vb < 0.0005) continue;
 	      const radial = vb * tanC * 1000;
-	      const u = Math.min(1, radial / Math.max(refUm, 1e-6));
+	      const len = Math.max(1, Math.min(1, radial / refUm) * span);
+	      const y = Math.round(T + gh - (k + 0.5) * rh) + 0.5;
 	      const c = vpWearRgb(radial, refUm);
-	      ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(0.35 + 0.65 * u).toFixed(3)})`;
-	      ctx.fillRect(x0 - 3, T + gh - (k + 1) * rh - 0.5, bw + 6, rh + 1);
-	    }
-	    ctx.filter = 'none';
-	    ctx.restore();
-	    if (strip > 0) {
-	      // 코팅이 벗겨져 모재가 드러난 높이 — 밝은 몸체 위라 어두운 점으로
-	      ctx.fillStyle = 'rgba(24, 24, 27, 0.9)';
-	      for (let k = 0; k < w.nz; k++) {
-	        if (w.vb[f * w.nz + k] * 1000 > strip) ctx.fillRect(x0 + bw - 4, Math.round(T + gh - (k + 0.5) * rh) - 1, 2, 2);
-	      }
+	      ctx.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+	      ctx.beginPath(); ctx.moveTo(x0 + 1, y); ctx.lineTo(x0 + 1 + len, y); ctx.stroke();
+	      if (strip > 0 && vb * 1000 > strip) { ctx.fillStyle = 'rgba(240,244,250,0.95)'; ctx.fillRect(x0 + 2 + len, y - 0.5, 1, 1); }
 	    }
 	    ctx.fillStyle = UI.label;
-	    ctx.fillText(`날${f + 1}`, x0 + bw / 2 - 7, H - B + 11);
+	    ctx.fillText(`날${f + 1}`, L + f * cw + cw / 2 - 8, H - B + 10);
 	  }
-	  const ap = (APP.detail && APP.detail.conditions) ? APP.detail.conditions.axial_doc_mm : 0;
+	  const ap = w.ap_mm !== undefined ? w.ap_mm : (APP.detail && APP.detail.conditions ? APP.detail.conditions.axial_doc_mm : 0);
 	  if (ap > 0 && w.loc > 0) {
-	    const y = Math.round(T + gh - Math.min(1, ap / w.loc) * gh) + 0.5;
-	    ctx.strokeStyle = 'rgba(24, 24, 27, 0.7)';
-	    ctx.lineWidth = 1;
+	    const y = T + gh - Math.min(1, ap / w.loc) * gh;
+	    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
 	    ctx.setLineDash([3, 2]);
 	    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
 	    ctx.setLineDash([]);
@@ -3492,10 +3476,11 @@
 	  ctx.fillStyle = UI.label;
 	  ctx.fillText('끝', 6, T + gh);
 	  ctx.fillText(`${fmt(w.loc, 0)}`, 4, T + 8);
-	  const bar = ctx.createLinearGradient(L, 0, W - R, 0);
-	  for (let i = 0; i <= 10; i++) { const c = vpWearRgb(refUm * i / 10, refUm); bar.addColorStop(i / 10, `rgb(${c[0]},${c[1]},${c[2]})`); }
-	  ctx.fillStyle = bar;
-	  ctx.beginPath(); ctx.roundRect(L, H - 17, gw, 5, 2.5); ctx.fill();
+	  for (let i = 0; i <= 20; i++) {
+	    const c = vpWearRgb(refUm * i / 20, refUm);
+	    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+	    ctx.fillRect(L + gw * i / 21, H - 16, gw / 21 + 0.5, 5);
+	  }
 	  ctx.fillStyle = UI.label;
 	  ctx.fillText('0', L, H - 3);
 	  ctx.fillText(`${fmt(refUm, 0)} µm`, W - R - 38, H - 3);
@@ -3536,7 +3521,7 @@
 	    if (len > 0) band = Math.max(band, s / len);
 	  }
 	  const viz = vpViz();
-	  const pal = DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'contact';
+	  const pal = DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'thermal';
 	  const inst = w.fresh ? '새 공구 (공구 교체 후 2차)' : (tw.instance_id ? `공구 #${tw.instance_id} (${tw.generation}세대 · 이전 작업 ${tw.jobs}회 · ${fmt(tw.cut_min, 1)}분)` : '새 날');
 	  const exposed = tw.coating_strip_um > 0 && band * 1000 > tw.coating_strip_um;
 	  const tf0 = w.fresh ? 0 : (tw.thermal_damage || 0);
