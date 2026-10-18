@@ -186,8 +186,9 @@
 		  grid-row: 2;
 		  grid-column: 1;
 		  min-width: var(--left-min);
-		  overflow-x: hidden;
-		  overflow-y: auto;
+		  display: flex;
+		  flex-direction: column;
+		  overflow: hidden;
 		  transition: width var(--panel-transition), min-width var(--panel-transition), opacity var(--panel-transition);
 		}
 
@@ -206,8 +207,9 @@
 		  grid-row: 2;
 		  grid-column: 5;
 		  min-width: var(--right-min);
-		  overflow-x: hidden;
-		  overflow-y: auto;
+		  display: flex;
+		  flex-direction: column;
+		  overflow: hidden;
 		  transition: width var(--panel-transition), min-width var(--panel-transition), opacity var(--panel-transition);
 		}
 
@@ -301,7 +303,7 @@
 
 		.panel-toggle-btn {
 		  position: absolute;
-		  top: 6px;
+		  top: 8px;
 		  right: 6px;
 		  width: 24px;
 		  height: 24px;
@@ -327,6 +329,22 @@
 		  background: var(--bg-hover);
 		  color: var(--text-bright);
 		}
+		/* 패널 제목줄: 이 영역이 무엇을 하는 곳인지 한 줄로 말한다 */
+		.panel-title {
+		  display: flex;
+		  align-items: baseline;
+		  gap: 8px;
+		  min-width: 0;
+		  flex-shrink: 0;
+		  padding: 12px 40px 11px 14px;
+		  border-bottom: 1px solid var(--border-light);
+		  white-space: nowrap;
+		  overflow: hidden;
+		}
+		.panel-title b { font-size: 0.76rem; font-weight: 600; letter-spacing: 0.06em; color: var(--text-bright); }
+		.panel-title small { font-size: 0.64rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
+		.panel-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+
 		/* 튀어나온 토글 버튼이 뷰포트 툴바를 가리지 않도록 그쪽 여백을 비운다 */
 		.app-layout:has(.panel-left.collapsed) .viewport-toolbar { padding-left: 34px; }
 		.app-layout:has(.panel-right.collapsed) .viewport-toolbar { padding-right: 34px; }
@@ -350,24 +368,41 @@
 		  transition: background 0.15s;
 		}
 		.panel-section-header:first-of-type { border-top: none; }
-		.panel-left > .panel-section-header:first-of-type,
-		.panel-right > .panel-section-header:first-of-type,
-		.panel-bottom > .panel-section-header:first-of-type { padding-right: 40px; }
+		.panel-bottom > .panel-section-header { padding-right: 40px; }
+		.panel-bottom > .panel-section-header .chevron { display: none; } /* 접기 버튼과 같은 동작이라 하나만 보인다 */
 		.panel-section-header:hover { background: var(--bg-hover); }
-		.panel-section-header > span:first-child { display: inline-flex; align-items: center; gap: 9px; min-width: 0; }
-		.panel-section-header > span:first-child::before {
-		  content: '';
-		  width: 8px;
-		  height: 8px;
+		.sec-title { display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; }
+		.step-no {
+		  display: inline-flex;
+		  align-items: center;
+		  justify-content: center;
 		  flex-shrink: 0;
-		  border-radius: 2px;
-		  border: 1.5px solid var(--text-muted);
-		  transition: background 0.15s, border-color 0.15s;
+		  width: 18px;
+		  height: 18px;
+		  border: 1px solid var(--border-strong);
+		  border-radius: var(--radius-sm);
+		  font-family: var(--font-mono);
+		  font-size: 0.6rem;
+		  font-weight: 600;
+		  letter-spacing: 0;
+		  color: var(--text-dim);
+		  transition: background 0.15s, border-color 0.15s, color 0.15s;
 		}
-		.panel-section-header:not(.collapsed) > span:first-child::before {
-		  border-color: var(--accent);
-		  background: var(--accent-dim);
+		.panel-section-header:not(.collapsed) .step-no { border-color: var(--accent-strong); background: var(--accent-strong); color: #fff; }
+		.step-sum {
+		  flex: 1;
+		  min-width: 0;
+		  text-align: right;
+		  font-size: 0.64rem;
+		  font-weight: 400;
+		  letter-spacing: 0;
+		  text-transform: none;
+		  color: var(--text-dim);
+		  white-space: nowrap;
+		  overflow: hidden;
+		  text-overflow: ellipsis;
 		}
+		.panel-section-header .chevron { flex-shrink: 0; }
 
 		.panel-section-header .chevron {
 		  transition: transform var(--panel-transition);
@@ -383,7 +418,7 @@
 		  overflow: hidden;
 		  padding: 2px 14px 14px;
 		  transition: max-height var(--panel-transition), opacity var(--panel-transition);
-		  max-height: 2000px;
+		  max-height: none;
 		  opacity: 1;
 		}
 
@@ -517,10 +552,8 @@
 		/* ── 뷰포트 ─────────────────────────────────────────────────── */
 		.viewport-toolbar {
 		  display: flex;
-		  align-items: center;
-		  flex-wrap: wrap;
+		  flex-direction: column;
 		  gap: 6px;
-		  row-gap: 6px;
 		  padding: 8px 10px;
 		  background: var(--bg-panel);
 		  border-bottom: 1px solid var(--border);
@@ -547,6 +580,11 @@
 		.vt-btn.active { background: var(--accent-dim); border-color: rgba(92, 151, 236, 0.45); color: var(--accent-text); }
 		.vt-btn:disabled { opacity: 0.4; cursor: default; background: transparent; border-color: var(--border-light); color: var(--text-dim); }
 		.viewport-toolbar .vt-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--border-light); }
+		.vt-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 28px; }
+		.vt-label { font-size: 0.6rem; font-weight: 600; letter-spacing: var(--track-caps); color: var(--text-muted); }
+		.vt-btn.vt-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; min-width: 76px; }
+		.vt-btn.vt-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+		.vt-btn.vt-next { margin-left: auto; }
 		.viewport-toolbar .vt-info {
 		  margin-left: auto;
 		  font-size: 0.64rem;
@@ -646,6 +684,44 @@
 		  width: 100%;
 		}
 		.form-group input[type=file] { min-height: 0; }
+		/* 모든 패널 폼은 같은 2열 격자 — 한 줄짜리는 span-2 */
+		.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
+		.form-grid .span-2 { grid-column: 1 / -1; }
+		.btn-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+		.btn-block { display: flex; width: 100%; margin: 4px 0 10px; }
+		.link-btn {
+		  padding: 0;
+		  margin: 2px 0;
+		  background: none;
+		  border: none;
+		  color: var(--accent);
+		  font-size: 0.66rem;
+		  font-weight: 500;
+		  letter-spacing: 0;
+		  text-transform: none;
+		  cursor: pointer;
+		}
+		.link-btn:hover { color: var(--accent-text); text-decoration: underline; }
+		.side-actions .link-btn { margin-left: auto; }
+		.ct-sec-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+		.summary-block { padding: 12px 14px 4px; }
+		.summary-block .ct-sec { margin-top: 0; }
+		#tool-spec-panel:not(:empty) { margin-top: 10px; }
+		.sub-block { margin-top: 12px; border: 1px solid var(--border-cell); border-radius: 8px; background: var(--bg-dark); }
+		.sub-block > summary {
+		  list-style: none;
+		  padding: 8px 10px;
+		  font-size: 0.7rem;
+		  font-weight: 500;
+		  color: var(--text);
+		  cursor: pointer;
+		  user-select: none;
+		  border-radius: 8px;
+		}
+		.sub-block > summary::-webkit-details-marker { display: none; }
+		.sub-block > summary:hover { background: var(--bg-hover); color: var(--text-bright); }
+		.sub-block[open] > summary { border-bottom: 1px solid var(--border-cell); border-radius: 8px 8px 0 0; }
+		.sub-body { padding: 4px 10px 12px; }
 
 		.btn {
 		  display: inline-flex;
@@ -989,7 +1065,7 @@
 		.calc-note { font-size: 0.66rem; color: var(--text-dim); padding: 3px 0; border-bottom: 1px dashed var(--border-light); }
 		.ct-sec { font-size: 0.6rem; font-weight: 600; letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--text-muted); margin: 14px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 5px; }
 		.ct-sec:first-child { margin-top: 4px; }
-		.ct-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+		.ct-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
 		.ct-check { font-size: 0.7rem; color: var(--text-dim); display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 		.ct-check input:not([type=checkbox]) { width: auto !important; }
 		#cm-preview { width: 100%; height: 120px; background: var(--bg-plot); border: 1px solid var(--border-cell); border-radius: var(--radius); display: block; margin: 8px 0; }
@@ -1021,11 +1097,10 @@
 	        End Mill Sandbox
 	      </div>
 	      <div class="menu-group">
-	        <button class="menu-btn active" onclick="switchView('machining', this)">가공</button>
-	        <button class="menu-btn" onclick="switchView('setup', this)">설정</button>
-	        <button class="menu-btn" onclick="switchView('reference', this)">참고</button>
-	        <button class="menu-btn" onclick="switchView('precision', this)">정밀 분석</button>
-	        <button class="menu-btn" onclick="switchView('settings', this)">모델·환경</button>
+	        <button class="menu-btn active" id="menu-machining" onclick="switchView('machining', this)">가공</button>
+	        <button class="menu-btn" id="menu-precision" onclick="switchView('precision', this)">정밀 분석</button>
+	        <button class="menu-btn" id="menu-reference" onclick="switchView('reference', this)">참고 자료</button>
+	        <button class="menu-btn" id="menu-settings" onclick="switchView('settings', this)">환경·모델 설정</button>
 	      </div>
 	      <div class="dro-display">
 	        <div class="dro-item"><span class="dro-label">X</span><span class="dro-value" id="dro-x">0.000</span></div>
@@ -1043,70 +1118,241 @@
 
 	  <aside class="panel-left" id="panelLeft">
 	    <button class="panel-toggle-btn" data-toggle="panelLeft" title="좌측 패널 접기">◀</button>
-
-	    <div class="panel-section-header" data-section="secProject">
-	      <span>프로젝트</span><span class="chevron">▼</span>
-	    </div>
-	    <div class="panel-section-body" id="secProject">
-	    </div>
+	    <div class="panel-title"><b>준비</b><small>무엇으로 깎을지 · 위에서부터 차례로</small></div>
+	    <div class="panel-scroll">
 
 	    <div class="panel-section-header" data-section="secPreset">
-	      <span>프리셋</span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">1</span>프로필</span><span class="step-sum" id="sum-profile"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secPreset">
-	      <div class="side-actions">
-	        <button class="btn btn-sm" onclick="presetDialogOpen()">＋ 새 프리셋</button>
-	        <button class="btn btn-sm btn-outline" onclick="presetSaveCurrent()">현재 → 프리셋</button>
-	      </div>
 	      <div class="tree-group">활성 프로젝트의 프로필</div>
 	      <div id="preset-tree"></div>
 	      <div class="side-actions">
 	        <button class="btn btn-sm btn-outline" onclick="profileDuplicate()">복제</button>
 	        <button class="btn btn-sm btn-outline" onclick="profileDelete(this)">삭제</button>
+	        <button class="link-btn" onclick="openLibrary()" title="프로젝트 전환·생성은 정밀 분석 ⑦ 라이브러리에서 합니다">프로젝트 관리 →</button>
+	      </div>
+	      <div class="ct-sec">프리셋 · 재사용하는 조합</div>
+	      <div class="side-actions">
+	        <button class="btn btn-sm btn-outline" onclick="presetDialogOpen()">＋ 새 프리셋</button>
+	        <button class="btn btn-sm btn-outline" onclick="presetSaveCurrent()">현재 → 프리셋</button>
 	        <button class="btn btn-sm btn-outline" id="preset-lib-btn" onclick="presetLibraryToggle()">프리셋 목록 ▾</button>
 	      </div>
 	      <div id="preset-lib" class="hidden"></div>
 	    </div>
 
-	    <div class="panel-section-header" data-section="secToolList">
-	      <span>공구 목록</span><span class="chevron">▼</span>
+	    <div class="panel-section-header collapsed" data-section="secToolList">
+	      <span class="sec-title"><span class="step-no">2</span>공구</span><span class="step-sum" id="sum-tool"></span><span class="chevron">▼</span>
 	    </div>
-	    <div class="panel-section-body" id="secToolList">
+	    <div class="panel-section-body collapsed" id="secToolList">
 	      <div id="tool-tree"></div>
-	      <div id="tool-spec-panel" style="margin-top:6px;"></div>
+	      <div id="tool-spec-panel"></div>
 	      <div id="tool-state-panel"><div class="ts-note">공구 개체 상태를 불러오는 중입니다</div></div>
+	      <details class="sub-block">
+	        <summary>＋ 커스텀 공구 만들기</summary>
+	        <div class="sub-body">
+	          <div class="ct-sec">모양 (날끝 · 넥)</div>
+	          <div class="ct-grid">
+	            <div class="form-group"><label>날끝 형상</label>
+	              <select id="cm-nose" onchange="toolFormChanged()">
+	                <option value="square">스퀘어</option>
+	                <option value="ball">볼노즈</option>
+	                <option value="corner">코너 R</option>
+	              </select>
+	            </div>
+	            <div class="form-group"><label>코너 R (mm)</label><input type="number" id="cm-cr" value="0.5" step="0.05" min="0.05" oninput="toolFormChanged()" /></div>
+	          </div>
+	          <label class="ct-check"><input type="checkbox" id="cm-neck-on" onchange="toolFormChanged()" /> 롱넥 (넥 릴리프)</label>
+	          <div class="ct-grid">
+	            <div class="form-group"><label>넥 직경 (mm)</label><input type="number" id="cm-neck-d" value="7.6" step="0.1" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>넥 유효장 (날끝~)</label><input type="number" id="cm-reach" value="32" step="1" oninput="toolFormChanged()" /></div>
+	          </div>
+	          <div class="ct-sec">형태 (치수 · 날 · 날끝 기하)</div>
+	          <div class="ct-grid">
+	            <div class="form-group"><label>이름</label><input type="text" id="cm-name" value="커스텀 Ø8 4날" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>모델</label><input type="text" id="cm-model" value="CUSTOM-8F4" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>직경 (mm)</label><input type="number" id="cm-dia" value="8" step="0.5" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>날 수</label><input type="number" id="cm-flutes" value="4" min="1" max="12" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>LOC (mm)</label><input type="number" id="cm-loc" value="20" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>OAL (mm)</label><input type="number" id="cm-oal" value="60" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>샹크 (mm)</label><input type="number" id="cm-shank" value="8" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>헬릭스 (°)</label><input type="number" id="cm-helix" value="35" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>경사각 레이크 (°)</label><input type="number" id="cm-rake" step="0.5" placeholder="소재 기본" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>여유각 (°)</label><input type="number" id="cm-clear" step="0.5" placeholder="소재 기본" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>날끝 호닝 (µm)</label><input type="number" id="cm-edge" step="0.5" placeholder="등급 기본" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>런아웃 TIR (µm)</label><input type="number" id="cm-runout" step="0.5" placeholder="홀더·등급 기본" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>홀더</label>
+	              <select id="cm-holder" onchange="toolFormChanged()" title="런아웃을 비우면 홀더 사양 TIR 을 쓴다 (열박음·유압·폴리곤 3, ER UP 5, ER 정밀 10, ER 표준 15, 밀링 척 8, 사이드락 15 µm)">
+	                <option value="Unknown">미지정 (공구 등급으로)</option>
+	                <option value="ShrinkFit">열박음 (슈링크)</option>
+	                <option value="Hydraulic">유압 척</option>
+	                <option value="Polygon">폴리곤 (압입)</option>
+	                <option value="ErUltraPrecision">ER 콜릿 초정밀 (UP)</option>
+	                <option value="ErPrecision">ER 콜릿 정밀</option>
+	                <option value="ErStandard">ER 콜릿 표준</option>
+	                <option value="MillingChuck">밀링 척 (롤러)</option>
+	                <option value="SideLock">사이드락 (웰던)</option>
+	              </select>
+	            </div>
+	          </div>
+	          <label class="ct-check"><input type="checkbox" id="cm-vp" onchange="toolFormChanged()" /> 부등분할 (채터 억제)</label>
+	          <label class="ct-check" title="공구 반경을 회전 상태(레이저 툴 세터 등)로 재서 보정값에 넣었으면 체크 — 가장 긴 날의 런아웃 과삭(0.85·TIR/2)을 벽 오차에서 뺀다. 정지 상태(프리세터·마이크로미터) 측정이면 비워 둔다"><input type="checkbox" id="cm-rot" onchange="toolFormChanged()" /> 공구 반경 회전 측정 (레이저)</label>
+	          <div class="ct-sec">소재 (모재 · 코팅 · 등급)</div>
+	          <div class="ct-grid">
+	            <div class="form-group"><label>모재</label>
+	              <select id="cm-substrate" onchange="toolFormChanged()">
+	                <option value="carbide">초경 (미립)</option>
+	                <option value="carbide_uf">초경 (초미립)</option>
+	                <option value="hss">고속도강 HSS</option>
+	                <option value="hss_co">코발트 HSS</option>
+	                <option value="cbn">CBN</option>
+	                <option value="pcd">PCD</option>
+	              </select>
+	            </div>
+	            <div class="form-group"><label>코팅</label>
+	              <select id="cm-coating-family" onchange="toolCoatingPicked()">
+	                <option value="AlTiN">AlTiN</option>
+	                <option value="TiAlN">TiAlN</option>
+	                <option value="AlCrN">AlCrN</option>
+	                <option value="TiSiN">TiSiN</option>
+	                <option value="nACo">nACo</option>
+	                <option value="TiCN">TiCN</option>
+	                <option value="TiN">TiN</option>
+	                <option value="CrN">CrN</option>
+	                <option value="ZrN">ZrN</option>
+	                <option value="DLC">DLC</option>
+	                <option value="Diamond">다이아몬드</option>
+	                <option value="">무코팅</option>
+	              </select>
+	            </div>
+	            <div class="form-group"><label>코팅 표기명</label><input type="text" id="cm-coating" value="AlTiN" oninput="toolFormChanged()" /></div>
+	            <div class="form-group"><label>등급</label>
+	              <select id="cm-tier" onchange="toolFormChanged()">
+	                <option value="high">고급형</option>
+	                <option value="low">보급형</option>
+	              </select>
+	            </div>
+	          </div>
+	          <canvas id="cm-preview" width="560" height="240"></canvas>
+	          <div id="cm-phys" style="font-size:0.68rem;"></div>
+	          <div class="btn-row">
+	            <button class="btn btn-sm" onclick="createCustomEndmill(false)">라이브러리에 저장</button>
+	            <button class="btn btn-sm btn-outline" onclick="createCustomEndmill(true)">저장 후 현재 프로필에 적용</button>
+	          </div>
+	          <div id="cm-result" class="hidden"></div>
+	        </div>
+	      </details>
 	    </div>
 
-	    <div class="panel-section-header" data-section="secMaterial">
-	      <span>원소재</span><span class="chevron">▼</span>
+	    <div class="panel-section-header collapsed" data-section="secMaterial">
+	      <span class="sec-title"><span class="step-no">3</span>원소재</span><span class="step-sum" id="sum-material"></span><span class="chevron">▼</span>
 	    </div>
-	    <div class="panel-section-body" id="secMaterial">
+	    <div class="panel-section-body collapsed" id="secMaterial">
 	      <div id="workpiece-tree"></div>
+	      <details class="sub-block">
+	        <summary>＋ 커스텀 원소재 만들기</summary>
+	        <div class="sub-body">
+	          <div class="form-grid">
+	            <div class="form-group"><label>이름</label><input type="text" id="cw-name" value="커스텀 판재" /></div>
+	            <div class="form-group">
+	              <label>소재</label>
+	              <select id="cw-material">
+	                <option value="aluminum">알루미늄</option>
+	                <option value="carbon_steel">탄소강</option>
+	                <option value="stainless">스테인리스</option>
+	                <option value="alloy_steel">합금강·금형강 (HRC)</option>
+	                <option value="titanium">티타늄</option>
+	                <option value="inconel">인코넬</option>
+	                <option value="superalloy">수퍼알로이</option>
+	                <option value="cfrp">CFRP</option>
+	              </select>
+	            </div>
+	            <div class="form-group">
+	              <label>형상</label>
+	              <select id="cw-shape">
+	                <option value="rectangular">직사각형</option>
+	                <option value="cylindrical">원형</option>
+	                <option value="custom">커스텀</option>
+	              </select>
+	            </div>
+	            <div class="form-group">
+	              <label>클램핑</label>
+	              <select id="cw-clamping">
+	                <option value="vise">바이스</option>
+	                <option value="vacuum">진공척</option>
+	                <option value="magnetic">마그네틱척</option>
+	                <option value="fixture">픽스처 플레이트</option>
+	                <option value="soft_jaw">소프트 죠</option>
+	              </select>
+	            </div>
+	            <div class="form-group"><label>폭 (mm)</label><input type="number" id="cw-width" value="120" /></div>
+	            <div class="form-group"><label>높이 (mm)</label><input type="number" id="cw-height" value="80" /></div>
+	            <div class="form-group"><label>두께 (mm)</label><input type="number" id="cw-thickness" value="25" /></div>
+	            <div class="form-group"><label>여유량 (mm)</label><input type="number" id="cw-allowance" value="0.5" step="0.1" /></div>
+	            <div class="form-group"><label>경도 HRC</label><input type="number" id="cw-hrc" min="10" max="70" placeholder="합금강" /></div>
+	            <div class="form-group"><label>공차 (±µm)</label><input type="number" id="cw-tol" min="1" step="1" placeholder="Ra 기준" /></div>
+	          </div>
+	          <div class="btn-row">
+	            <button class="btn btn-sm" onclick="createCustomWorkpiece(false)">원소재 저장</button>
+	            <button class="btn btn-sm btn-outline" onclick="createCustomWorkpiece(true)">저장 후 현재 프로필에 적용</button>
+	          </div>
+	          <div id="cw-result" class="hidden"></div>
+	        </div>
+	      </details>
 	    </div>
 
-	    <div class="panel-section-header" data-section="secCoolant">
-	      <span>냉각 방식</span><span class="chevron">▼</span>
+	    <div class="panel-section-header collapsed" data-section="secCoolant">
+	      <span class="sec-title"><span class="step-no">4</span>냉각 · 환경</span><span class="step-sum" id="sum-coolant"></span><span class="chevron">▼</span>
 	    </div>
-	    <div class="panel-section-body" id="secCoolant">
+	    <div class="panel-section-body collapsed" id="secCoolant">
 	      <div id="coolant-tree"></div>
-	    </div>
-
-	    <div class="panel-section-header" data-section="secAnim">
-	      <span>애니메이션</span><span class="chevron">▼</span>
-	    </div>
-	    <div class="panel-section-body" id="secAnim">
-	      <div class="side-actions">
-	        <button class="vt-btn" id="vt-btn-anim" onclick="animateToolpath()">⏵ 애니메이션</button>
-	        <button class="vt-btn" onclick="animStop()">⏹ 처음으로</button>
+	      <div class="ct-sec">선택한 냉각 방식의 세부값</div>
+	      <div class="form-group hidden">
+	        <label>냉각 방식</label>
+	        <select id="coolant-select">
+	          <option value="flood">플러드 (M08)</option>
+	          <option value="air_blast">에어 블로우 (M83)</option>
+	          <option value="mist">미스트 (M07)</option>
+	          <option value="through_tool">내부 급유 (M88)</option>
+	          <option value="dry">건식 (M09)</option>
+	        </select>
 	      </div>
-	      <div style="font-size:0.66rem;color:var(--text-muted);padding:0 8px 6px;">속도·위치·표시 항목은 가운데 뷰포트 툴바에서 조절합니다.</div>
+	      <div class="form-grid">
+	        <div class="form-group">
+	          <label>매체 온도</label>
+	          <select id="coolant-temp-mode" onchange="coolantFormSync()">
+	            <option value="auto">자동 (환경 기준)</option>
+	            <option value="manual">직접 입력</option>
+	          </select>
+	        </div>
+	        <div class="form-group"><label>온도 (°C)</label><input type="number" id="coolant-temp" step="0.5" min="0" max="60" /></div>
+	        <div class="form-group"><label>압력 (bar)</label><input type="number" id="coolant-pressure" step="0.5" min="0" max="150" /></div>
+	        <div class="form-group"><label>유량 (L/min)</label><input type="number" id="coolant-flow" step="0.5" min="0" max="200" /></div>
+	      </div>
+	      <button class="btn btn-sm btn-block" onclick="coolantApply()">세부값을 프로필에 적용</button>
+	      <div id="coolant-info-panel" class="hidden">
+	        <div class="spec-grid">
+	          <div class="spec-item"><div class="label">방식</div><div class="value" id="ci-label">-</div></div>
+	          <div class="spec-item"><div class="label">M-code</div><div class="value" id="ci-mcode">-</div></div>
+	          <div class="spec-item"><div class="label">압력</div><div class="value" id="ci-pressure">-</div></div>
+	          <div class="spec-item"><div class="label">유량</div><div class="value" id="ci-flow">-</div></div>
+	          <div class="spec-item"><div class="label">노즐 수</div><div class="value" id="ci-nozzle">-</div></div>
+	          <div class="spec-item"><div class="label">분사 타입</div><div class="value" id="ci-spray">-</div></div>
+	          <div class="spec-item"><div class="label">매체 온도</div><div class="value" id="ci-temp">-</div></div>
+	          <div class="spec-item"><div class="label">온도 기준</div><div class="value" id="ci-temp-basis">-</div></div>
+	        </div>
+	      </div>
+	      <div class="st-note">목록에서 방식을 고르면 기본 압력·유량으로 바로 적용됩니다. 분사 모습은 가운데 뷰포트의 '냉각' 표시로 봅니다.</div>
+	      <div class="ct-sec">작업장 환경</div>
+	      <div class="form-grid">
+	        <div class="form-group"><label>실내 온도 (°C)</label><input type="number" id="qp-ambient" step="0.5" min="0" max="50" /></div>
+	        <div class="form-group"><label>상대 습도 (%)</label><input type="number" id="qp-rh" step="1" min="5" max="98" /></div>
+	      </div>
+	      <button class="btn btn-sm btn-block" onclick="envQuickSave()">환경 적용</button>
+	      <div class="st-note" id="qp-env"></div>
+	      <button class="link-btn" onclick="switchView('settings', document.getElementById('menu-settings'))">이슬점·칠러·기준 온도 등 상세 환경 →</button>
 	    </div>
 
-	    <div class="panel-section-header" data-section="secReset">
-	      <span>리셋</span><span class="chevron">▼</span>
-	    </div>
-	    <div class="panel-section-body" id="secReset">
-	      <button class="vt-btn" onclick="resetViewport()">⟲ 리셋</button>
 	    </div>
 	  </aside>
 
@@ -1114,41 +1360,49 @@
 
 	  <main class="panel-center" id="panelCenter">
 	    <div class="viewport-toolbar">
-	      <button class="vt-btn" onclick="fitViewport()">⊞ 피트</button>
-	      <div class="vt-sep"></div>
-	      <button class="vt-btn" id="vt-play" onclick="animToggle()">⏵ 재생</button>
-	      <button class="vt-btn" onclick="animStop()" title="처음으로">⏹</button>
-	      <select id="vt-speed" onchange="animSetSpeed(this.value)" title="실제 가공 시간 대비 재생 배속">
-	        <option value="0">자동 (약 30초)</option>
-	        <option value="0.25">×0.25</option>
-	        <option value="0.5">×0.5</option>
-	        <option value="1">×1 (실시간)</option>
-	        <option value="2">×2</option>
-	        <option value="5">×5</option>
-	        <option value="10">×10</option>
-	        <option value="20">×20</option>
-	        <option value="50">×50</option>
-	        <option value="100">×100</option>
-	      </select>
-	      <input type="range" id="vt-seek" min="0" max="1000" value="0" oninput="animSeek(this.value)" title="재생 위치" />
-	      <span class="vt-time" id="vt-time">0.0 / 0.0 s</span>
-	      <div class="vt-sep"></div>
-	      <button class="vt-btn active" id="tg-tool" onclick="vpToggle('tool')">공구</button>
-	      <button class="vt-btn active" id="tg-coolant" onclick="vpToggle('coolant')">냉각</button>
-	      <button class="vt-btn active" id="tg-heat" onclick="vpToggle('heat')">열·응력</button>
-	      <button class="vt-btn active" id="tg-depth" onclick="vpToggle('depth')" title="가공 깊이를 피삭재별 색상 깊이·등고선·작은 점으로 표시">깊이</button>
-	      <button class="vt-btn active" id="tg-wear" onclick="vpToggle('wear')" title="공구 날·높이별 마모 깊이(반경 손실)를 표시">마모</button>
-	      <div class="vt-sep"></div>
-	      <select id="tp-pattern" onchange="renderToolpath2D()">
-	        <option value="pocket_zigzag">포켓 지그재그</option>
-	        <option value="rect_profile">사각형 프로파일</option>
-	        <option value="circular">원형 프로파일</option>
-	        <option value="helical_pocket">헬리컬 포켓</option>
-	        <option value="contour_multi">등고선 다중 패스</option>
-	        <option value="slot">슬롯 가공</option>
-	      </select>
-	      <button class="vt-btn" id="vt-comp" onclick="compShow(true)" disabled title="재생(계산 실행) 후 2차 보정 판단·분포·로그 보기">2차 보정</button>
-	      <span class="vt-info" id="vp-info">세그먼트: 0 | 거리: 0mm</span>
+	      <div class="vt-row">
+	        <span class="step-no">6</span>
+	        <span class="vt-label">경로</span>
+	        <select id="tp-pattern" onchange="renderToolpath2D()">
+	          <option value="pocket_zigzag">포켓 지그재그</option>
+	          <option value="rect_profile">사각형 프로파일</option>
+	          <option value="circular">원형 프로파일</option>
+	          <option value="helical_pocket">헬리컬 포켓</option>
+	          <option value="contour_multi">등고선 다중 패스</option>
+	          <option value="slot">슬롯 가공</option>
+	        </select>
+	        <div class="vt-sep"></div>
+	        <button class="vt-btn vt-primary" id="vt-play" onclick="animToggle()">⏵ 재생</button>
+	        <button class="vt-btn" onclick="animStop()" title="처음으로">⏹</button>
+	        <select id="vt-speed" onchange="animSetSpeed(this.value)" title="실제 가공 시간 대비 재생 배속">
+	          <option value="0">자동 (약 30초)</option>
+	          <option value="0.25">×0.25</option>
+	          <option value="0.5">×0.5</option>
+	          <option value="1">×1 (실시간)</option>
+	          <option value="2">×2</option>
+	          <option value="5">×5</option>
+	          <option value="10">×10</option>
+	          <option value="20">×20</option>
+	          <option value="50">×50</option>
+	          <option value="100">×100</option>
+	        </select>
+	        <input type="range" id="vt-seek" min="0" max="1000" value="0" oninput="animSeek(this.value)" title="재생 위치" />
+	        <span class="vt-time" id="vt-time">0.0 / 0.0 s</span>
+	        <button class="vt-btn vt-next" id="vt-comp" onclick="compShow(true)" disabled title="재생(계산 실행) 후 2차 보정 판단·분포·로그 보기">2차 보정 →</button>
+	      </div>
+	      <div class="vt-row">
+	        <span class="vt-label">표시</span>
+	        <button class="vt-btn active" id="tg-tool" onclick="vpToggle('tool')">공구</button>
+	        <button class="vt-btn active" id="tg-coolant" onclick="vpToggle('coolant')">냉각</button>
+	        <button class="vt-btn active" id="tg-heat" onclick="vpToggle('heat')">열·응력</button>
+	        <button class="vt-btn active" id="tg-depth" onclick="vpToggle('depth')" title="가공 깊이를 피삭재별 색상 깊이·등고선·작은 점으로 표시">깊이</button>
+	        <button class="vt-btn active" id="tg-wear" onclick="vpToggle('wear')" title="공구 날·높이별 마모 깊이(반경 손실)를 표시">마모</button>
+	        <div class="vt-sep"></div>
+	        <span class="vt-label">시점</span>
+	        <button class="vt-btn" onclick="fitViewport()">⊞ 피트</button>
+	        <button class="vt-btn" onclick="resetViewport()" title="회전·기울기 초기화 (뷰포트 더블클릭과 같음)">⟲ 리셋</button>
+	        <span class="vt-info" id="vp-info">세그먼트: 0 | 거리: 0mm</span>
+	      </div>
 	    </div>
 	    <div class="viewport-canvas-wrap">
 	      <canvas id="tp-canvas"></canvas>
@@ -1227,7 +1481,7 @@
 	      <div class="pv-pane active" id="pv-pane-input">
 	        <div class="pv-grid">
 	          <div class="pv-card">
-	            <h4>모델 (safetensors 전용 · ONNX 미사용) <button class="btn btn-sm btn-outline" style="margin-left:6px;" onclick="switchView('settings', document.querySelectorAll('.menu-btn')[4])">다운로드·삭제 관리</button></h4>
+	            <h4>모델 (safetensors 전용 · ONNX 미사용) <button class="btn btn-sm btn-outline" style="margin-left:6px;" onclick="switchView('settings', document.getElementById('menu-settings'))">다운로드·삭제 관리</button></h4>
 	            <div class="form-group"><label>모델 루트 폴더</label><input type="text" id="pv-model-root" /></div>
 	            <div class="pv-row">
 	              <button class="btn btn-sm" onclick="pvSetModelRoot()">폴더 지정</button>
@@ -1536,42 +1790,33 @@
 
 	  <aside class="panel-right" id="panelRight">
 	    <button class="panel-toggle-btn" data-toggle="panelRight" title="우측 패널 접기">▶</button>
-
-	    <div class="panel-section-header" data-section="secParam">
-	      <span>파라미터</span><span class="chevron">▼</span>
-	    </div>
-	    <div class="panel-section-body" id="secParam">
-	      <div class="ctx-box" id="param-profile" style="margin:6px 8px;">프로필을 불러오는 중...</div>
-	      <div style="padding:0 8px 8px;">
-	        <div class="calc-sec">작업장 환경 (빠른 설정)</div>
-	        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:4px;align-items:end;">
-	          <div class="form-group" style="margin-bottom:0;"><label>실내 °C</label><input type="number" id="qp-ambient" step="0.5" min="0" max="50" /></div>
-	          <div class="form-group" style="margin-bottom:0;"><label>습도 %</label><input type="number" id="qp-rh" step="1" min="5" max="98" /></div>
-	          <button class="btn btn-sm" onclick="envQuickSave()">적용</button>
-	        </div>
-	        <div id="qp-env" style="font-size:0.66rem;color:var(--text-muted);margin-top:4px;"></div>
-	      </div>
+	    <div class="panel-title"><b>조건</b><small>고른 구성으로 어떻게 깎을지</small></div>
+	    <div class="panel-scroll">
+	    <div class="summary-block">
+	      <div class="ct-sec">현재 구성 · ①–④ 요약</div>
+	      <div class="ctx-box" id="param-profile">프로필을 불러오는 중...</div>
 	    </div>
 
 	    <div class="panel-section-header" data-section="secCutCalc">
-	      <span>절삭 조건 계산</span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">5</span>절삭 조건</span><span class="step-sum" id="sum-cond"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secCutCalc">
-	      <div class="ctx-box" id="calc-context">선택한 프로필(프리셋·공구·소재·냉각·환경)을 기준으로 계산합니다.</div>
-	      <div class="form-group">
-	        <label>피삭재</label>
-	        <select id="calc-workpiece">
-	          <option value="aluminum">알루미늄 합금</option>
-	          <option value="carbon_steel">탄소강</option>
-	          <option value="alloy_steel">합금강·금형강 (HRC)</option>
-	          <option value="stainless">스테인리스강</option>
-	          <option value="titanium" selected>티타늄 합금</option>
-	          <option value="inconel">인코넬</option>
-	          <option value="superalloy">수퍼알로이</option>
-	          <option value="cfrp">CFRP</option>
-	        </select>
-	      </div>
-	      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+	      <div class="ctx-box hidden" id="calc-context"></div>
+	      <div class="ct-sec ct-sec-row"><span>계산 입력 · 바꾸면 가정으로만 계산</span><button class="link-btn" onclick="calcSync(true)">프로필 값으로</button></div>
+	      <div class="form-grid">
+	        <div class="form-group span-2">
+	          <label>피삭재</label>
+	          <select id="calc-workpiece">
+	            <option value="aluminum">알루미늄 합금</option>
+	            <option value="carbon_steel">탄소강</option>
+	            <option value="alloy_steel">합금강·금형강 (HRC)</option>
+	            <option value="stainless">스테인리스강</option>
+	            <option value="titanium" selected>티타늄 합금</option>
+	            <option value="inconel">인코넬</option>
+	            <option value="superalloy">수퍼알로이</option>
+	            <option value="cfrp">CFRP</option>
+	          </select>
+	        </div>
 	        <div class="form-group">
 	          <label>직경 (mm)</label>
 	          <input type="number" id="calc-diameter" value="10" min="0.1" step="0.5" />
@@ -1580,19 +1825,17 @@
 	          <label>날 수</label>
 	          <input type="number" id="calc-flutes" value="4" min="1" max="12" />
 	        </div>
-	      </div>
-	      <div class="form-group">
-	        <label>경도 HRC (합금강·금형강)</label>
-	        <input type="number" id="calc-hrc" value="50" min="10" max="70" />
-	      </div>
-	      <div class="form-group">
-	        <label>공구 등급</label>
-	        <select id="calc-tier">
-	          <option value="high" selected>고급형</option>
-	          <option value="low">저가형</option>
-	        </select>
-	      </div>
-	      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+	        <div class="form-group">
+	          <label>경도 HRC (합금강)</label>
+	          <input type="number" id="calc-hrc" value="50" min="10" max="70" />
+	        </div>
+	        <div class="form-group">
+	          <label>공구 등급</label>
+	          <select id="calc-tier">
+	            <option value="high" selected>고급형</option>
+	            <option value="low">저가형</option>
+	          </select>
+	        </div>
 	        <div class="form-group">
 	          <label>가공 목적</label>
 	          <select id="calc-purpose">
@@ -1612,200 +1855,11 @@
 	          </select>
 	        </div>
 	      </div>
-	      <button class="btn" onclick="calculateConditions()" style="width:100%;margin-bottom:6px;">계산 실행</button>
-	      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;">
-	        <button class="btn btn-sm btn-outline" onclick="calcApply()">프로필에 적용</button>
-	        <button class="btn btn-sm btn-outline" onclick="calcSync(true)">프로필 값으로</button>
-	      </div>
+	      <button class="btn btn-block" onclick="calculateConditions()">계산 실행</button>
 	      <div id="calc-result" class="hidden"></div>
+	      <button class="btn btn-outline btn-block" onclick="calcApply()">추천 조건을 프로필에 적용</button>
 	    </div>
 
-	    <div class="panel-section-header" data-section="secCoolSet">
-	      <span>냉각 설정</span><span class="chevron">▼</span>
-	    </div>
-	    <div class="panel-section-body" id="secCoolSet">
-	      <div class="form-group">
-	        <label>냉각 방식</label>
-	        <select id="coolant-select">
-	          <option value="flood">플러드 (M08)</option>
-	          <option value="air_blast">에어 블로우 (M83)</option>
-	          <option value="mist">미스트 (M07)</option>
-	          <option value="through_tool">내부 급유 (M88)</option>
-	          <option value="dry">건식 (M09)</option>
-	        </select>
-	      </div>
-	      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-	        <div class="form-group">
-	          <label>매체 온도</label>
-	          <select id="coolant-temp-mode" onchange="coolantFormSync()">
-	            <option value="auto">자동 (환경 기준)</option>
-	            <option value="manual">직접 입력</option>
-	          </select>
-	        </div>
-	        <div class="form-group"><label>온도 (°C)</label><input type="number" id="coolant-temp" step="0.5" min="0" max="60" /></div>
-	        <div class="form-group"><label>압력 (bar)</label><input type="number" id="coolant-pressure" step="0.5" min="0" max="150" /></div>
-	        <div class="form-group"><label>유량 (L/min)</label><input type="number" id="coolant-flow" step="0.5" min="0" max="200" /></div>
-	      </div>
-	      <button class="btn btn-sm" onclick="coolantApply()" style="width:100%;margin-bottom:8px;">현재 프로필에 적용</button>
-	      <div id="coolant-info-panel" class="hidden">
-	        <div class="spec-grid">
-	          <div class="spec-item"><div class="label">방식</div><div class="value" id="ci-label">-</div></div>
-	          <div class="spec-item"><div class="label">M-code</div><div class="value" id="ci-mcode">-</div></div>
-	          <div class="spec-item"><div class="label">압력</div><div class="value" id="ci-pressure">-</div></div>
-	          <div class="spec-item"><div class="label">유량</div><div class="value" id="ci-flow">-</div></div>
-	          <div class="spec-item"><div class="label">노즐 수</div><div class="value" id="ci-nozzle">-</div></div>
-	          <div class="spec-item"><div class="label">분사 타입</div><div class="value" id="ci-spray">-</div></div>
-	          <div class="spec-item"><div class="label">매체 온도</div><div class="value" id="ci-temp">-</div></div>
-	          <div class="spec-item"><div class="label">온도 기준</div><div class="value" id="ci-temp-basis">-</div></div>
-	        </div>
-	      </div>
-	      <div style="font-size:0.66rem;color:var(--text-muted);margin-top:6px;">냉각 분사는 가운데 뷰포트에서 공구와 함께 표시됩니다 (툴바의 '냉각' 토글).</div>
-	    </div>
-
-	    <div class="panel-section-header" data-section="secCustomTool">
-	      <span>커스텀 공구</span><span class="chevron">▼</span>
-	    </div>
-	    <div class="panel-section-body" id="secCustomTool">
-	      <div class="ct-sec">모양 (날끝 · 넥)</div>
-	      <div class="ct-grid">
-	        <div class="form-group"><label>날끝 형상</label>
-	          <select id="cm-nose" onchange="toolFormChanged()">
-	            <option value="square">스퀘어</option>
-	            <option value="ball">볼노즈</option>
-	            <option value="corner">코너 R</option>
-	          </select>
-	        </div>
-	        <div class="form-group"><label>코너 R (mm)</label><input type="number" id="cm-cr" value="0.5" step="0.05" min="0.05" oninput="toolFormChanged()" /></div>
-	      </div>
-	      <label class="ct-check"><input type="checkbox" id="cm-neck-on" onchange="toolFormChanged()" /> 롱넥 (넥 릴리프)</label>
-	      <div class="ct-grid">
-	        <div class="form-group"><label>넥 직경 (mm)</label><input type="number" id="cm-neck-d" value="7.6" step="0.1" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>넥 유효장 (날끝~)</label><input type="number" id="cm-reach" value="32" step="1" oninput="toolFormChanged()" /></div>
-	      </div>
-	      <div class="ct-sec">형태 (치수 · 날 · 날끝 기하)</div>
-	      <div class="ct-grid">
-	        <div class="form-group"><label>이름</label><input type="text" id="cm-name" value="커스텀 Ø8 4날" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>모델</label><input type="text" id="cm-model" value="CUSTOM-8F4" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>직경 (mm)</label><input type="number" id="cm-dia" value="8" step="0.5" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>날 수</label><input type="number" id="cm-flutes" value="4" min="1" max="12" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>LOC (mm)</label><input type="number" id="cm-loc" value="20" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>OAL (mm)</label><input type="number" id="cm-oal" value="60" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>샹크 (mm)</label><input type="number" id="cm-shank" value="8" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>헬릭스 (°)</label><input type="number" id="cm-helix" value="35" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>경사각 레이크 (°)</label><input type="number" id="cm-rake" step="0.5" placeholder="소재 기본" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>여유각 (°)</label><input type="number" id="cm-clear" step="0.5" placeholder="소재 기본" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>날끝 호닝 (µm)</label><input type="number" id="cm-edge" step="0.5" placeholder="등급 기본" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>런아웃 TIR (µm)</label><input type="number" id="cm-runout" step="0.5" placeholder="홀더·등급 기본" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>홀더</label>
-	          <select id="cm-holder" onchange="toolFormChanged()" title="런아웃을 비우면 홀더 사양 TIR 을 쓴다 (열박음·유압·폴리곤 3, ER UP 5, ER 정밀 10, ER 표준 15, 밀링 척 8, 사이드락 15 µm)">
-	            <option value="Unknown">미지정 (공구 등급으로)</option>
-	            <option value="ShrinkFit">열박음 (슈링크)</option>
-	            <option value="Hydraulic">유압 척</option>
-	            <option value="Polygon">폴리곤 (압입)</option>
-	            <option value="ErUltraPrecision">ER 콜릿 초정밀 (UP)</option>
-	            <option value="ErPrecision">ER 콜릿 정밀</option>
-	            <option value="ErStandard">ER 콜릿 표준</option>
-	            <option value="MillingChuck">밀링 척 (롤러)</option>
-	            <option value="SideLock">사이드락 (웰던)</option>
-	          </select>
-	        </div>
-	      </div>
-	      <label class="ct-check"><input type="checkbox" id="cm-vp" onchange="toolFormChanged()" /> 부등분할 (채터 억제)</label>
-	      <label class="ct-check" title="공구 반경을 회전 상태(레이저 툴 세터 등)로 재서 보정값에 넣었으면 체크 — 가장 긴 날의 런아웃 과삭(0.85·TIR/2)을 벽 오차에서 뺀다. 정지 상태(프리세터·마이크로미터) 측정이면 비워 둔다"><input type="checkbox" id="cm-rot" onchange="toolFormChanged()" /> 공구 반경 회전 측정 (레이저)</label>
-	      <div class="ct-sec">소재 (모재 · 코팅 · 등급)</div>
-	      <div class="ct-grid">
-	        <div class="form-group"><label>모재</label>
-	          <select id="cm-substrate" onchange="toolFormChanged()">
-	            <option value="carbide">초경 (미립)</option>
-	            <option value="carbide_uf">초경 (초미립)</option>
-	            <option value="hss">고속도강 HSS</option>
-	            <option value="hss_co">코발트 HSS</option>
-	            <option value="cbn">CBN</option>
-	            <option value="pcd">PCD</option>
-	          </select>
-	        </div>
-	        <div class="form-group"><label>코팅</label>
-	          <select id="cm-coating-family" onchange="toolCoatingPicked()">
-	            <option value="AlTiN">AlTiN</option>
-	            <option value="TiAlN">TiAlN</option>
-	            <option value="AlCrN">AlCrN</option>
-	            <option value="TiSiN">TiSiN</option>
-	            <option value="nACo">nACo</option>
-	            <option value="TiCN">TiCN</option>
-	            <option value="TiN">TiN</option>
-	            <option value="CrN">CrN</option>
-	            <option value="ZrN">ZrN</option>
-	            <option value="DLC">DLC</option>
-	            <option value="Diamond">다이아몬드</option>
-	            <option value="">무코팅</option>
-	          </select>
-	        </div>
-	        <div class="form-group"><label>코팅 표기명</label><input type="text" id="cm-coating" value="AlTiN" oninput="toolFormChanged()" /></div>
-	        <div class="form-group"><label>등급</label>
-	          <select id="cm-tier" onchange="toolFormChanged()">
-	            <option value="high">고급형</option>
-	            <option value="low">보급형</option>
-	          </select>
-	        </div>
-	      </div>
-	      <canvas id="cm-preview" width="560" height="240"></canvas>
-	      <div id="cm-phys" style="font-size:0.68rem;"></div>
-	      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">
-	        <button class="btn btn-sm" onclick="createCustomEndmill(false)">라이브러리에 저장</button>
-	        <button class="btn btn-sm btn-outline" onclick="createCustomEndmill(true)">저장 후 현재 프로필에 적용</button>
-	      </div>
-	      <div id="cm-result" class="hidden" style="margin-top:6px;"></div>
-	    </div>
-
-	    <div class="panel-section-header" data-section="secCustomMat">
-	      <span>커스텀 원소재</span><span class="chevron">▼</span>
-	    </div>
-	    <div class="panel-section-body" id="secCustomMat">
-	      <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px;">
-	        <div class="form-group"><label>이름</label><input type="text" id="cw-name" value="커스텀 판재" /></div>
-	        <div class="form-group">
-	          <label>소재</label>
-	          <select id="cw-material">
-	            <option value="aluminum">알루미늄</option>
-	            <option value="carbon_steel">탄소강</option>
-	            <option value="stainless">스테인리스</option>
-	            <option value="alloy_steel">합금강·금형강 (HRC)</option>
-	            <option value="titanium">티타늄</option>
-	            <option value="inconel">인코넬</option>
-	            <option value="superalloy">수퍼알로이</option>
-	            <option value="cfrp">CFRP</option>
-	          </select>
-	        </div>
-	        <div class="form-group">
-	          <label>형상</label>
-	          <select id="cw-shape">
-	            <option value="rectangular">직사각형</option>
-	            <option value="cylindrical">원형</option>
-	            <option value="custom">커스텀</option>
-	          </select>
-	        </div>
-	        <div class="form-group">
-	          <label>클램핑</label>
-	          <select id="cw-clamping">
-	            <option value="vise">바이스</option>
-	            <option value="vacuum">진공척</option>
-	            <option value="magnetic">마그네틱척</option>
-	            <option value="fixture">픽스처 플레이트</option>
-	            <option value="soft_jaw">소프트 죠</option>
-	          </select>
-	        </div>
-	        <div class="form-group"><label>폭 (mm)</label><input type="number" id="cw-width" value="120" /></div>
-	        <div class="form-group"><label>높이 (mm)</label><input type="number" id="cw-height" value="80" /></div>
-	        <div class="form-group"><label>두께 (mm)</label><input type="number" id="cw-thickness" value="25" /></div>
-	        <div class="form-group"><label>여유량 (mm)</label><input type="number" id="cw-allowance" value="0.5" step="0.1" /></div>
-	        <div class="form-group"><label>경도 HRC</label><input type="number" id="cw-hrc" min="10" max="70" placeholder="합금강" /></div>
-	        <div class="form-group"><label>공차 (±µm)</label><input type="number" id="cw-tol" min="1" step="1" placeholder="Ra 기준" /></div>
-	      </div>
-	      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-	        <button class="btn btn-sm" onclick="createCustomWorkpiece(false)">원소재 저장</button>
-	        <button class="btn btn-sm btn-outline" onclick="createCustomWorkpiece(true)">저장 후 현재 프로필에 적용</button>
-	      </div>
-	      <div id="cw-result" class="hidden" style="margin-top:6px;"></div>
 	    </div>
 	  </aside>
 
@@ -1815,7 +1869,7 @@
 	    <button class="panel-toggle-btn" data-toggle="panelBottom" title="하단 패널 접기">▼</button>
 
 	    <div class="panel-section-header" data-section="secOutput">
-	      <span>출력 패널</span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">7</span>출력</span><span class="step-sum">G-code · 경고 · 로그 · 프로필</span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secOutput">
 	      <div class="bottom-tabs">
@@ -1890,7 +1944,7 @@
 	  <div class="sb-sep"></div>
 	  <div class="sb-item">환경: <strong id="sb-env">-</strong></div>
 	  <div class="sb-sep"></div>
-	  <div class="sb-item" style="cursor:pointer;" onclick="switchView('settings', document.querySelectorAll('.menu-btn')[4])">모델: <strong id="sb-models">-</strong></div>
+	  <div class="sb-item" style="cursor:pointer;" onclick="switchView('settings', document.getElementById('menu-settings'))">모델: <strong id="sb-models">-</strong></div>
 	  <div style="margin-left:auto;" class="sb-item">v0.2.0 | Tauri + Rust</div>
 	</div>
 
@@ -1928,13 +1982,6 @@
 	let tpDragging = false;
 	let tpLastMX = 0, tpLastMY = 0;
 
-	function setSectionState(sectionId, isOpen) {
-	  const body = document.getElementById(sectionId);
-	  const header = document.querySelector(`.panel-section-header[data-section="${sectionId}"]`);
-	  if (body) body.classList.toggle('collapsed', !isOpen);
-	  if (header) header.classList.toggle('collapsed', !isOpen);
-	}
-
 	function switchView(view, btnElement) {
 	  document.querySelectorAll('.menu-btn').forEach(b => b.classList.remove('active'));
 	  if (btnElement) btnElement.classList.add('active');
@@ -1960,32 +2007,6 @@
 	    stEnter();
 	  } else {
 	    setView.classList.remove('visible');
-	  }
-
-	  if (view === 'machining' || view === 'precision' || view === 'settings') {
-	    setSectionState('secPreset', true);
-	    setSectionState('secAnim', view === 'machining');
-	    setSectionState('secToolList', false);
-	    setSectionState('secMaterial', false);
-	    setSectionState('secCoolant', false);
-
-	    setSectionState('secParam', true);
-	    setSectionState('secCutCalc', view === 'machining');
-	    setSectionState('secCoolSet', false);
-	    setSectionState('secCustomTool', false);
-	    setSectionState('secCustomMat', false);
-	  } else if (view === 'setup') {
-	    setSectionState('secPreset', false);
-	    setSectionState('secAnim', false);
-	    setSectionState('secToolList', true);
-	    setSectionState('secMaterial', true);
-	    setSectionState('secCoolant', true);
-
-	    setSectionState('secParam', false);
-	    setSectionState('secCutCalc', false);
-	    setSectionState('secCoolSet', true);
-	    setSectionState('secCustomTool', true);
-	    setSectionState('secCustomMat', true);
 	  }
 	}
 
@@ -3717,7 +3738,6 @@
 	    VP.playing = false;
 	    setStatus('ready', 'COMPLETE');
 	    document.getElementById('vt-play').textContent = '⏵ 재생';
-	    document.getElementById('vt-btn-anim').textContent = '⏵ 애니메이션';
 	  }
 	  renderViewport(dt);
 	  if (VP.playing) VP.raf = requestAnimationFrame(vpFrame);
@@ -3730,7 +3750,6 @@
 	  VP.lastTs = 0;
 	  setStatus('busy', 'RUNNING');
 	  document.getElementById('vt-play').textContent = '⏸ 일시정지';
-	  document.getElementById('vt-btn-anim').textContent = '⏸ 일시정지';
 	  if (VP.raf) cancelAnimationFrame(VP.raf);
 	  VP.raf = requestAnimationFrame(vpFrame);
 	}
@@ -3741,7 +3760,6 @@
 	  VP.raf = null;
 	  setStatus('ready', 'PAUSED');
 	  document.getElementById('vt-play').textContent = '⏵ 재생';
-	  document.getElementById('vt-btn-anim').textContent = '⏵ 애니메이션';
 	}
 
 	function animToggle() {
@@ -3806,14 +3824,12 @@
 	  document.getElementById('vp-prep-bar').style.width = pct + '%';
 	  document.getElementById('vp-prep-steps').textContent = (st.log || []).join('\n');
 	  document.getElementById('vt-play').textContent = `준비 중 ${pct}%`;
-	  document.getElementById('vt-btn-anim').textContent = `준비 중 ${pct}%`;
 	  setStatus('busy', `PREPARING ${pct}%`);
 	}
 
 	function prepHide() {
 	  document.getElementById('vp-prep').classList.add('hidden');
 	  document.getElementById('vt-play').textContent = VP.playing ? '⏸ 일시정지' : '⏵ 재생';
-	  document.getElementById('vt-btn-anim').textContent = VP.playing ? '⏸ 일시정지' : '⏵ 애니메이션';
 	}
 
 	async function jobRun(opts) {
@@ -4349,7 +4365,25 @@
 	  const qa = document.getElementById('qp-ambient'), qr = document.getElementById('qp-rh');
 	  if (document.activeElement !== qa) qa.value = e.ambient_c;
 	  if (document.activeElement !== qr) qr.value = e.humidity_pct;
-	  document.getElementById('qp-env').textContent = `이슬점·칠러·기준 온도 등은 상단 '모델·환경'에서 설정합니다.`;
+	  document.getElementById('qp-env').textContent = `측정 기준 ${fmt(e.reference_c, 1)} °C · 칠러 ${e.chiller_c === null || e.chiller_c === undefined ? '없음' : fmt(e.chiller_c, 1) + ' °C'}`;
+	  stepSummary(d);
+	}
+
+	// 접힌 단계 머리글에도 지금 고른 값이 보이게 해서 펼치지 않고도 구성을 확인한다
+	function stepSummary(d) {
+	  const c = d.conditions, t = d.tool, w = d.workpiece, e = d.environment;
+	  const set = (id, text) => { const el = document.getElementById(id); el.textContent = text; el.title = text; };
+	  set('sum-profile', d.name);
+	  set('sum-tool', `${t.name} · Ø${fmt(t.diameter_mm, 2).replace(/\.?0+$/, '')} ${t.flute_count}날`);
+	  set('sum-material', `${w.name} · ${w.material}`);
+	  set('sum-coolant', `${d.coolant.label} · ${fmt(e.ambient_c, 1)} °C ${fmt(e.humidity_pct, 0)} %`);
+	  set('sum-cond', `S${c.spindle_rpm} · F${fmt(c.feed_rate_mm_min, 0)}`);
+	}
+
+	// 프로젝트 전환·생성은 정밀 분석의 라이브러리 탭에 있다
+	function openLibrary() {
+	  switchView('precision', document.getElementById('menu-precision'));
+	  pvTab('lib', document.querySelector(".pv-tab[onclick*=\"'lib'\"]"));
 	}
 
 	function calcSync(force) {
