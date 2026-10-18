@@ -422,6 +422,11 @@ fn dissolution_onset_c(chem: WpChem, coat: &CoatingTribology) -> f64 {
     };
     if coat.family == "DLC" {
         base - 150.0
+    } else if coat.family == "Diamond" && matches!(chem, WpChem::Iron | WpChem::Nickel) {
+        // 다이아몬드의 Fe·Ni 촉매 흑연화는 700 °C 위에서 빨라진다 (Chen·Zhang·Arsecularatne 2007 IJMTM 47 — 약 970 K,
+        // Zou 외 2017 Crystals 7:116 DTA 공기 중 740 °C, Shimada 외 2004 — 1000 K 위 C–Fe 원자 교환 · 900 K 아래 산화).
+        // 그 아래에서도 화학 마모는 크다 (pair_coat 의 바닥 몫 0.25 — 연강에서 황동보다 약 10⁴배, Thornton·Wilks 1978)
+        700.0
     } else {
         base
     }
@@ -452,7 +457,14 @@ pub fn pair_coat(coat: &CoatingTribology, wp: &WorkpieceProps, t_c: f64) -> Pair
             }
             WpChem::Titanium => {
                 dissolution = sigmoid((t_c - dissolution_onset_c(wp.chem, coat)) / 40.0);
-                3.0 * (0.25 + 0.75 * dissolution)
+                if coat.family == "Diamond" {
+                    // 다이아몬드 × Ti: 계면에 TiC·(Ti,V)C 층이 생겨 확산 장벽이 된다 — 탄소 용해가 폭주하지 않고 무코팅 초경 수준
+                    // (Lindvall 외 2023 JECS 43 확산쌍, Abang Kamaruddin 외 2016 IJAT 10). 코팅은 응착·박리로 잃는다:
+                    // 다이아몬드 코팅 엔드밀 Ti-6Al-4V 에어 56 m/min 에서 약 5 분에 일부 박리, VB 0.2 mm 까지 TiAlN 의 약 0.8배 (Qin 외 2014 JAMDSM 8)
+                    1.2 * (0.85 + 0.15 * dissolution)
+                } else {
+                    3.0 * (0.25 + 0.75 * dissolution)
+                }
             }
             _ => 0.5,
         }
@@ -511,8 +523,11 @@ pub fn contact_friction(ctx: &CutContext, vc: f64, t_int: f64) -> Friction {
     let s = |t: f64| wp.jc_thermal(t).max(0.05);
     let soft = (s(t_int) / s(reference_interface_c(wp))).powf(0.25).clamp(0.75, 1.25);
     let over = ((t_int - coat.oxidation_c) / 250.0).clamp(0.0, 1.0);
+    // 탄소 코팅이 산화·용해로 무너져도 겉보기 마찰은 모재(무코팅) 수준으로 돌아갈 뿐이다 — 철계에서는 `coating_mu_factor` 가 이미 1.0 이다.
+    // 예전 1 + over + 2·dissolution (최대 ×4) 은 μ 를 상한 1.2 까지 밀어 계면 온도를 다시 올리는 되먹임을 만들었다
+    // (2026-10-18 행렬: 다이아몬드·DLC × 30 HRC 강 1,046~1,052 °C, 같은 조건 PVD 코팅 약 600 °C). 화학 공격은 마모율(`pair_coat` 확산 항)에만 넣는다
     let breakdown = if coat.chem.carbon {
-        1.0 + 1.0 * over + 2.0 * p.dissolution
+        1.0 + 0.12 * over.max(p.dissolution)
     } else if coat.protective_oxide {
         1.0 + 0.05 * over
     } else {
@@ -853,13 +868,25 @@ pub fn compatibility(ctx: &CutContext, t_c: f64) -> Compat {
     };
     let mut coolant_hint: Option<String> = None;
     let mut chemical = false;
-    if c.carbon && matches!(wp.chem, WpChem::Iron | WpChem::Nickel | WpChem::Titanium) {
-        let onset = dissolution_onset_c(wp.chem, coat);
+    if c.carbon && coat.family == "Diamond" && wp.chem == WpChem::Titanium {
+        // TiC 장벽으로 확산이 막혀 화학적 폭주는 없다 — 대신 응착·박리 (pair_coat 의 Ti 분기 근거 참고)
         chemical = true;
         push(
-            if t_c > onset - 50.0 { 3 } else { 2 },
+            2,
             format!(
-                "{} 코팅은 {} 피삭재와 {:.0}°C 부근부터 탄소 확산·탄화물 반응으로 급격히 마모됩니다 (현재 날끝 {:.0}°C) — AlTiN·AlCrN·nACo 계열 권장",
+                "다이아몬드 코팅은 티타늄과 TiC 층을 만들어 탄소 확산이 막히므로 화학적 폭주는 없지만, 응착·박리로 몇 분 안에 코팅이 일부 떨어질 수 있습니다 (현재 날끝 {:.0}°C) — 수명은 TiAlN 의 약 0.8배 실측, 냉각·날끝 확인 권장",
+                t_c
+            ),
+        );
+    } else if c.carbon && matches!(wp.chem, WpChem::Iron | WpChem::Nickel | WpChem::Titanium) {
+        let onset = dissolution_onset_c(wp.chem, coat);
+        chemical = true;
+        // 다이아몬드 × 철·니켈은 온도와 관계없이 쓰지 않는다 (흑연화 700 °C 위, 그 아래에서도 산화·원자 교환 화학 마모)
+        let severe = coat.family == "Diamond" || t_c > onset - 50.0;
+        push(
+            if severe { 3 } else { 2 },
+            format!(
+                "{} 코팅은 {} 피삭재와 {:.0}°C 부근부터 탄소 확산·흑연화·탄화물 반응으로 급격히 마모됩니다 (현재 날끝 {:.0}°C) — AlTiN·AlCrN·nACo 계열 권장",
                 coat.family,
                 wp.chem.label(),
                 onset,

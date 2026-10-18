@@ -44,7 +44,9 @@ pub struct WallRoughness {
 }
 
 /// 소재별 측벽 정삭 Ra 바닥값 (µm) — 최저 실측 정삭 Ra 에서 정한 값 (맞춤값 아님): 7075 0.10~0.15, 강·고경도 0.15~0.2,
-/// Ti-6Al-4V ≈0.2, Inconel 718 ≈0.25, 316L ≥0.3. CFRP 는 섬유 뽑힘으로 1 µm 안팎 (자료 없음, 가정)
+/// Ti-6Al-4V ≈0.2, Inconel 718 ≈0.25, 316L ≥0.3.
+/// CFRP 는 층 방향이 정한다: 0°·45°·90° 층 0.7~1.5 µm, −45°(135°) 층 3~5 µm (PCD·다이아몬드 코팅 트리밍 — Duboust 외 2021 Proc IMechE B 235:1602,
+/// Hamedanianpour 2013 ÉTS). 준등방 적층(층의 1/4 이 −45°) 평균으로 1.8 µm — 적층 순서는 입력에 없다 (`simaudit` 의 cfrp_layup)
 pub fn ra_floor_um(g: WpGroup) -> f64 {
     match g {
         WpGroup::Aluminum => 0.12,
@@ -52,15 +54,18 @@ pub fn ra_floor_um(g: WpGroup) -> f64 {
         WpGroup::Titanium => 0.20,
         WpGroup::Nickel => 0.25,
         WpGroup::Stainless => 0.30,
-        WpGroup::Cfrp => 1.0,
+        WpGroup::Cfrp => 1.8,
     }
 }
 
 /// 플랭크 마모에 따른 Ra 배수. 4340 (43 HRC): VB 0.1 mm 까지 1.0, 0.4 까지 0.1 mm 당 +18~25 % (0.4 에서 ×1.74), 그 뒤 급증
-/// (0.5 에서 ×3.5). Inconel 718 은 VB 0.25 부근 최소에서 0.1 mm 당 +10~13 %
+/// (0.5 에서 ×3.5). Inconel 718 은 VB 0.25 부근 최소에서 0.1 mm 당 +10~13 %.
+/// CFRP 는 강의 곡선을 쓰지 않는다: 다이아몬드 코팅 공구는 마모될수록 수지가 번져 Ra 가 오히려 낮아지고 (새 공구 −45° 층 5~13 µm →
+/// 10 m 뒤 1.2~2.7 µm, Hamedanianpour 2013) 무코팅은 높아진다 (Ashworth 외 2022 Wear 498:204340) — 마모가 키우는 것은 Ra 가 아니라 박리·미절단 섬유라 1 로 둔다
 pub fn wear_factor(g: WpGroup, vb_mm: f64) -> f64 {
     let vb = vb_mm.max(0.0);
     match g {
+        WpGroup::Cfrp => 1.0,
         WpGroup::Nickel => 1.0 + 1.2 * (vb - 0.25).max(0.0),
         _ => {
             if vb <= 0.4 {
@@ -128,22 +133,24 @@ pub fn wall_roughness(radius_mm: f64, flutes: u32, fz_mm: f64, ecc_mm: f64, h_mi
     let bue = 1.0 + 1.2 * bue_risk.clamp(0.0, 0.85);
     let ra_stable = (ra_env_profile + hmin_term + floor) * wf * bue;
     // 채터: 공구가 절삭에서 이탈할 때까지 커지는 떨림 — 파상도 ≈ h_max·ρ (ρ = ap/ap_lim), 3·h_max 에서 포화 (밀링 분기 정리 Honeycutt & Schmitz 2018,
-    // JMSE 140:120801 을 이 모델에 맞춘 해석 — 아임계 발생). 떨림이 지배하면 Ra ≈ 0.20·Rt. 마모·구성인선 배수는 미세 조도(바닥값·최소 칩 밀림)에만 걸고 떨림 파형에는 걸지 않는다
-    let micro = (hmin_term + floor) * wf * bue;
-    let (wpv, ra_chat, rz_chat) = if margin.is_finite() && margin > 0.0 && margin < 1.0 {
+    // JMSE 140:120801 을 이 모델에 맞춘 해석 — 아임계 발생). 이 산-골(실측 채터 자국 30~110 µm)은 Ra 가 아니다: 거칠기 필터(ISO 4287·16610, λc 0.8 mm)를
+    // 거친 실측 Ra 는 채터에서 안정 절삭의 2~6배이고 (Honeycutt·Schmitz 2017 Procedia Manuf. 10:183 — 0.28~0.44 → 1.76~2.09 µm) 보고된 최대가 약 6 µm 다.
+    // 예전 Ra = 0.2·max(Rt, W) 는 거르지 않은 파상도를 Ra 로 읽어 정상 프리셋에서 11~33 µm 가 나왔다. 그래서 Ra·Rz 는 안정값의 배수
+    // K = 1 + 2·(min(ρ, 3) − 1) (한계에서 1, ρ 2 에서 3, 포화 5 — 실측 2~6배 안) 로 두고, 파상도는 `chatter_wpv_um` 으로 따로 낸다 (벽 오차·떨림 자국)
+    let (wpv, ra_chat) = if margin.is_finite() && margin > 0.0 && margin < 1.0 {
         let rho = 1.0 / margin;
         let w = (h_max_mm.max(0.0) * rho).min(3.0 * h_max_mm.max(0.0)) * 1000.0;
-        let rt = rt_env.max(w);
-        (w, 0.20 * rt + micro, rt + 4.0 * micro)
+        (w, ra_stable * (1.0 + 2.0 * (rho.min(3.0) - 1.0)))
     } else {
-        (0.0, ra_stable, 0.0)
+        (0.0, ra_stable)
     };
     let p = if wpv > 0.0 { chatter_p.clamp(0.0, 1.0) } else { 0.0 };
     let ra = (1.0 - p) * ra_stable + p * ra_chat;
-    // Rz/Ra (안정 절삭): 깨끗한 원호 ≈ 4, 런아웃 지배 ≈ 5, 구성인선 뭉개짐 ≈ 7. 떨림이면 Rz ≈ 파상도 산-골 + 미세 조도
+    // Rz/Ra: 깨끗한 원호 ≈ 4, 런아웃 지배 ≈ 5, 구성인선 뭉개짐 ≈ 7, CFRP 섬유 뽑힘 자국 5~14 → 8 (Geier·Pereszlai 2020 PPME 64:67).
+    // 채터 자국의 산-골은 Rz 가 아니라 파상도(`chatter_wpv_um`)로 본다
     let single = forming_teeth <= 1 && nt > 1;
-    let rz_ratio = if bue > 1.3 { 7.0 } else if single { 5.0 } else { 4.0 };
-    let rz = (1.0 - p) * ra_stable * rz_ratio + p * rz_chat;
+    let rz_ratio = if g == WpGroup::Cfrp { 8.0 } else if bue > 1.3 { 7.0 } else if single { 5.0 } else { 4.0 };
+    let rz = ra * rz_ratio;
     WallRoughness {
         ra_um: ra,
         ra_stable_um: ra_stable,
@@ -189,13 +196,25 @@ mod tests {
         assert!((worn.ra_um / base.ra_um - 1.66).abs() < 0.02, "{}", worn.ra_um / base.ra_um);
         let bue = wall_roughness(4.0, 3, 0.05, 0.0015, 0.002, 0.03, 0.0, WpGroup::Aluminum, 0.6, f64::INFINITY, 0.0);
         assert!(bue.bue_factor > 1.6);
+        // 여유 0.5 (ρ 2): 파상도 산-골 60 µm 는 따로, 필터를 거친 Ra 는 안정값의 3배 (실측 2~6배) — 수 µm 이지 수십 µm 가 아니다
         let chat = wall_roughness(4.0, 3, 0.05, 0.0015, 0.002, 0.03, 0.0, WpGroup::CarbonSteel, 0.0, 0.5, 1.0);
-        assert!((chat.chatter_wpv_um - 60.0).abs() < 1e-6 && chat.ra_um > 5.0 * base.ra_um, "{:?}", chat);
-        // 떨림이 지배하면 Rz 는 파상도 산-골(60 µm) + 미세 조도, 구성인선 배수는 떨림 파형에 걸리지 않는다
-        assert!(chat.rz_um > 60.0 && chat.rz_um < 63.0, "{:?}", chat);
-        let chat_bue = wall_roughness(4.0, 3, 0.05, 0.0015, 0.002, 0.03, 0.0, WpGroup::CarbonSteel, 0.6, 0.5, 1.0);
-        assert!(chat_bue.ra_um - chat.ra_um < 1.0, "{} vs {}", chat_bue.ra_um, chat.ra_um);
+        assert!((chat.chatter_wpv_um - 60.0).abs() < 1e-6 && (chat.ra_um / base.ra_um - 3.0).abs() < 1e-9, "{:?}", chat);
+        assert!(chat.ra_um < 6.0 && (chat.rz_um / chat.ra_um - base.rz_um / base.ra_um).abs() < 1e-9, "{:?}", chat);
         let deep = wall_roughness(4.0, 3, 0.05, 0.0015, 0.002, 0.03, 0.0, WpGroup::CarbonSteel, 0.0, 0.1, 1.0);
         assert!((deep.chatter_wpv_um - 90.0).abs() < 1e-6, "포화 3·h_max");
+        assert!((deep.ra_um / base.ra_um - 5.0).abs() < 1e-9, "Ra 배수도 ρ 3 에서 5배로 포화");
+        // 한계 바로 밖은 안정값과 이어진다
+        let edge = wall_roughness(4.0, 3, 0.05, 0.0015, 0.002, 0.03, 0.0, WpGroup::CarbonSteel, 0.0, 0.999, 1.0);
+        assert!((edge.ra_um / base.ra_um - 1.0).abs() < 0.01, "{}", edge.ra_um / base.ra_um);
+    }
+
+    #[test]
+    fn cfrp_roughness_follows_the_laminate_not_the_steel_wear_curve() {
+        let fresh = wall_roughness(5.0, 6, 0.06, 0.0015, 0.0024, 0.05, 0.0, WpGroup::Cfrp, 0.0, f64::INFINITY, 0.0);
+        let worn = wall_roughness(5.0, 6, 0.06, 0.0015, 0.0024, 0.05, 0.2, WpGroup::Cfrp, 0.0, f64::INFINITY, 0.0);
+        // 준등방 적층 평균 1~5 µm (0°·45°·90° 0.7~1.5, −45° 3~5), Rz/Ra 5~14
+        assert!(fresh.ra_um > 1.0 && fresh.ra_um < 5.0, "{:?}", fresh);
+        assert!((worn.ra_um - fresh.ra_um).abs() < 1e-9, "다이아몬드 코팅은 마모로 Ra 가 오르지 않는다");
+        assert!((fresh.rz_um / fresh.ra_um - 8.0).abs() < 1e-9);
     }
 }

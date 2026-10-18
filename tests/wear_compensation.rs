@@ -333,6 +333,10 @@ fn titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked() {
     let mut p = titanium_finishing();
     p.conditions.feed_per_tooth_mm *= 0.70;
     p.conditions.feed_rate_mm_min *= 0.70;
+    // 공정감쇠를 실측에 맞춘 뒤(임계 길이 0.75 mm) Vc 66 · 파장 약 0.3 mm 의 Ti 정삭은 공정감쇠 이득이 상한(5)이라 경로의 7 % 만 한계 밖이고
+    // (ζ 0.01 이어도 11 %) '채터 미검증' 판정이 성립하지 않는다 — 감쇠가 아주 작은 짧은 열박음 홀더(ζ 0.006, 추정 0.4~0.7 % · Schmitz 2020)로
+    // 예전 시나리오만큼의 1차 경로 채터를 되살린다 (예전: ζ 0.03 × 공정감쇠 이득 1.23 ≈ 지금 ζ 0.0075 × 5)
+    p.machine.damping_ratio = 0.006;
     let dir = temp_dir("ti-fin");
     let mut sds = SdsStore::open(&dir.join("sds"));
     let r = wearcomp::run_pipeline(&p, "pocket_zigzag", &mut sds, None, None, &CompOptions::default(), None, None, &mut |_, _| true).unwrap();

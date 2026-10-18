@@ -257,7 +257,7 @@ pub fn chip_factors(chatter_severity: f64, stress_ratio: f64, wp: &WorkpieceProp
 /// 공구 수명 사건
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolLifeEvent {
-    /// warn · life_end · tool_change · accelerated · chip_risk · chip_detected · load_alarm · failure · stop · start_worn
+    /// warn · life_end · tool_change · accelerated · chip_risk · chip_detected · coating_through · load_alarm · failure · stop · start_worn
     pub kind: String,
     /// 이 작업에서 몇 번째 공구인가 (1부터)
     pub tool_no: u32,

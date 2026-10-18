@@ -7,7 +7,7 @@
 use endmill_model::appfit;
 use endmill_model::pairmatrix::{self, MatrixCell};
 use endmill_model::physics::{self, CutContext};
-use endmill_model::profile::{MachiningPreset, MachiningProfile, ToolLifePolicy};
+use endmill_model::profile::{EndMillMockupSetting, MachiningPreset, MachiningProfile, ToolLifePolicy};
 use endmill_model::store::Store;
 use endmill_model::toollife;
 use endmill_model::WorkpieceMaterial;
@@ -249,6 +249,42 @@ fn mid_path_tool_changes_are_recorded_as_separate_tool_instances() {
     assert!((active.cut_min - rep.tool_life.last_tool_cut_min).abs() < 1e-6);
 }
 
+#[test]
+fn a_diamond_coated_tool_on_steel_wears_at_the_substrate_rate_once_the_coating_is_gone() {
+    // 2026-10-18 앱 로그: CFRP 용 Ø10 6날 CVD 다이아몬드(10 µm) 공구를 탄소강·Ti·58 HRC 에 대면 VB 가 1,191~33,260 µm/min 로 자랐다.
+    // 철·Ti 의 탄소 용해는 코팅이 있는 동안의 이야기다 — 랜드가 코팅을 뚫으면 노출된 몫만큼 무코팅 초경 마모율로 옮겨 가야 한다
+    let tool = EndMillMockupSetting::builtin_tools().into_iter().find(|t| t.coating_name.as_deref() == Some("Diamond")).expect("diamond tool");
+    let uc = pairmatrix::use_cases().into_iter().find(|u| u.key == "carbon_steel").expect("carbon steel use case");
+    let p = pairmatrix::cell_profile(&tool, &uc);
+    let fresh = CutContext::from_profile(&p);
+    let strip_mm = endmill_model::toolwear::coating_strip_um(&fresh.tool) / 1000.0;
+    assert!(strip_mm > 0.02 && strip_mm < 0.1, "10 µm diamond at the tool's clearance: {:.3} mm", strip_mm);
+    // 새 공구로는 이 경로(약 0.3 분)에서 코팅을 다 못 뚫는다 (흑연화 개시 700 °C 아래 계면 약 590 °C).
+    // 그래서 이미 뚫린 랜드(띠 폭의 3배 — 노출 몫 2/3)에서 시작해, 같은 랜드의 무코팅 공구와 성장 속도를 견준다
+    let vb0 = 3.0 * strip_mm;
+    let run = |prof: &MachiningProfile| {
+        let mut ctx = CutContext::from_profile(prof);
+        ctx.tool.flank_wear_mm = vb0;
+        endmill_model::viewport::build_report_prog(prof, "rect_profile", &ctx, &mut |_| true).unwrap().1
+    };
+    let r = run(&p);
+    print_events("다이아몬드 공구 · 탄소강 (뚫린 랜드에서 시작)", &r);
+    let mut bare = p.clone();
+    bare.endmill_setting.coating_name = None;
+    let rb = run(&bare);
+    print_events("같은 공구 무코팅 · 탄소강", &rb);
+    assert!(r.tool_life.events.iter().any(|e| e.kind == "coating_through"), "the break-through is logged");
+    let growth = |x: &endmill_model::loadsim::LoadSimReport| (x.vb_end_mm - vb0) * 1000.0 / x.cut_time_min.max(1e-9);
+    let (g_dia, g_bare) = (growth(&r), growth(&rb));
+    let worst = r.wear_log.iter().map(|b| b.vb_rate_um_min).fold(0.0f64, f64::max);
+    println!("[EOL] 코팅 관통 랜드 VB {:.3} mm 에서 평균 VB 성장 다이아몬드 {:.1} · 무코팅 {:.1} µm/min (비 {:.2}) · 최대 {:.1} µm/min", vb0, g_dia, g_bare, g_dia / g_bare.max(1e-9), worst);
+    assert!(worst < 400.0, "after break-through the land grows at a carbide-in-steel rate, not mm/min: {:.0} µm/min", worst);
+    // 무코팅 초경의 크기 비교: 건식 선삭 SAE 1045 · 무코팅 K10 · f 0.2 에서 125 m/min 약 11, 150 m/min 14~17 µm/min 뒤 급증 (연속 절삭,
+    // Kümmel 외 2013 Adv. Tribol. 519686) — 밀링은 날이 깎는 시간 비(이 칸 ae 0.3D 에서 약 0.18)만큼 작아진다.
+    // 남은 코팅 몫(1/3)이 조화 평균으로 섞여 무코팅보다 조금 빠를 뿐이다 (코팅만 남았다면 이 비는 수 배)
+    assert!(g_bare > 0.0 && g_dia / g_bare > 0.8 && g_dia / g_bare < 2.0, "diamond {:.1} vs bare {:.1} µm/min", g_dia, g_bare);
+}
+
 // ---------------------------------------------------------------- N:N 행렬
 
 fn wp(m: WorkpieceMaterial) -> physics::WorkpieceProps {
@@ -273,7 +309,9 @@ fn application_fit_reproduces_the_research_anchor_cases() {
     pos.rake_deg = 8.0;
     pos.edge_radius_um = 4.0;
     let f58 = appfit::evaluate(&pos, &wp(WorkpieceMaterial::AlloySteel { hardness_hrc: 58 }), false);
-    assert!(f58.chip_factor > 100.0 && f58.verdict == 2, "{}", f58.summary());
+    // 지수식으로는 ×수천 — 상한(×100, 첫 진입에서 날이 깨지는 수준)에 걸리고 그 사실이 메모로 남는다
+    assert!(f58.chip_factor >= appfit::CHIP_FACTOR_MAX - 1e-9 && f58.verdict == 2, "{}", f58.summary());
+    assert!(f58.notes.iter().any(|n| n.contains("상한")), "the cap is reported: {:?}", f58.notes);
     // (3) Ti 여유각 8° 는 10° 보다 치핑·마모가 크다
     let ti = wp(WorkpieceMaterial::Titanium);
     let mut c8 = ctx.tool.clone();
@@ -329,6 +367,14 @@ fn tool_material_matrix_ranks_like_practice() {
         assert!(c.life_min.is_finite() && c.life_min > 0.0, "{} × {}: life {}", c.use_case, c.tool, c.life_min);
         assert!(c.interface_c.is_finite() && c.ra_um.is_finite() && c.fit_score.is_finite());
     }
+    // 물리 타당성 (`pairmatrix::check`): 계산 결함 0 건. 앱에서 공구를 그대로 두고 소재만 바꿔 본 조합(2026-10-18 로그 —
+    // CFRP 용 다이아몬드 공구를 58 HRC·Ti·탄소강·알루미늄에)이 모두 이 64칸 안에 있다
+    let issues = pairmatrix::check(&cells);
+    for l in pairmatrix::check_lines("rect_profile", &cells, &issues) {
+        println!("{}", l);
+    }
+    let hard: Vec<_> = issues.iter().filter(|i| i.severity >= 2).collect();
+    assert!(hard.is_empty(), "calculation defects in the N:N matrix: {:#?}", hard);
     let cell = |uc: &str, model: &str| cells.iter().find(|c| c.use_case == uc && c.tool_model == model).expect("cell");
     // 의도된 짝은 부적합이 아니고, 경로에서 파손되지 않는다
     for c in cells.iter().filter(|c| c.intended) {

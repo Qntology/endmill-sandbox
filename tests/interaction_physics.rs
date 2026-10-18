@@ -180,8 +180,17 @@ fn coating_workpiece_chemistry_ranks_like_practice() {
     // TiN 의 약점은 약 550 °C 에서 시작되는 산화라, 고경도 계면 온도를 측정 대역(350~600 °C)으로 바로잡자 격차가 줄었다
     // (예전 3배 기준은 745 °C 로 과대평가한 계면 온도에서 나온 값)
     assert!(h_naco > h_altin && h_altin > 2.0 * h_tin, "nACo {} AlTiN {} TiN {}", h_naco, h_altin, h_tin);
+    // 다이아몬드 × 강: 촉매 흑연화가 빨라지는 약 700 °C 아래에서도 새 면 반응·산화로 화학 마모가 크다 (Thornton·Wilks 1978 — 연강에서
+    // 황동보다 약 10⁴배, Shimada 외 2004 — 900 K 아래는 산화 지배). 확산 항이 무코팅 초경의 몇 배이고 판정은 온도와 관계없이 "쓰지 않음"(3)
     let (_, d) = case(WorkpieceMaterial::CarbonSteel, "Diamond", Mist);
-    assert!(d.tribology.compat.severity >= 2 && d.tribology.dissolution > 0.3, "{:?}", d.tribology.compat);
+    let (_, bare) = case(WorkpieceMaterial::CarbonSteel, "", Mist);
+    println!(
+        "[COAT] C45 다이아몬드 계면 {:.0} °C · 흑연화 몫 {:.2} · 확산 항 {:.1} (무코팅 {:.1}) · μ {:.2} (무코팅 {:.2})",
+        d.thermal.interface_c, d.tribology.dissolution, d.tribology.diffusion, bare.tribology.diffusion, d.coeffs.mu, bare.coeffs.mu
+    );
+    assert!(d.tribology.compat.severity == 3 && d.tribology.diffusion > 3.0 * bare.tribology.diffusion, "{:?}", d.tribology.compat);
+    // 무너진 탄소 코팅의 겉보기 마찰은 무코팅 수준이다 — 예전에는 최대 4배로 키워 계면 온도가 되먹임으로 올랐다
+    assert!(d.coeffs.mu < 1.15 * bare.coeffs.mu, "diamond μ {:.2} vs bare {:.2}", d.coeffs.mu, bare.coeffs.mu);
     let (_, a) = case(WorkpieceMaterial::Aluminum, "AlTiN", Mist);
     assert!(a.tribology.compat.messages.iter().any(|m| m.contains("응착")));
     assert_eq!(d.regime.len(), endmill_model::tribology::REGIME_DIM);

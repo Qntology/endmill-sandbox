@@ -19,6 +19,10 @@ use crate::physics::{ToolGeometry, WorkpieceProps};
 use crate::profile::ToolNose;
 use serde::{Deserialize, Serialize};
 
+/// 치핑 위험 배수의 상한 — 판정 문턱(×8)의 열 배 남짓. 이보다 크면 형상이 피삭재 창에서 크게 벗어나 첫 진입에서 날이 깨지는 수준이라
+/// 배수를 더 키워도 결과(바로 치핑)는 같고 로그의 숫자만 의미를 잃는다
+pub const CHIP_FACTOR_MAX: f64 = 100.0;
+
 /// 피삭재 그룹별 권장 창. (하한, 상한)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct FitWindow {
@@ -329,7 +333,15 @@ pub fn evaluate_with(tool: &ToolGeometry, wp: &WorkpieceProps, slotting: bool, a
         }
     }
     let wear_factor = wear.clamp(1.0, 50.0);
-    let chip_factor = chip.clamp(1.0, 1.0e4);
+    // 치핑 배수 상한: 이 정도면 형상이 피삭재 창에서 크게 벗어나 첫 진입에서 날이 깨지는 수준이다 (판정은 이미 '부적합').
+    // 지수식을 그대로 두면 ×수천이 나와 (2026-10-18 앱 로그: CFRP 용 다이아몬드 공구로 58 HRC → ×3,294) 숫자가 의미를 잃는다
+    if chip > CHIP_FACTOR_MAX {
+        notes.push(format!(
+            "치핑 배수 ×{:.0} → 상한 ×{:.0} 로 자름 — 형상이 이 피삭재 창에서 크게 벗어나 첫 진입에서 날이 깨질 수준",
+            chip, CHIP_FACTOR_MAX
+        ));
+    }
+    let chip_factor = chip.clamp(1.0, CHIP_FACTOR_MAX);
     let bue_factor = bue.clamp(1.0, 4.0);
     let ra_factor = ra.clamp(1.0, 6.0);
     let badness = wear_factor.ln() * 1.5 + chip_factor.ln() * 0.5 + bue_factor.ln() + 2.0 * evac;

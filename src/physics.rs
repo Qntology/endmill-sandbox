@@ -656,23 +656,37 @@ impl WorkpieceProps {
                 expansion: 1.0e-6,
                 elastic_gpa: 70.0,
                 hardness_hrc: 0.0,
-                kc11: 600.0,
+                // 600 → 420: 앱 로그(6 mm 판 관통, ap 실효 6 mm)에서 경로 평균 합력 342 N · 실효 kc1.1 397 이 실측 환산 215~240 N 의 1.4~1.6배였다.
+                // 실측 Kienzle 맞춤 kc1.1 250~420 · mc 0.09~0.21 (Hamedanianpour 2013 ÉTS 석사논문, CVD 다이아몬드 6날 슬롯),
+                // PCD 0° 경사 kc1.1 ≈ 340 (180~540, Karpat 외 2012 IJMTM 56:79 의 Ktc 를 환산) — 섬유각에 따라 ±50 % 움직인다
+                kc11: 420.0,
                 mc: 0.20,
                 rake_deg: 10.0,
                 adhesion: 0.6,
                 wear_activation_k: 2500.0,
-                // 0.5 → 0.42: 다이아몬드 공구 Vc 200 에서 312 °C 로 문헌 대역(150~300 °C, 에폭시 Tg ≈ 180 °C) 위였다
-                thermal_factor: 0.42,
+                // 0.42 → 0.5: 0.42 는 kc 가 높아서 생긴 온도를 깎던 값이다. kc 를 바로잡은 뒤 프리셋 계면 약 220 °C —
+                // 측정 69~300 °C (새 공구 날끝 1.7 mm 열전대 300 °C · Delahaigue 외 2017 Fibers 5:46, Kerrigan·O'Donnell 2016 155~185 °C)
+                thermal_factor: 0.5,
                 melt_c: 400.0,
-                temp_limit_c: Some(180.0),
+                // 180 → 350 °C: 이 값은 날끝(공구 쪽) 계면 온도와 비교된다. 수지 Tg 150~212 °C 는 가공면 온도라 그대로 쓰면 깨끗하게 깎인
+                // 실측(새 공구 300 °C)까지 모두 과열이 된다. 마모 공구 475 °C 에서 수지 탄화 (Delahaigue 2017), 수지 연소 개시 315 °C (Kerrigan 2016) 사이
+                temp_limit_c: Some(350.0),
                 bue_range_c: None,
                 fz_coeff: 0.006,
                 ae_ratio: 0.5,
                 edge_radius_um: 3.0,
-                ref_life_min: 60.0,
+                // 60 → 5 분 (AlTiN 기준 공구 Ø10 4날 · Vc 200 · fz 0.06 · ae 0.5D 에서 VB 0.2 mm 까지).
+                // TiAlN 인서트 CFRP 밀링 VBmax 0.67~1.3 µm / 날 접촉 m (Ozkan 외 2020 Coatings 10:623) → 접촉 50 m/min 에서 33~65 µm/min → 3~6 분.
+                // PVD 코팅은 약 1 분 안에 날끝에서 벗겨진다 (Wang 외 2013 드릴 자료, Sturtevant 2013 WSU 석사논문). 다이아몬드 코팅 라우터 실측 5~18 분
+                // (Hamedanianpour 2013 — 0.085~0.4 µm/m) 과도 맞는다 — 예전 60 분이면 다이아몬드 칸이 120 분이었다
+                ref_life_min: 5.0,
                 min_chip_ratio: 0.20,
                 work_hardening: 0.0,
-                process_damping: 0.3,
+                // 0.3 → 3.5: 단단히 고정한 CFRP 트리밍은 0차 이론이 채터(필요 이득 3~30배)를 예측하는 조건에서도 안정 —
+                // Karpat 외 2012 (Ø10 PCD, ap 10 mm, 슬롯, 공구 모드 3.5 kHz · ζ 1.4~1.8 %), Hamedanianpour 2013 (6날, 슬롯 ap 4.44 mm, 6.7~13.4 krpm),
+                // Delahaigue 외 2017 (돌출 35 mm, 슬롯 ap 3.6 mm). 섬유 탄성 복원이 플랭크를 길게 누르는 감쇠로 보고 (정량 자료 없음, 추정),
+                // 파장이 긴 저주파 모드(홀더 600~700 Hz)는 여전히 채터한다 (Rusinek·Lajmert 2020 Materials 13:4105)
+                process_damping: 3.5,
                 chem: WpChem::CarbonFiber,
                 thermo: vec![(20.0, 5.0, 1000.0), (100.0, 5.2, 1150.0), (200.0, 5.4, 1300.0), (300.0, 5.5, 1400.0)],
                 jc: None,
@@ -692,8 +706,9 @@ impl WorkpieceProps {
                 clearance_deg: 15.0,
                 // 섬유 미절단·박리가 VB 보다 먼저 오는 경우가 많아 0.1~0.2 mm
                 vb_criterion_mm: 0.2,
-                breakin_vb_um: 20.0,
-                breakin_tau_min: 2.0,
+                // 20 µm / 2 분 → 30 µm / 0.35 분: 다이아몬드 코팅 라우터는 첫 1 m 슬롯(약 0.3~0.7 분) 안에 VB 25~40 µm (Hamedanianpour 2013)
+                breakin_vb_um: 30.0,
+                breakin_tau_min: 0.35,
                 ..base("cfrp", "CFRP")
             },
         }

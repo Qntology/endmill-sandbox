@@ -14,7 +14,6 @@ pub const TF_EXPONENT: f64 = 4.0;
 pub const TF_THRESHOLD: f64 = 100.0;
 pub const TF_IDLE_TAU_S: f64 = 0.010;
 pub const TF_WATCH: f64 = 0.7;
-pub const PROGRESSIVE_COATING_MAX_UM: f64 = 5.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct WearField {
@@ -374,11 +373,16 @@ pub fn coating_exposure(tool: &ToolGeometry, vb_mm: f64) -> f64 {
     }
 }
 
+/// 플랭크 마모 랜드가 코팅을 뚫을 수 있는가 — 코팅이 있으면 두께와 관계없이 그렇다. 두꺼운 코팅은 `coating_strip_um` 이 길어
+/// 늦게 뚫릴 뿐이다. 예전에는 5 µm 이하만 인정해서, 10 µm CVD 다이아몬드를 철·Ti 에 대면 코팅이 다 닳은 뒤에도
+/// 탄소 용해 속도(수천~수만 µm/min)가 계속 이어졌다 (2026-10-18 앱 로그: 58 HRC 에서 0.1 s 에 VB 67 µm)
 pub fn progressive_coating(tool: &ToolGeometry) -> bool {
     let c = &tool.coating;
-    !c.chem.bare && c.thickness_um > 0.0 && c.thickness_um <= PROGRESSIVE_COATING_MAX_UM
+    !c.chem.bare && c.thickness_um > 0.0
 }
 
+/// 코팅이 뚫린 뒤의 마모율: 노출된 랜드 몫 `exposure` 만큼 모재(무코팅) 마모율로 옮겨 간다. 코팅이 모재보다 빨리 닳는 조합
+/// (화학적으로 맞지 않는 코팅 — 다이아몬드·DLC 의 철·Ti·Ni 용해 등)에서만 바꾼다. 보호 코팅은 수명 전체 실측으로 맞춘 배수라 그대로 둔다
 pub fn exposed_wear_rate(coated: f64, bare: f64, exposure: f64) -> f64 {
     let e = exposure.clamp(0.0, 1.0);
     if e <= 0.0 || !(coated > bare) || bare <= 0.0 {
