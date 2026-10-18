@@ -292,14 +292,15 @@ fn default_ramp_mode() -> String {
 }
 
 fn default_palette() -> String {
-    "terrain".into()
+    "contact".into()
 }
 
 fn default_mark() -> String {
     "dots".into()
 }
 
-pub const VIZ_PALETTES: [&str; 4] = ["terrain", "thermal", "ocean", "mono"];
+// contact: 흰 몸체 → 남색 → 청록 → 노랑 (접촉 강도 지도처럼 깎인/닳은 곳만 색이 올라옴)
+pub const VIZ_PALETTES: [&str; 5] = ["contact", "terrain", "thermal", "ocean", "mono"];
 pub const VIZ_MARKS: [&str; 3] = ["dots", "boxes", "lines"];
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -336,7 +337,7 @@ pub struct VizSettings {
 }
 
 fn default_wear_palette() -> String {
-    "thermal".into()
+    "contact".into()
 }
 
 impl Default for VizSettings {
