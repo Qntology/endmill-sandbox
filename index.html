@@ -233,12 +233,11 @@
 		  position: relative;
 		}
 
-		/* 접어도 패널이 사라지지 않고 손잡이가 남는다 — 오른쪽은 레일, 아래는 머리글 한 줄.
-		   (예전처럼 폭·높이 0 으로 접으면 토글이 옆 패널 위로 튀어나와 같은 배경색에 묻혔다) */
-		.panel-right.collapsed {
-		  width: var(--rail-w) !important;
-		  min-width: 0 !important;
-		}
+		/* 오른쪽은 접으면 열과 간격을 모두 비워 가운데가 끝까지 채우고, 펼치기 버튼은 가운데 툴바 끝(.vt-reopen)에 둔다.
+		   아래는 접어도 머리글 한 줄이 남는다. (예전처럼 토글을 옆 패널 위로 띄우면 같은 배경색에 묻혔다) */
+		.app-layout:has(.panel-right.collapsed) { grid-template-columns: var(--left-w) var(--resizer-size) minmax(0, 1fr) 0 0; }
+		.app-layout > .panel-right.collapsed,
+		.app-layout:has(.panel-right.collapsed) .resizer-v.right { display: none; }
 
 		.panel-bottom.collapsed {
 		  height: var(--bar-h) !important;
@@ -302,19 +301,9 @@
 		.panel-left.collapsed .menu-btn { justify-content: center; padding: 10px 0; }
 		.panel-left.collapsed .panel-section-header { justify-content: center; padding: 0; border-top-color: transparent; }
 		.app-layout:has(.panel-left.collapsed) .resizer-v.left { pointer-events: none; }
-		/* 오른쪽 레일: 접기 버튼과 영역 아이콘(공구 마모 · ⑤)만, 누르면 펼쳐서 그 영역을 연다 */
-		.panel-right.collapsed .panel-title { justify-content: center; height: 44px; padding: 0; }
-		.panel-right.collapsed .panel-title > *,
-		.panel-right.collapsed .summary-block,
-		.panel-right.collapsed .sec-name,
-		.panel-right.collapsed .step-sum,
-		.panel-right.collapsed .chevron,
-		.panel-right.collapsed .help,
-		.panel-right.collapsed .panel-section-body { display: none !important; }
-		.panel-right.collapsed .panel-toggle-btn { top: 9px; right: auto; left: 50%; transform: translateX(-50%); }
-		.panel-right.collapsed .panel-section-header { justify-content: center; padding: 0; border-top-color: transparent; }
-		.app-layout:has(.panel-right.collapsed) .resizer-v.right,
 		.app-layout:has(.panel-bottom.collapsed) .resizer-h { pointer-events: none; }
+		.vt-btn.vt-reopen { display: none; }
+		.app-layout:has(.panel-right.collapsed) .vt-btn.vt-reopen { display: inline-flex; }
 
 		/* ── 패널 섹션(아코디언) — 카드 제목 줄 ─────────────────────── */
 		.panel-section-header {
@@ -1379,6 +1368,7 @@
 	        <input type="range" id="vt-seek" min="0" max="1000" value="0" oninput="animSeek(this.value)" title="재생 위치" />
 	        <span class="vt-time" id="vt-time">0.0 / 0.0 s</span>
 	        <button class="vt-btn vt-next" id="vt-comp" onclick="compShow(true)" disabled title="재생(계산 실행) 후 2차 보정 판단·분포·로그 보기">2차 보정 →</button>
+	        <button class="vt-btn vt-reopen" onclick="panelOpen('panelRight')" data-tip-title="조건 패널 펼치기" data-tip="접어 둔 오른쪽 패널(현재 구성 · 공구 마모 · ⑤ 절삭 조건)을 다시 엽니다.">◀ 조건</button>
 	      </div>
 	      <div class="vt-row">
 	        <span class="vt-label">표시</span>
@@ -2253,9 +2243,8 @@
 	        btn.title = isCollapsed ? '우측 패널 펼치기' : '우측 패널 접기';
 	        if (isCollapsed) {
 	          const currentW = parseInt(getComputedStyle(root).getPropertyValue('--right-w'));
-	          const railW = getComputedStyle(root).getPropertyValue('--rail-w').trim();
-	          if (currentW > parseInt(railW)) panelStates.right = currentW;
-	          root.style.setProperty('--right-w', railW); // 레일로 남겨 펼치기 버튼이 늘 보이게
+	          if (currentW > 0) panelStates.right = currentW;
+	          root.style.setProperty('--right-w', '0px'); // 가운데가 끝까지 채움 — 다시 열기는 툴바의 '◀ 조건'
 	        } else {
 	          root.style.setProperty('--right-w', panelStates.right + 'px');
 	        }
@@ -2289,10 +2278,10 @@
 	      const body = document.getElementById(sectionId);
 	      if (!body) return;
 
-	      // 접힌 레일에서 단계 번호·아이콘을 누르면 패널을 펼치고 그 영역을 연다
-	      const rail = header.closest('.panel-left.collapsed, .panel-right.collapsed');
+	      // 접힌 레일에서 단계 번호를 누르면 패널을 펼치고 그 단계를 연다
+	      const rail = header.closest('.panel-left.collapsed');
 	      if (rail) {
-	        document.querySelector(`.panel-toggle-btn[data-toggle="${rail.id}"]`).click();
+	        panelOpen(rail.id);
 	        body.classList.remove('collapsed');
 	        header.classList.remove('collapsed');
 	        return;
@@ -4516,6 +4505,12 @@
 	  set('sum-material', `${w.name} · ${w.material}`);
 	  set('sum-coolant', `${d.coolant.label} · ${fmt(e.ambient_c, 1)} °C ${fmt(e.humidity_pct, 0)} %`);
 	  set('sum-cond', `S${c.spindle_rpm} · F${fmt(c.feed_rate_mm_min, 0)}`);
+	}
+
+	// 접어 둔 패널을 연다 (툴바의 '◀ 조건'처럼 패널 밖에서 펼칠 때)
+	function panelOpen(id) {
+	  const panel = document.getElementById(id);
+	  if (panel && panel.classList.contains('collapsed')) document.querySelector(`.panel-toggle-btn[data-toggle="${id}"]`).click();
 	}
 
 	// 프로젝트 전환·생성은 정밀 분석의 라이브러리 탭에 있다
