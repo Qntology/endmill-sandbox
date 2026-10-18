@@ -51,6 +51,7 @@
 		  --panel-header-h: 36px;
 		  --statusbar-h: 28px;
 		  --rail-w: 56px;
+		  --bar-h: 38px;
 		  --left-min: 220px;
 		  --left-w: 280px;
 		  --right-min: 260px;
@@ -232,42 +233,31 @@
 		  position: relative;
 		}
 
+		/* 접어도 패널이 사라지지 않고 손잡이가 남는다 — 오른쪽은 레일, 아래는 머리글 한 줄.
+		   (예전처럼 폭·높이 0 으로 접으면 토글이 옆 패널 위로 튀어나와 같은 배경색에 묻혔다) */
 		.panel-right.collapsed {
-		  width: 0 !important;
+		  width: var(--rail-w) !important;
 		  min-width: 0 !important;
-		  overflow: visible !important;
 		}
 
 		.panel-bottom.collapsed {
-		  height: 0 !important;
+		  height: var(--bar-h) !important;
 		  min-height: 0 !important;
-		  overflow: visible !important;
 		}
-
-		.app-layout > .panel-right.collapsed,
-		.app-layout > .panel-bottom.collapsed {
-		  background: transparent;
-		  border-color: transparent;
-		}
-
-		/* 접혔을 때 내용물이 억지로 줄어들며 비정상적인 세로 길이를 생성하지 않도록 아예 숨김 처리 */
-		.panel-right.collapsed > *:not(.panel-toggle-btn),
-		.panel-bottom.collapsed > *:not(.panel-toggle-btn) {
-		  display: none !important;
-		}
+		.panel-bottom.collapsed #secOutput { display: none !important; }
 
 		.panel-toggle-btn {
 		  position: absolute;
 		  top: 8px;
-		  right: 6px;
-		  width: 24px;
-		  height: 24px;
-		  border: 1px solid transparent;
-		  background: transparent;
-		  color: var(--text-muted);
+		  right: 8px;
+		  width: 26px;
+		  height: 26px;
+		  border: 1px solid var(--border-light);
+		  background: var(--bg-card);
+		  color: var(--text-dim);
 		  font-size: 10px;
 		  cursor: pointer;
-		  border-radius: var(--radius-sm);
+		  border-radius: var(--radius);
 		  display: flex;
 		  align-items: center;
 		  justify-content: center;
@@ -275,14 +265,12 @@
 		  transition: background 0.15s, color 0.15s, border-color 0.15s;
 		}
 
-		/* 접혔을 때 토글 버튼이 중앙 영역 쪽으로 튀어나오도록 위치 변경 */
-		.panel-right.collapsed .panel-toggle-btn { right: auto; left: -30px; background: var(--bg-panel); border-color: var(--border-light); }
-		.panel-bottom.collapsed .panel-toggle-btn { top: -30px; right: 6px; background: var(--bg-panel); border-color: var(--border-light); }
-
 		.panel-toggle-btn:hover {
-		  background: var(--bg-hover);
+		  background: var(--bg-active);
+		  border-color: var(--border-hover);
 		  color: var(--text-bright);
 		}
+		.panel-bottom > .panel-toggle-btn { top: 5px; }
 		/* 패널 제목줄: 이 영역이 무엇을 하는 곳인지 한 줄로 말한다 */
 		.panel-title {
 		  display: flex;
@@ -314,7 +302,19 @@
 		.panel-left.collapsed .menu-btn { justify-content: center; padding: 10px 0; }
 		.panel-left.collapsed .panel-section-header { justify-content: center; padding: 0; border-top-color: transparent; }
 		.app-layout:has(.panel-left.collapsed) .resizer-v.left { pointer-events: none; }
-		.app-layout:has(.panel-right.collapsed) .viewport-toolbar { padding-right: 34px; }
+		/* 오른쪽 레일: 접기 버튼과 영역 아이콘(공구 마모 · ⑤)만, 누르면 펼쳐서 그 영역을 연다 */
+		.panel-right.collapsed .panel-title { justify-content: center; height: 44px; padding: 0; }
+		.panel-right.collapsed .panel-title > *,
+		.panel-right.collapsed .summary-block,
+		.panel-right.collapsed .sec-name,
+		.panel-right.collapsed .step-sum,
+		.panel-right.collapsed .chevron,
+		.panel-right.collapsed .help,
+		.panel-right.collapsed .panel-section-body { display: none !important; }
+		.panel-right.collapsed .panel-toggle-btn { top: 9px; right: auto; left: 50%; transform: translateX(-50%); }
+		.panel-right.collapsed .panel-section-header { justify-content: center; padding: 0; border-top-color: transparent; }
+		.app-layout:has(.panel-right.collapsed) .resizer-v.right,
+		.app-layout:has(.panel-bottom.collapsed) .resizer-h { pointer-events: none; }
 
 		/* ── 패널 섹션(아코디언) — 카드 제목 줄 ─────────────────────── */
 		.panel-section-header {
@@ -2250,19 +2250,23 @@
 	        }
 	      } else if (targetId === 'panelRight') {
 	        btn.textContent = isCollapsed ? '◀' : '▶';
+	        btn.title = isCollapsed ? '우측 패널 펼치기' : '우측 패널 접기';
 	        if (isCollapsed) {
 	          const currentW = parseInt(getComputedStyle(root).getPropertyValue('--right-w'));
-	          if (currentW > 0) panelStates.right = currentW;
-	          root.style.setProperty('--right-w', '0px');
+	          const railW = getComputedStyle(root).getPropertyValue('--rail-w').trim();
+	          if (currentW > parseInt(railW)) panelStates.right = currentW;
+	          root.style.setProperty('--right-w', railW); // 레일로 남겨 펼치기 버튼이 늘 보이게
 	        } else {
 	          root.style.setProperty('--right-w', panelStates.right + 'px');
 	        }
 	      } else if (targetId === 'panelBottom') {
 	        btn.textContent = isCollapsed ? '▲' : '▼';
+	        btn.title = isCollapsed ? '하단 패널 펼치기' : '하단 패널 접기';
 	        if (isCollapsed) {
 	          const currentH = parseInt(getComputedStyle(root).getPropertyValue('--bottom-h'));
-	          if (currentH > 0) panelStates.bottom = currentH;
-	          root.style.setProperty('--bottom-h', '0px');
+	          const barH = getComputedStyle(root).getPropertyValue('--bar-h').trim();
+	          if (currentH > parseInt(barH)) panelStates.bottom = currentH;
+	          root.style.setProperty('--bottom-h', barH); // 머리글 한 줄로 남김
 	        } else {
 	          root.style.setProperty('--bottom-h', panelStates.bottom + 'px');
 	        }
@@ -2285,10 +2289,10 @@
 	      const body = document.getElementById(sectionId);
 	      if (!body) return;
 
-	      // 접힌 레일에서 단계 번호를 누르면 패널을 펼치고 그 단계를 연다
-	      const left = document.getElementById('panelLeft');
-	      if (left.classList.contains('collapsed') && left.contains(header)) {
-	        document.querySelector('.panel-toggle-btn[data-toggle="panelLeft"]').click();
+	      // 접힌 레일에서 단계 번호·아이콘을 누르면 패널을 펼치고 그 영역을 연다
+	      const rail = header.closest('.panel-left.collapsed, .panel-right.collapsed');
+	      if (rail) {
+	        document.querySelector(`.panel-toggle-btn[data-toggle="${rail.id}"]`).click();
 	        body.classList.remove('collapsed');
 	        header.classList.remove('collapsed');
 	        return;

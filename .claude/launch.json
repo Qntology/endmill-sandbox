@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ui-demo",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-I",
+        "C:/Users/HP/AppData/Local/Temp/claude/C--Users-HP-Documents-GitHub-endmill-sandbox--claude-worktrees-ui-style-design-da368f/90425614-de25-4a2b-a07f-aa881d29f104/scratchpad/devserver.py",
+        "--port", "5180",
+        "--root", ".",
+        "--demo", "C:/Users/HP/AppData/Local/Temp/claude/C--Users-HP-Documents-GitHub-endmill-sandbox--claude-worktrees-ui-style-design-da368f/90425614-de25-4a2b-a07f-aa881d29f104/scratchpad/demo",
+        "--save", "C:/Users/HP/AppData/Local/Temp/claude/C--Users-HP-Documents-GitHub-endmill-sandbox--claude-worktrees-ui-style-design-da368f/90425614-de25-4a2b-a07f-aa881d29f104/scratchpad/shots"
+      ],
+      "port": 5180
+    }
+  ]
+}
