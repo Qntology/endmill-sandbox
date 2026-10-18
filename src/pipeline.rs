@@ -1087,7 +1087,7 @@ impl Workspace {
     fn radial_limit_um(&self, ctx: &CutContext) -> f64 {
         match self.purpose {
             Purpose::Finishing => (0.5 * ctx.tolerance_mm * 1000.0).max(5.0),
-            Purpose::Roughing => (ctx.vb_limit_mm() * ctx.tool.clearance_deg.to_radians().tan() * 1000.0).max(10.0),
+            Purpose::Roughing => (ctx.vb_limit_mm() * ctx.tool.radial_per_vb() * 1000.0).max(10.0),
         }
     }
 
@@ -1595,7 +1595,7 @@ impl Workspace {
         if let Some(m) = minutes {
             self.cut_minutes = m;
         }
-        let rad_per_vb = ctx.tool.clearance_deg.to_radians().tan() * 1000.0;
+        let rad_per_vb = ctx.tool.radial_per_vb() * 1000.0;
         let effective = analysis.effective_trajectory();
         let predicted = minutes.map(|m| effective.vb_at(m) * rad_per_vb);
         let mut ratio = None;
@@ -2098,7 +2098,7 @@ impl Workspace {
         };
         let scale = match key {
             "vb_mm" => Some(1.0),
-            "radial_loss_um" => Some(ctx.tool.clearance_deg.to_radians().tan() * 1000.0),
+            "radial_loss_um" => Some(ctx.tool.radial_per_vb() * 1000.0),
             _ => None,
         };
         let traj = analysis.effective_trajectory();

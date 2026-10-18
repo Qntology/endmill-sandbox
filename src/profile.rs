@@ -1301,6 +1301,100 @@ pub struct MachineLimits {
     pub tip_frf_tool: Option<String>,
     #[serde(default)]
     pub environment: ShopEnvironment,
+    /// 공구가 수명 판정(VB 한계)에 닿았을 때 기계가 하는 일 — 공구 수명 관리·부하 감시 설정 (`toollife`)
+    #[serde(default)]
+    pub tool_life_policy: ToolLifePolicy,
+    /// 수명 판정에 쓰는 수명 사용률 (1 = VB 한계). 정밀 부품은 공구 간 수명 편차를 생각해 0.8 정도로 앞당기기도 한다
+    #[serde(default = "default_tool_life_end_fraction")]
+    pub tool_life_end_fraction: f64,
+    /// 공구 교체 한 번에 걸리는 시간 (s): ATC 예비 공구 5~10 + 길이 확인, 수동 교체·측정 60~300
+    #[serde(default = "default_tool_change_s")]
+    pub tool_change_s: f64,
+}
+
+/// 공구가 수명 판정에 닿았을 때의 처리
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolLifePolicy {
+    /// 이송 정지 — 부하 감시·공구 수명 관리 경보로 작업자가 교체한다. 남은 경로는 깎지 않는다
+    #[default]
+    Stop,
+    /// 같은 사양 새 공구(예비 공구)로 교체하고 이어서 깎는다 (길들이기 재시작, 교체 시간, 벽 단차 불확도)
+    ChangeTool,
+    /// 횟수·시간 기반 공구 수명 관리: 만료돼도 프로그램은 끝까지 가고 다음 부품(작업)부터 예비 공구 — 그 사이 3차 마모·파손 판정은 그대로
+    FinishPart,
+    /// 감시 없음 — 한계를 넘겨 3차 마모를 거쳐 파손까지 깎는다 (무엇이 일어나는지 보는 용도)
+    RunToFailure,
+}
+
+impl ToolLifePolicy {
+    pub const ALL: [ToolLifePolicy; 4] = [Self::Stop, Self::ChangeTool, Self::FinishPart, Self::RunToFailure];
+
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::ChangeTool => "change_tool",
+            Self::FinishPart => "finish_part",
+            Self::RunToFailure => "run_to_failure",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key.trim() {
+            "stop" => Some(Self::Stop),
+            "change_tool" => Some(Self::ChangeTool),
+            "finish_part" => Some(Self::FinishPart),
+            "run_to_failure" => Some(Self::RunToFailure),
+            _ => None,
+        }
+    }
+}
+
+/// 앱 설정에 저장하는 공구 수명 관리 (작업을 돌릴 때 프로필의 `MachineLimits` 에 덮어쓴다 — 매장 환경과 같은 방식)
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ToolLifeSettings {
+    #[serde(default)]
+    pub policy: ToolLifePolicy,
+    #[serde(default = "default_tool_life_end_fraction")]
+    pub end_fraction: f64,
+    #[serde(default = "default_tool_change_s")]
+    pub change_s: f64,
+}
+
+impl Default for ToolLifeSettings {
+    fn default() -> Self {
+        Self {
+            policy: ToolLifePolicy::default(),
+            end_fraction: default_tool_life_end_fraction(),
+            change_s: default_tool_change_s(),
+        }
+    }
+}
+
+impl ToolLifeSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(self.end_fraction.is_finite() && (0.3..=2.0).contains(&self.end_fraction)) {
+            return Err("수명 판정 비율은 0.3 ~ 2.0 사이여야 합니다 (1 = VB 한계)".into());
+        }
+        if !(self.change_s.is_finite() && (0.0..=3600.0).contains(&self.change_s)) {
+            return Err("공구 교체 시간은 0 ~ 3600 s 사이여야 합니다".into());
+        }
+        Ok(())
+    }
+
+    pub fn apply(&self, m: &mut MachineLimits) {
+        m.tool_life_policy = self.policy;
+        m.tool_life_end_fraction = self.end_fraction;
+        m.tool_change_s = self.change_s;
+    }
+}
+
+fn default_tool_life_end_fraction() -> f64 {
+    1.0
+}
+
+fn default_tool_change_s() -> f64 {
+    30.0
 }
 
 fn default_damping_ratio() -> f64 {
@@ -1355,6 +1449,9 @@ impl Default for MachineLimits {
             tip_frf_stickout_mm: None,
             tip_frf_tool: None,
             environment: ShopEnvironment::default(),
+            tool_life_policy: ToolLifePolicy::default(),
+            tool_life_end_fraction: default_tool_life_end_fraction(),
+            tool_change_s: default_tool_change_s(),
         }
     }
 }

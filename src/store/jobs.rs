@@ -1133,7 +1133,7 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
     let d = &comp.draft;
     let action = comp.decision.final_action;
     let change = action == CompAction::ToolChange;
-    let tan_clear = inp.ctx.tool.clearance_deg.clamp(2.0, 30.0).to_radians().tan();
+    let tan_clear = inp.ctx.tool.radial_per_vb();
     let ap = p.conditions.axial_doc_mm;
     let vb_limit = inp.ctx.vb_limit_mm();
     let mut lines: Vec<String> = Vec::new();
@@ -1182,7 +1182,7 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
         coolant: p.coolant_config.method.key().to_string(),
         final_action: action.key().to_string(),
         decided_by: comp.decision.decided_by.clone(),
-        vb_start_mm: rep.vb_start_mm,
+        vb_start_mm: rep.tool_life.retired.first().map(|r| r.vb_start_mm).unwrap_or(rep.vb_start_mm),
         vb_end_mm: if action.cuts() && !change { comp.vb_after_mm } else { d.vb_now_mm.max(rep.vb_end_mm) },
         report_line: comp.report_line.clone(),
         created_at: now_ms(),
@@ -1199,7 +1199,7 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
         action: "pass1".into(),
         cut_min: rep.cut_time_min,
         removed_cm3: rep.removed_volume_cm3,
-        vb_start_mm: rep.vb_start_mm,
+        vb_start_mm: rep.tool_life.retired.first().map(|r| r.vb_start_mm).unwrap_or(rep.vb_start_mm),
         vb_end_mm: rep.vb_end_mm,
         radial_end_um: rep.radial_loss_end_um,
         residual_p50_um: Some(d.residual.p50_um),
@@ -1380,14 +1380,71 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
                 ));
                 rdb.set_pass_status(prev, 2, "replaced", false)?;
             }
+            // 1차 중 공구 수명 판정으로 예비 공구로 바꿨으면 (정책 '교체 후 계속') 공구마다 자기 구간의 마모만 받고 은퇴한다
+            let tlr = &rep.tool_life;
+            if !tlr.retired.is_empty() {
+                let ident = tool_identity(p);
+                for (k, rt) in tlr.retired.iter().enumerate() {
+                    if k > 0 {
+                        let (n, l) = rdb.replace_active(&ident, w.endmill_id.or(inp.endmill_id), &inp.ctx.tool, vb_limit, "life_end", "경로 중 교체된 예비 공구", "sim")?;
+                        lines.extend(l);
+                        *w = n;
+                    }
+                    let before = w.vb_band_mm;
+                    if !w.field.add_any(&rt.field) {
+                        w.field = w.field_for(&inp.ctx.tool);
+                        w.field.add_any(&rt.field);
+                    }
+                    w.cut_min += rt.cut_min;
+                    w.removed_cm3 += rt.removed_cm3;
+                    w.jobs += 1;
+                    w.pred_base_um += base_growth_um(rt.growth_calib_mm, rt.growth_fixed_mm, d.calib_wear, tan_clear);
+                    w.thermal_damage += rt.thermal_damage.max(0.0);
+                    w.refresh(&inp.ctx.tool, ap, vb_limit);
+                    let (cut, band) = (w.cut_min, w.vb_band_mm);
+                    w.push_history(cut, band);
+                    rdb.add_wear_event(&WearEventRow {
+                        tool_instance_id: w.id,
+                        job_id: Some(job_id),
+                        kind: "pass1".into(),
+                        cut_min_after: w.cut_min,
+                        vb_before_mm: before,
+                        vb_after_mm: w.vb_band_mm,
+                        radial_um: Some(rt.vb_band_mm * tan_clear * 1000.0),
+                        source: "sim".into(),
+                        note: format!("1차 중 이 공구(#{}번째) 구간 {:.2}분 · 제거 {:.2} cm³ — {}", rt.tool_no, rt.cut_min, rt.removed_cm3, rt.reason),
+                        ..Default::default()
+                    })?;
+                    w.version = rdb.save_tool(w)?;
+                    let (kind, reason) = match rt.cause.as_str() {
+                        "chipping" => (
+                            "chipping",
+                            format!("1차 경로 중 치핑 감지 → 예비 공구로 교체 (작업 #{}, 세그먼트 {}, VB {:.3} mm, 누적 치핑 확률 {:.0}%)", job_id, rt.seg, rt.vb_band_mm, rt.chip_p * 100.0),
+                        ),
+                        "start_worn" => ("life_end", format!("작업 #{} 시작 전 이미 수명 판정 초과 → 예비 공구로 교체 (VB {:.3} mm)", job_id, rt.vb_band_mm)),
+                        _ => ("life_end", format!("1차 경로 중 수명 판정 → 예비 공구로 교체 (작업 #{}, 세그먼트 {}, VB {:.3} mm)", job_id, rt.seg, rt.vb_band_mm)),
+                    };
+                    rdb.retire(w, kind, &reason, "sim", Some(job_id))?;
+                    lines.push(format!("공구 #{} 은퇴: {}", w.id, reason));
+                }
+                let (n, l) = rdb.replace_active(&ident, w.endmill_id.or(inp.endmill_id), &inp.ctx.tool, vb_limit, "life_end", "경로 중 교체된 예비 공구", "sim")?;
+                lines.extend(l);
+                *w = n;
+                lines.push(format!("1차 마지막 구간({:.2}분)은 예비 공구 #{} 에 기록", tlr.last_tool_cut_min, w.id));
+            }
             let before = w.vb_band_mm;
             let t0 = w.cut_min;
             if !w.field.add_any(&rep.wear_field) {
                 w.field = w.field_for(&inp.ctx.tool);
                 w.field.add_any(&rep.wear_field);
             }
-            w.cut_min += rep.cut_time_min;
-            w.removed_cm3 += rep.removed_volume_cm3;
+            if tlr.retired.is_empty() {
+                w.cut_min += rep.cut_time_min;
+                w.removed_cm3 += rep.removed_volume_cm3;
+            } else {
+                w.cut_min += tlr.last_tool_cut_min;
+                w.removed_cm3 += tlr.last_tool_removed_cm3;
+            }
             w.jobs += 1;
             w.pred_base_um += p1_base;
             w.thermal_damage += rep.thermal_damage.max(0.0);
@@ -1473,6 +1530,30 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
             w.thermal_damage,
             s.life_used_max * 100.0
         ));
+        // 공구 수명 감시 결과: 부러진 공구, 치핑 감지로 멈춘 공구, 공구 수명 관리로 만료된 공구는 이 작업을 끝으로 은퇴 (다음 작업은 새 공구 개체).
+        // 치핑은 다음 작업으로 넘어가는 상태가 없어 (작업마다 위험을 0 에서 쌓음) 그대로 두면 이 빠진 공구를 새것처럼 다시 쓰게 된다
+        let tlr = &rep.tool_life;
+        let chipped_stop = tlr.unfinished && !tlr.failed && tlr.events.iter().rev().find(|e| e.kind == "stop").map(|e| e.cause == "chipping").unwrap_or(false);
+        if !inp.replan && (tlr.failed || tlr.expired || chipped_stop) {
+            let (kind, reason) = if tlr.failed {
+                ("failure", format!("1차 중 공구 파손 ({}) — 작업 #{}: {}", tlr.failure_cause, job_id, tlr.stop_reason().unwrap_or_default()))
+            } else if chipped_stop {
+                (
+                    "chipping",
+                    format!("1차 중 치핑 감지로 정지 ({:.0}% 가공) — 작업 #{}: 이가 빠졌을 가능성이 높아 은퇴, 남은 경로는 새 공구로", tlr.completed_fraction() * 100.0, job_id),
+                )
+            } else {
+                ("tlm_expired", format!("공구 수명 관리 만료 — 작업 #{} 을 끝까지 가공한 뒤 은퇴 (다음 작업부터 예비 공구)", job_id))
+            };
+            rdb.retire(w, kind, &reason, "sim", Some(job_id))?;
+            lines.push(format!("공구 #{} 은퇴: {}", w.id, reason));
+        } else if !inp.replan && tlr.unfinished {
+            lines.push(format!(
+                "공구 #{} 은 수명 판정에 닿아 1차가 {:.0}% 에서 정지 — 다음 작업 전에 공구를 교체('공구 리셋')하세요 (그대로 시작하면 바로 정지)",
+                w.id,
+                tlr.completed_fraction() * 100.0
+            ));
+        }
     }
     Ok((
         JobRecordOutcome {

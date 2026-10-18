@@ -39,6 +39,9 @@ commerce/rust/mobile/src-tauri/gen/android/app/build/outputs
 
 target/
 
+# test_cuda.bat run folders (step logs, wear_logs and matrix CSV/JSON copies)
+test_logs/
+
 tmp/
 
 # Data and Database

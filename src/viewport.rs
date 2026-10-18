@@ -272,6 +272,9 @@ pub struct ViewportSim {
     pub depth: Option<DepthMap>,
     #[serde(default)]
     pub tool_wear: ToolWearView,
+    /// 공구 수명 감시 (수명 판정·교체·파손·정지 사건, 몸체 응력·피로·치핑 확률, 용도 적합도)
+    #[serde(default)]
+    pub tool_life: ToolLifeView,
 }
 
 pub fn build(profile: &MachiningProfile, pattern_key: &str, sds: Option<&SdsStore>) -> Result<ViewportSim, String> {
@@ -406,6 +409,72 @@ pub fn assemble(profile: &MachiningProfile, pattern: &str, ctx: &CutContext, rep
         samples,
         depth,
         tool_wear,
+        tool_life: ToolLifeView::of(&rep.tool_life, ctx),
+    }
+}
+
+/// 화면용 공구 수명 감시 요약 (마모 지도는 빼고 사건·숫자만)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolLifeView {
+    pub policy: String,
+    pub policy_label: String,
+    pub state: String,
+    pub tools_used: u32,
+    pub tool_changes: u32,
+    pub failed: bool,
+    pub failure_cause: String,
+    pub unfinished: bool,
+    pub completed: f64,
+    pub uncut_feed_mm: f64,
+    pub expired: bool,
+    pub life_used_max: f64,
+    pub vb_limit_mm: f64,
+    pub vb_accel_mm: f64,
+    pub vb_collapse_mm: f64,
+    pub peak_stress_mpa: f64,
+    pub peak_stress_ratio: f64,
+    pub critical_section: String,
+    pub fatigue: f64,
+    pub chip_p: f64,
+    pub load_ratio_max: f64,
+    pub load_ratio_at_life_end: Option<f64>,
+    pub stopped_at_s: Option<f64>,
+    pub fit_label: String,
+    pub fit_summary: String,
+    pub events: Vec<crate::toollife::ToolLifeEvent>,
+}
+
+impl ToolLifeView {
+    pub fn of(t: &crate::toollife::ToolLifeReport, ctx: &CutContext) -> Self {
+        let fit = crate::appfit::evaluate(&ctx.tool, &ctx.wp, false);
+        Self {
+            policy: t.policy.key().into(),
+            policy_label: crate::toollife::policy_label(t.policy).into(),
+            state: t.state.clone(),
+            tools_used: t.tools_used,
+            tool_changes: t.tool_changes,
+            failed: t.failed,
+            failure_cause: t.failure_cause.clone(),
+            unfinished: t.unfinished,
+            completed: t.completed_fraction(),
+            uncut_feed_mm: t.uncut_feed_mm,
+            expired: t.expired,
+            life_used_max: t.life_used_max,
+            vb_limit_mm: t.vb_limit_mm,
+            vb_accel_mm: t.params.vb_accel_mm,
+            vb_collapse_mm: t.params.vb_collapse_mm,
+            peak_stress_mpa: t.peak_stress_mpa,
+            peak_stress_ratio: t.peak_stress_ratio,
+            critical_section: t.critical_section.clone(),
+            fatigue: t.fatigue_damage,
+            chip_p: t.chip_probability,
+            load_ratio_max: t.load_ratio_max,
+            load_ratio_at_life_end: t.load_ratio_at_life_end,
+            stopped_at_s: t.stopped_at_s,
+            fit_label: fit.verdict_label().into(),
+            fit_summary: fit.summary(),
+            events: t.events.clone(),
+        }
     }
 }
 

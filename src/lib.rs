@@ -33,6 +33,9 @@ pub mod toolwear;
 pub mod pairref;
 pub mod surface;
 pub mod simaudit;
+pub mod toollife;
+pub mod appfit;
+pub mod pairmatrix;
 
 pub use application::*;
 pub use metadata::*;

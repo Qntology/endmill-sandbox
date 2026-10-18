@@ -399,6 +399,9 @@ pub struct AppSettings {
     pub viz: VizSettings,
     #[serde(default)]
     pub dry_run: bool,
+    /// 공구 수명 관리 (수명 판정에 닿았을 때 정지 · 교체 후 계속 · 프로그램 끝까지 · 감시 없음)
+    #[serde(default)]
+    pub tool_life: endmill_model::profile::ToolLifeSettings,
 }
 
 fn load_settings(data_dir: &std::path::Path) -> AppSettings {
@@ -484,6 +487,7 @@ impl AppState {
         };
         for p in store.profiles.iter_mut() {
             p.machine.environment = settings.environment.clone();
+            settings.tool_life.apply(&mut p.machine);
         }
         let first = store
             .profiles
@@ -1750,7 +1754,9 @@ pub async fn lib_reindex(state: tauri::State<'_, AppState>) -> Result<String, St
 }
 
 fn stamp_environment(sh: &Shared, p: &mut MachiningProfile) {
-    p.machine.environment = lock(&sh.settings).environment.clone();
+    let s = lock(&sh.settings);
+    p.machine.environment = s.environment.clone();
+    s.tool_life.apply(&mut p.machine);
 }
 
 fn now_secs() -> String {
@@ -3663,6 +3669,7 @@ pub struct SettingsResponse {
     pub data_dir: String,
     pub viz: VizSettings,
     pub dry_run: bool,
+    pub tool_life: endmill_model::profile::ToolLifeSettings,
 }
 
 fn settings_view(sh: &Shared) -> SettingsResponse {
@@ -3698,6 +3705,7 @@ fn settings_view(sh: &Shared) -> SettingsResponse {
         data_dir: sh.data_dir.display().to_string(),
         viz: s.viz.clone(),
         dry_run: s.dry_run,
+        tool_life: s.tool_life,
     }
 }
 
@@ -3816,6 +3824,22 @@ pub async fn settings_set_comp(state: tauri::State<'_, AppState>, comp: CompOpti
         c.blow_ms = c.blow_ms.clamp(0, 30_000);
         c.max_cooldown_s = c.max_cooldown_s.clamp(0.0, 3600.0);
         lock(&sh.settings).comp = c;
+        save_settings(sh)?;
+        Ok(settings_view(sh))
+    })
+    .await
+}
+
+/// 공구 수명 관리 설정 — 다음 시뮬레이션·작업부터 모든 프로필의 기계 설정에 적용된다
+#[tauri::command]
+pub async fn settings_set_tool_life(state: tauri::State<'_, AppState>, tool_life: endmill_model::profile::ToolLifeSettings) -> Result<SettingsResponse, String> {
+    blocking(&state, move |sh| {
+        tool_life.validate()?;
+        lock(&sh.settings).tool_life = tool_life;
+        {
+            let mut ws = lock(&sh.ws);
+            tool_life.apply(&mut ws.profile.machine);
+        }
         save_settings(sh)?;
         Ok(settings_view(sh))
     })

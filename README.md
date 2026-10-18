@@ -256,6 +256,15 @@ cargo test                                   # CPU
 
 On Windows use `test_vulkan.bat` / `test_rocm.bat` (extra arguments are passed to `cargo test`).
 
+`test_cuda.bat` runs every step in sequence and writes `test_logs\<timestamp>\`: one log per step (with its duration),
+`summary.log` (exit codes, test results, failed test names, audit-flag / tool-life-event / matrix-verdict / `[UNKNOWN]`
+counts), `highlights.log` (every `[EOL] [MATRIX] [AUDIT] [UNKNOWN] …` cross-check line in one file), `wear_logs\` (the job
+CSV/JSON of this run, also mirrored to the app's wear_logs folder), `matrix\` (tool × material CSV/JSON) and `manifest.txt`.
+Steps 11–13 run the tool-life/matrix tests, the audit of every built-in preset and every preset's pocket under the four
+tool-life policies. Options: `QUICK=1` (skip the long steps), `ONLY=04,11`, `LEAN_LINK=1` (link this crate's test binaries
+without PDB debug info — far less link memory and disk on small machines), `NOPAUSE=1`. The summary is written by
+`test_cuda_summary.ps1`.
+
 ```bash
 cargo test --test physcal_flow              # MPM cross-check → calibration channel (does not run the solver)
 cargo test --lib physcal                    # record / envelope / reliability unit tests
@@ -473,6 +482,41 @@ are still compared); chatter marks are never added to the wall error median — 
 into the wall samples' `waviness_um` (× chatter probability) and the Ra instead, and `dynamics_chatter_not_in_wall`
 prints their band.
 
+### Tool End of Life, Breakage and the Tool × Material Matrix (`src/toollife.rs`, `src/appfit.rs`, `src/pairmatrix.rs`)
+
+The path simulation used to clamp VB at 2× the tool-life limit and keep cutting to the end of the path: the Inconel
+roughing pocket cut 134 s past the limit at up to 8 kN (≈ 3.7 GPa in the carbide body), and the 58 HRC long-neck ball cut a
+pocket for 26 minutes past its limit. Every cutting step now runs a tool-life monitor (details and sources:
+[docs/tool-life-and-pair-matrix.md](docs/tool-life-and-pair-matrix.md)):
+
+* **Life used** u = max(uniform VB / limit, local VBmax / local limit) — the ISO 8688-2 0.3 / 0.5 mm structure.
+* **Policies** (`MachineLimits::tool_life_policy`, app setting "수명 판정 도달 시") follow real controllers:
+  `stop` (default — wear alarm, finish the current cut, stop), `change_tool` (finish the cut, index to a sister tool:
+  change time, new break-in, wall-step uncertainty), `finish_part` (count/time tool-life management: the program runs to the
+  end, the next job gets a sister tool), `run_to_failure` (no monitoring). Beyond 1.2× the limit or half-way into the tertiary
+  zone the action is immediate.
+* **Tertiary wear** above a per-material VB (0.10 mm hardened … 0.30 mm carbon steel) up to ×2–7 at the collapse VB, applied
+  in both the nominal trajectory and the path simulation.
+* **Deterministic failures** (stop in every policy): static overload (max principal stress at the flute end, neck and holder
+  face vs. TRS × 0.60–0.70), rotating-bending fatigue (Basquin n = 20, Miner), edge collapse (VB ≥ collapse VB), edge
+  plastic deformation (> 1000–1050 °C). **Chipping** is a probability (hazard × chatter, stress, hardness, thermal cracks,
+  overrun and application-fit factors). At 90 % the tool counts as chipped whatever the policy: unmonitored policies end in a
+  chipping failure, monitored ones (`stop`, `change_tool`) treat it as a load-monitor breakage alarm and stop or change the
+  tool on the spot — a monitored tool never cuts past the point where the same unmonitored tool fails.
+* **Load-monitor view**: power vs. a fresh edge at the same engagement; `load_monitor_blind` when a 1.2× wear alarm would not
+  see the worn tool (thin finishing chips).
+* **Application fit** (geometry, edge, substrate vs. per-material windows) multiplies wear, chipping and BUE; every built-in
+  preset pair sits inside its window. `pairmatrix` runs all 8 built-in tools × 8 use cases (nominal + path + tool-life
+  monitor) and ranks them (`cargo run --features cuda --example pair_matrix -- <dir> [pattern|none]`,
+  test `tests/tool_life_matrix.rs`).
+* **Rake-corrected edge recession** KE = VB·tanα / (1 − tanα·tanγ) everywhere VB is turned into radius (was VB·tanα: −7 % on
+  the 18° aluminium tool).
+* Mid-path tool changes split the wear between tool instances in the job store; broken and tool-life-expired tools are
+  retired; an unfinished first pass holds the second-pass compensation (`pass1_complete` gate).
+* New logs: CSV columns `tool_no, life_used, stress_mpa, stress_ratio, fatigue, chip_p`; audit v4 `tool_life`, `fit`,
+  `unknowns` (`[UNKNOWN]` lines: value used, plausible range, effect, cheapest measurement); `[EOL]`, `[MATRIX]` lines.
+  Retired tools keep their cause (`life_end`, `chipping`, `start_worn`, `failure`, `tlm_expired`).
+
 ### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
 
 `crates/endmill_mpm` is a small 2D plane-strain orthogonal-cutting solver (MLS-MPM / APIC particles,
@@ -535,6 +579,9 @@ endmill-sandbox/
 │   ├── loadsim.rs              # toolpath load simulation (area-weighted stock grid)
 │   ├── simaudit.rs             # simulation audit: log cross-checks · flags · [AUDIT] lines
 │   ├── pairref.rs              # tool–workpiece pair reference values: friction, break-in, damping, holder runout
+│   ├── toollife.rs             # tool end of life: policies, tertiary wear, breakage / fatigue / chipping, load monitor
+│   ├── appfit.rs               # application fit of tool geometry / edge / substrate per workpiece group
+│   ├── pairmatrix.rs           # 8 built-in tools × 8 use cases matrix (nominal + path + tool-life monitor)
 │   ├── toolimage.rs            # image processing (silhouette, edge)
 │   ├── wear.rs                 # SigLIP2 wear comparison
 │   ├── mold.rs                 # heightmap / wall CMM analysis

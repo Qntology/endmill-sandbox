@@ -14,7 +14,7 @@ use crate::wearcomp::CompOutcome;
 use crate::wearlog::WearLog;
 use serde::{Deserialize, Serialize};
 
-pub const AUDIT_VERSION: u32 = 3;
+pub const AUDIT_VERSION: u32 = 4;
 
 /// 경로 ae 를 격자가 읽은 값과 기하 기대값(알 수 있는 패턴만)이 이 비율 이상 다르면 주의
 pub const AE_GEOMETRY_TOL: f64 = 0.15;
@@ -369,6 +369,60 @@ pub struct MeasureNext {
     pub measurement: String,
 }
 
+/// 공구 수명 감시 요약 (`toollife` — 수명 판정·교체·3차 마모·파손·부하 감시)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditToolLife {
+    pub policy: String,
+    pub policy_label: String,
+    pub state: String,
+    pub end_fraction: f64,
+    pub vb_limit_mm: f64,
+    pub vb_accel_mm: f64,
+    pub vb_collapse_mm: f64,
+    pub accel_mult: f64,
+    pub accel_factor_max: f64,
+    pub life_used_max: f64,
+    pub life_used_end: f64,
+    pub tools_used: u32,
+    pub tool_changes: u32,
+    pub change_step_um: f64,
+    pub failed: bool,
+    pub failure_cause: String,
+    pub unfinished: bool,
+    pub completed_fraction: f64,
+    pub uncut_feed_mm: f64,
+    pub expired: bool,
+    /// 몸체 강도의 기준 모재 (`toollife::strength_of` — 코팅이 아니라 초경 등급·HSS)
+    #[serde(default)]
+    pub body_label: String,
+    pub trs_mpa: f64,
+    pub static_mpa: f64,
+    pub fatigue_mpa: f64,
+    pub peak_stress_mpa: f64,
+    pub peak_stress_ratio: f64,
+    pub critical_section: String,
+    pub fatigue_damage: f64,
+    pub chip_probability: f64,
+    pub chip_factors: crate::toollife::ChipFactors,
+    pub load_ratio_max: f64,
+    pub load_ratio_at_life_end: Option<f64>,
+    pub load_alarm_t_s: Option<f64>,
+    /// 부하 감시가 치핑을 잡아 정지·교체한 횟수
+    #[serde(default)]
+    pub chip_detected: u32,
+    pub events: Vec<String>,
+}
+
+/// 측정 없이는 정할 수 없는 값 — 쓴 값, 그럴 법한 범위, 그것이 바꾸는 결과, 가장 싼 측정
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UnknownItem {
+    pub key: String,
+    pub used: String,
+    pub range: String,
+    pub effect: String,
+    pub resolve: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimAudit {
     pub version: u32,
@@ -386,6 +440,15 @@ pub struct SimAudit {
     /// 이 작업에 쓴 공구–피삭재 조합 기준값과 근거 (`pairref`)
     #[serde(default)]
     pub pair: crate::pairref::PairSummary,
+    /// 공구 수명 감시 (수명 판정·교체·3차 마모·파손·부하 감시)
+    #[serde(default)]
+    pub tool_life: AuditToolLife,
+    /// 공구 형상·날끝·모재의 용도 적합도 (`appfit`, 측면 가공 기준)
+    #[serde(default)]
+    pub fit: crate::appfit::AppFit,
+    /// 측정 없이는 정할 수 없는 값과 그 영향 (`[UNKNOWN]` 줄)
+    #[serde(default)]
+    pub unknowns: Vec<UnknownItem>,
 }
 
 fn f(x: f64) -> f64 {
@@ -739,12 +802,14 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
     // ---- 마모 ----
     let tr = &nominal.trajectory;
     let job_min = rep.cut_time_min.max(1e-12);
-    let growth_min = if rep.growth_cut_min > 1e-12 { rep.growth_cut_min } else { job_min };
+    // 경로 중 공구를 바꿨으면 VB 성장 비율은 마지막 공구의 절삭 시간으로 센다 (`vb_start_mm`·`growth_*` 가 마지막 공구 값)
+    let tool_min = if rep.tool_life.tool_changes > 0 { rep.tool_life.last_tool_cut_min.max(1e-12) } else { job_min };
+    let growth_min = if rep.growth_cut_min > 1e-12 { rep.growth_cut_min } else { tool_min };
     let steady = rep.growth_calib_mm / growth_min * 1000.0;
     let breakin_avg = rep.growth_fixed_mm / growth_min * 1000.0;
     let total_growth = (rep.growth_calib_mm + rep.growth_fixed_mm).max(1e-12);
-    let job_rate = (rep.vb_end_mm - rep.vb_start_mm) / job_min * 1000.0;
-    let age_end = rep.wear_age0_min + rep.cut_time_min;
+    let job_rate = (rep.vb_end_mm - rep.vb_start_mm) / tool_min * 1000.0;
+    let age_end = rep.wear_age0_min + tool_min;
     let tau = tr.break_in_tau_min.max(1e-9);
     let limit = ctx.vb_limit_mm();
     let part_cut_min = rep.cut_time_min;
@@ -763,7 +828,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         0.0
     };
     // 치수 기준 수명: 반경 마모 ΔR = VB·tan(여유각) 이 공차를 다 쓰는 VB. VB 한계(0.2/0.3 mm)보다 작으면 그쪽이 먼저 온다
-    let tan_clear = t.clearance_deg.to_radians().tan().max(1e-6);
+    let tan_clear = t.radial_per_vb().max(1e-6);
     let vb_dim = ctx.tolerance_mm / tan_clear;
     let parts_dim = match out {
         Some(o) if vb_dim < limit && part_cut_min > 1e-9 => Some(o.draft.path_trajectory.minutes_between(o.vb_after_mm, vb_dim) / part_cut_min),
@@ -1326,6 +1391,201 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         );
     }
 
+    // ---- 공구 수명 감시 ----
+    let tlr = &rep.tool_life;
+    let tool_life = AuditToolLife {
+        policy: tlr.policy.key().into(),
+        policy_label: crate::toollife::policy_label(tlr.policy).into(),
+        state: tlr.state.clone(),
+        end_fraction: f(tlr.end_fraction),
+        vb_limit_mm: f(tlr.vb_limit_mm),
+        vb_accel_mm: f(tlr.params.vb_accel_mm),
+        vb_collapse_mm: f(tlr.params.vb_collapse_mm),
+        accel_mult: f(tlr.params.accel_mult),
+        accel_factor_max: f(tlr.accel_factor_max),
+        life_used_max: f(tlr.life_used_max),
+        life_used_end: f(tlr.life_used_end),
+        tools_used: tlr.tools_used,
+        tool_changes: tlr.tool_changes,
+        change_step_um: f(crate::toollife::change_step_um(t)),
+        failed: tlr.failed,
+        failure_cause: tlr.failure_cause.clone(),
+        unfinished: tlr.unfinished,
+        completed_fraction: f(tlr.completed_fraction()),
+        uncut_feed_mm: f(tlr.uncut_feed_mm),
+        expired: tlr.expired,
+        body_label: tlr.strength.label.clone(),
+        trs_mpa: f(tlr.strength.trs_mpa),
+        static_mpa: f(tlr.strength.static_mpa()),
+        fatigue_mpa: f(tlr.strength.fatigue_mpa()),
+        peak_stress_mpa: f(tlr.peak_stress_mpa),
+        peak_stress_ratio: f(tlr.peak_stress_ratio),
+        critical_section: tlr.critical_section.clone(),
+        fatigue_damage: f(tlr.fatigue_damage),
+        chip_probability: f(tlr.chip_probability),
+        chip_factors: tlr.chip_factors_mean,
+        load_ratio_max: f(tlr.load_ratio_max),
+        load_ratio_at_life_end: tlr.load_ratio_at_life_end.map(f),
+        load_alarm_t_s: tlr.load_alarm_t_s.map(f),
+        chip_detected: tlr.chip_detected,
+        events: tlr.events.iter().map(|e| format!("{} #{} t {:.1} s (절삭 {:.1} s) seg {} — {}", e.kind, e.tool_no, e.t_s, e.t_cut_s, e.seg, e.message)).collect(),
+    };
+    if tlr.failed {
+        flag(&mut flags, "tool_failure", 2, tlr.completed_fraction(), "파손 없음", format!("{} — 경로의 {:.0}% 에서 정지, 부품 검사 필요", tlr.stop_reason().unwrap_or_default(), tlr.completed_fraction() * 100.0));
+    } else if tlr.unfinished {
+        let chipped = tlr.events.iter().rev().find(|e| e.kind == "stop").map(|e| e.cause == "chipping").unwrap_or(false);
+        flag(
+            &mut flags,
+            "path_unfinished",
+            1,
+            tlr.completed_fraction(),
+            "1.0",
+            format!(
+                "{} 이송 경로 {:.0} / {:.0} mm 에서 정지 ({}) — 이 조건으로 이 경로를 끝내려면 공구 {}개 이상 또는 조건 완화 필요",
+                if chipped { "치핑 감지로" } else { "공구 수명 판정으로" },
+                tlr.total_feed_mm - tlr.uncut_feed_mm,
+                tlr.total_feed_mm,
+                tool_life.policy_label,
+                (1.0 / tlr.completed_fraction().max(1e-3)).ceil()
+            ),
+        );
+    }
+    if tlr.tool_changes > 0 {
+        flag(
+            &mut flags,
+            "tool_changed_mid_path",
+            1,
+            tlr.tool_changes as f64,
+            "0",
+            format!(
+                "1차 중 공구 {}회 교체 (공구 {}개) — 교체 지점 앞뒤 벽은 다른 공구가 깎아 단차 ±{:.1} µm (재클램프 런아웃·반경 측정), 새 공구 길들이기 VB {:.0} µm 가 다시 생김",
+                tlr.tool_changes,
+                tlr.tools_used,
+                tool_life.change_step_um,
+                tr.break_in_vb_mm * 1000.0
+            ),
+        );
+    }
+    if tlr.expired {
+        flag(&mut flags, "tool_life_expired_finish_part", 1, tlr.life_used_max, "≤ 판정", format!("공구 수명 관리로 작업 중 만료 — 프로그램은 끝까지 가공 (수명 사용 최대 {:.0}%), 다음 작업부터 예비 공구. 만료 뒤 깎은 벽은 마모 공구 품질", tlr.life_used_max * 100.0));
+    }
+    if tlr.peak_stress_ratio >= 0.6 && !tlr.failed {
+        flag(
+            &mut flags,
+            "body_stress_high",
+            1,
+            tlr.peak_stress_ratio,
+            "< 0.6",
+            format!(
+                "공구 몸체 최대 주응력 {:.0} MPa = 정적 유효 강도 {:.0} MPa 의 {:.0}% ({}) — 채터·런아웃·칩 막힘 같은 순간 하중 증가에 여유가 작다 (피로 한도 {:.0} MPa)",
+                tlr.peak_stress_mpa,
+                tlr.strength.static_mpa(),
+                tlr.peak_stress_ratio * 100.0,
+                tlr.critical_section,
+                tlr.strength.fatigue_mpa()
+            ),
+        );
+    }
+    if tlr.fatigue_damage >= 0.3 && !tlr.failed {
+        flag(&mut flags, "body_fatigue_high", 1, tlr.fatigue_damage, "< 0.3", format!("회전 굽힘 피로 누적 {:.2} (1 이면 파손) — 같은 공구로 이 작업을 {:.0}번 더 하면 피로 파손", tlr.fatigue_damage, ((1.0 - tlr.fatigue_damage) / tlr.fatigue_damage.max(1e-9)).floor()));
+    }
+    if tlr.chip_detected > 0 {
+        let cf = &tlr.chip_factors_mean;
+        flag(
+            &mut flags,
+            "chipping_detected",
+            2,
+            tlr.chip_detected as f64,
+            "0",
+            format!(
+                "부하 감시가 치핑을 잡아 {} {}회 (누적 치핑 확률 {:.0}% 도달) — 이 조건은 VB 한계보다 치핑이 공구 수명을 정함, 치핑 지점 앞 벽·바닥 검사 필요. 평균 배수 채터 ×{:.1} · 응력 ×{:.1} · 경도 ×{:.1} · 적합도 ×{:.1} 중 큰 것을 낮추는 조건 변경",
+                if tlr.policy == crate::profile::ToolLifePolicy::ChangeTool { "공구 교체" } else { "정지" },
+                tlr.chip_detected,
+                crate::toollife::CHIP_FAILURE_P * 100.0,
+                cf.chatter,
+                cf.stress,
+                cf.hardness,
+                cf.fit
+            ),
+        );
+    }
+    if tlr.chip_probability >= crate::toollife::CHIP_WARN_P && !tlr.failed {
+        let cf = &tlr.chip_factors_mean;
+        flag(
+            &mut flags,
+            "chipping_risk",
+            1,
+            tlr.chip_probability,
+            "< 0.5",
+            format!(
+                "이 작업 동안 날 치핑 누적 확률 {:.0}% (평균 배수 채터 ×{:.1} · 응력 ×{:.1} · 경도 ×{:.1} · 열균열 ×{:.1} · 한계 초과 ×{:.1} · 적합도 ×{:.1}) — 2차 전 M00 에서 날 확인",
+                tlr.chip_probability * 100.0,
+                cf.chatter,
+                cf.stress,
+                cf.hardness,
+                cf.thermal,
+                cf.worn,
+                cf.fit
+            ),
+        );
+    }
+    if let Some(r) = tlr.load_ratio_at_life_end {
+        if r < crate::toollife::LOAD_ALARM_RATIO {
+            flag(
+                &mut flags,
+                "load_monitor_blind",
+                0,
+                r,
+                "≥ 1.2",
+                format!(
+                    "수명 판정 시점의 절삭 동력이 새 날의 ×{:.2} 뿐 — 부하 감시(학습 부하 1.2~1.25배 경보)로는 이 조건의 마모를 못 잡는다 (얇은 칩·정삭: 플랭크 마찰 몫이 동력에서 작음) → 시간·횟수 수명 관리나 공구 측정이 필요",
+                    r
+                ),
+            );
+        }
+    }
+    // 표면 무결성: 마모가 커지면 피삭재 쪽 손상이 생긴다 (리서치 정리 — 고경도 백층 VB 0.2 → 4.5 µm · 0.4 → 11.8 µm,
+    // IN718 VB 0.3 에서 압축 잔류응력 층 ~120 µm, 노치 0.2 mm 에서 경화층 230 µm, 스테인리스 가공경화층 50~200 µm, Ti 변형층 10~50 µm,
+    // 알루미늄 버 높이 수명 말기 2~3배, CFRP VB 0.1~0.15 위에서 박리·미절단 섬유)
+    let vb_seen = tlr.retired.iter().map(|r| r.vb_band_mm).fold(rep.vb_end_mm, f64::max);
+    let group = crate::pairref::WpGroup::of(&ctx.wp);
+    let integrity: Option<(f64, &str)> = match group {
+        crate::pairref::WpGroup::Hardened => Some((0.2, "백층(white layer) ≥ 4 µm · 열영향층 10~36 µm")),
+        crate::pairref::WpGroup::Nickel => Some((0.25, "압축 잔류응력 층 ~120 µm · 노치 경화층 ~230 µm")),
+        crate::pairref::WpGroup::Stainless => Some((0.2, "가공경화층 50~200 µm 가 깊어짐")),
+        crate::pairref::WpGroup::Titanium => Some((0.2, "소성 변형층 10~50 µm")),
+        crate::pairref::WpGroup::Cfrp => Some((0.15, "층간 박리·미절단 섬유")),
+        crate::pairref::WpGroup::Aluminum => Some((0.2, "버 높이 2~3배")),
+        _ => None,
+    };
+    if let Some((th_vb, what)) = integrity {
+        if vb_seen >= th_vb {
+            flag(&mut flags, "surface_integrity_risk", 1, vb_seen, &format!("VB < {:.2} mm", th_vb), format!("이 작업의 최대 VB {:.3} mm ≥ {:.2} mm — {} (치수·조도와 별개의 피삭재 손상, 단면 검사·잔류응력 측정으로 확인)", vb_seen, th_vb, what));
+        }
+    }
+    // ---- 용도 적합도 ----
+    let fit = crate::appfit::evaluate(t, &ctx.wp, false);
+    if fit.verdict >= 1 {
+        flag(&mut flags, "tool_application_fit", fit.verdict.min(2), fit.score, "적합", fit.summary());
+    }
+    if t.geometry_from_workpiece {
+        flag(
+            &mut flags,
+            "tool_geometry_assumed",
+            0,
+            0.0,
+            "공구 사양 입력",
+            format!(
+                "공구 경사각 {:.0}° · 여유각 {:.0}° · 날끝 반경 {:.1} µm 중 입력하지 않은 값은 {} 기본값 — 이 소재용으로 설계된 공구라고 가정했다 (용도 적합도가 실제보다 좋게 나올 수 있음)",
+                t.rake_deg,
+                t.clearance_deg,
+                t.edge_radius_um,
+                ctx.wp.label
+            ),
+        );
+    }
+    let unknowns = unknown_items(profile, ctx, rep, &nominal, &pair);
+
     SimAudit {
         version: AUDIT_VERSION,
         inputs,
@@ -1339,7 +1599,145 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         flags,
         measure_next,
         pair,
+        tool_life,
+        fit,
+        unknowns,
     }
+}
+
+/// 측정 없이는 정할 수 없는 값 — 이 작업에서 쓴 값, 그럴 법한 범위, 결과에 주는 영향, 가장 싼 측정.
+/// 범위·영향의 근거: 홀더·측정기 제조사 사양, 공구 공차(e8/h10), 정밀가공 오차원 정리 (`docs/tool-life-and-pair-matrix.md`)
+pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, nominal: &CutAnalysis, pair: &crate::pairref::PairSummary) -> Vec<UnknownItem> {
+    let t = &ctx.tool;
+    let mut v: Vec<UnknownItem> = Vec::new();
+    let mut add = |key: &str, used: String, range: &str, effect: String, resolve: &str| {
+        v.push(UnknownItem { key: key.into(), used, range: range.into(), effect, resolve: resolve.into() });
+    };
+    let e_um = t.runout_ecc_mm() * 1000.0;
+    add(
+        "runout_tir_um",
+        format!("TIR {:.1} µm ({})", t.runout_um, pair.runout_source),
+        "열박음·유압 1.5 (P95 3) · ER UP 3 (6) · ER 표준 6 (12) µm, 클램프마다 달라짐",
+        format!(
+            "벽 과삭 0.85·e = {:.1} µm (TIR 3 → {:.1} · 12 → {:.1} µm), 표면 형성 날 수·Ra, 날별 칩 두께 차 = TIR",
+            0.85 * e_um,
+            0.85 * 1.5,
+            0.85 * 6.0
+        ),
+        "다이얼 게이지로 1×D 에서 회전 TIR, 또는 회전 레이저 측정 (클램프할 때마다)",
+    );
+    if !t.runout_compensated {
+        add(
+            "tool_radius_eff_um",
+            "공칭 반경 (회전 측정 없음)".into(),
+            "Ø6~18 공차 e8 22~27 µm · h10 58~70 µm (반경 ±5~35 µm)",
+            "벽 위치에 그대로 더해짐 — 공차 20 µm 이하 정삭은 이 값 하나로 공차를 넘을 수 있음".into(),
+            "회전 상태 레이저 공구 측정 (공구 설정 '반경 회전 측정' 체크)",
+        );
+    }
+    add(
+        "tool_length_um",
+        "길이 보정 오차 0 으로 가정".into(),
+        "돌출 반복도 < 10 µm (재클램프), 측정기 ±0.5~2 µm",
+        "바닥(Z) 높이 오차 — 벽 치수에는 영향 없음".into(),
+        "레이저·접촉식 공구 길이 측정 (재클램프마다)",
+    );
+    let st = &nominal.stability;
+    if !st.measured {
+        add(
+            "frf_fn_zeta_k",
+            format!("fn {:.0} Hz · k {:.2} N/µm · ζ {:.3} (모델 추정)", st.fn_hz, st.k_n_per_um, t.damping_ratio),
+            "ζ 0.01~0.05 (공구마다 ±50 %), fn 은 돌출 1 mm 당 약 5 % 이동",
+            format!("채터 여유 공칭 {:.2} → ζ ×0.5~×1.5 이면 약 {:.2}~{:.2} (치핑 위험·마모 배수·떨림 자국이 따라 바뀜)", st.margin, st.margin * 0.5, st.margin * 1.5),
+            "충격 해머 + 가속도계 탭 테스트 (공구당 약 15 분)",
+        );
+    }
+    add(
+        "edge_radius_um",
+        format!("{:.1} µm (호닝 + 코팅 {:.1} µm × 0.8 추정{})", t.edge_radius_um, t.coating.thickness_um, if t.geometry_from_workpiece { ", 피삭재 기본값" } else { "" }),
+        "±30 % (호닝·코팅 배치마다 다름, 5~30 µm)",
+        format!("최소 칩 두께 {:.1}±{:.1} µm · 날끝 힘 ±14 % · 용도 적합도(치핑)", ctx.wp.min_chip_ratio * t.edge_radius_um, 0.3 * ctx.wp.min_chip_ratio * t.edge_radius_um),
+        "광학 날끝 측정 또는 레플리카 현미경",
+    );
+    if rep.vb_start_mm > 0.0 || rep.tool_life.retired.iter().any(|r| r.vb_start_mm > 0.0) {
+        add(
+            "vb_reused_tool",
+            format!("VB {:.3} mm (공구 개체 누적 시뮬레이션)", rep.tool_life.retired.first().map(|r| r.vb_start_mm).unwrap_or(rep.vb_start_mm)),
+            "시뮬레이션 누적은 실측 보정 전 σ_ln 0.5",
+            "이어 쓰는 공구의 시작 마모 — 수명 판정·벽 오차의 출발점".into(),
+            "공구 현미경 VB, 또는 레이저 반경 손실 ÷ (tanα/(1−tanα·tanγ))",
+        );
+    }
+    add(
+        "machine_thermal_um",
+        "예열·열보정된 기계로 가정 (0)".into(),
+        "XY 2~10 µm · Z 5~40 µm (보정 없음), 시상수 20~60 분, 정지 5 분 뒤 다시 안정까지 6~7 분",
+        "벽 위치·바닥 높이 드리프트 — 아침 첫 부품·긴 정지 뒤".into(),
+        "작업 시작과 정지 뒤 기준구(datum sphere) 프로빙",
+    );
+    add(
+        "part_temp_at_finish",
+        format!("모델 소재 온도 {:.1}°C (덩어리 정상 상승)", rep.wp_temp_end_c),
+        "플러드 +0.5~3 K (τ < 2 분) · 건식·MQL +5~30 K (τ 20~80 분)",
+        format!("치수 오차 = α·L·ΔT ({:.1} µm/m·K × 크기)", ctx.wp.expansion * 1e6),
+        "정삭 직전 소재 온도계, 또는 그 온도에서 프로브 측정",
+    );
+    add(
+        "coolant_delivery",
+        format!("{} 공칭 (노즐이 절삭점에 닿는다고 가정)", ctx.coolant.method.label()),
+        "Ti·Ni 공구 수명 1.5~3배 차이",
+        "계면 온도·확산 마모·칩 배출".into(),
+        "노즐 방향 확인 + 스핀들 동력·온도 기록",
+    );
+    add(
+        "fixture_wall_stiffness",
+        format!("고정 강성 {:.1} N/µm ({:?})", ctx.fixture_stiffness_n_per_um, profile.workpiece_setup.clamping),
+        "0.05~5 N/µm",
+        format!("고정 휨 {:.2} µm · 얇은 벽 휨", nominal.fixture_deflection_um),
+        "정삭 위치에서 탭·밀기 시험",
+    );
+    add(
+        "lot_hardness",
+        format!("{} 대표 경도 {:.0} HRC", ctx.wp.label, ctx.wp.hardness_hrc),
+        "로트마다 경도 ±5~10 %",
+        "공구 수명 ±20~40 % (Taylor C 가 움직임)".into(),
+        "로트마다 경도 시험",
+    );
+    add(
+        "corner_feed_engagement",
+        "합성 경로 — 제어기 코너 감속·코너 결합 증가는 원호 보간 이송 보정만".into(),
+        "코너 이송 20~60 % 로 감속, 안쪽 코너 결합 2~3배",
+        "코너의 힘·마모·채터·벽 오차".into(),
+        "제어기 이송 기록(트레이스)",
+    );
+    let spread = crate::pairref::life_spread(ctx, rep.chatter_fraction, rep.min_chatter_margin, false);
+    add(
+        "tool_life_scatter",
+        format!("σ_ln {:.2} (공구 간) · 모델 {:.2}", spread.sigma_scatter, spread.sigma_model),
+        "생산 현장 CV 0.25~0.5 (Weibull β 2~4.5), 시험실 반복 β 6~9",
+        format!("보수 교체 시점 = 중앙값 × {:.2} (P10) — 버리는 수명 23~47 %", spread.p10_total),
+        "교체할 때마다 절삭 시간과 VB 기록 → 분포 맞춤",
+    );
+    let tlr = &rep.tool_life;
+    add(
+        "tool_body_strength",
+        format!("{} 항절력 {:.0} MPa → 정적 {:.0} · 피로 {:.0} MPa", tlr.strength.label, tlr.strength.trs_mpa, tlr.strength.static_mpa(), tlr.strength.fatigue_mpa()),
+        "등급·연삭 상태·Weibull 계수(10~20)에 따라 ±15~20 %",
+        format!("파손 판정 — 이 작업 최대 주응력 비 {:.2}, 피로 누적 {:.3}", tlr.peak_stress_ratio, tlr.fatigue_damage),
+        "공구 제조사 등급 자료 (항절력·K_IC)",
+    );
+    add(
+        "chipping_hazard",
+        format!(
+            "기본 위험 {:.0} % (수명까지) × 배수 (채터·응력·경도·열균열·한계 초과·적합도), 누적 {:.0} % 에서 치핑으로 봄 (감시 정책은 부하 감시가 이때 잡는다고 가정)",
+            tlr.params.chip_base_p * 100.0,
+            crate::toollife::CHIP_FAILURE_P * 100.0
+        ),
+        "검증된 모델 없음 (확신도 낮음) · 작은 치핑·얇은 칩 정삭은 부하 감시가 놓칠 수 있음",
+        format!("치핑 누적 확률 {:.0} % · 치핑 감지 {}회", tlr.chip_probability * 100.0, tlr.chip_detected),
+        "같은 조건 공구 10자루 이상의 수명·치핑 기록, 부하 감시 파손 경보 로그와 날 사진 대조",
+    );
+    v
 }
 
 /// 테스트·콘솔 로그용 사람이 읽는 줄
@@ -1571,8 +1969,76 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
         pr.vb_limit_mm,
         pr.vb_limit_basis
     ));
+    let tl = &a.tool_life;
+    v.push(format!(
+        "[AUDIT] 수명: 정책 {} · 상태 {} · 공구 {}개 (교체 {}) · 경로 완료 {:.0}%{} | VB 한계 {:.2} · 3차 시작 {:.2} · 붕괴 {:.2} mm (배수 ×{:.1}, 최대 ×{:.2}) · 수명 사용 최대 {:.0}% 끝 {:.0}% | 몸체 {} 항절력 {:.0} → 정적 {:.0} · 피로 {:.0} MPa · 최대 주응력 {:.0} MPa (×{:.2}, {}) · 피로 누적 {:.3} | 치핑 P {:.0}% (채터 ×{:.1} 응력 ×{:.1} 경도 ×{:.1} 열 ×{:.1} 초과 ×{:.1} 적합 ×{:.1}) | 부하(새 날 대비 동력) 최대 ×{:.2} · 판정 시점 {} · 1.2배 경보 {}",
+        tl.policy,
+        tl.state,
+        tl.tools_used,
+        tl.tool_changes,
+        tl.completed_fraction * 100.0,
+        if tl.failed {
+            format!(" · 파손({})", tl.failure_cause)
+        } else if tl.chip_detected > 0 {
+            format!(" · 치핑 감지 {}회", tl.chip_detected)
+        } else if tl.expired {
+            " · 수명 관리 만료".to_string()
+        } else {
+            String::new()
+        },
+        tl.vb_limit_mm,
+        tl.vb_accel_mm,
+        tl.vb_collapse_mm,
+        tl.accel_mult,
+        tl.accel_factor_max,
+        tl.life_used_max * 100.0,
+        tl.life_used_end * 100.0,
+        if tl.body_label.is_empty() { "-" } else { tl.body_label.as_str() },
+        tl.trs_mpa,
+        tl.static_mpa,
+        tl.fatigue_mpa,
+        tl.peak_stress_mpa,
+        tl.peak_stress_ratio,
+        if tl.critical_section.is_empty() { "-" } else { tl.critical_section.as_str() },
+        tl.fatigue_damage,
+        tl.chip_probability * 100.0,
+        tl.chip_factors.chatter,
+        tl.chip_factors.stress,
+        tl.chip_factors.hardness,
+        tl.chip_factors.thermal,
+        tl.chip_factors.worn,
+        tl.chip_factors.fit,
+        tl.load_ratio_max,
+        tl.load_ratio_at_life_end.map(|r| format!("×{:.2}", r)).unwrap_or_else(|| "-".into()),
+        tl.load_alarm_t_s.map(|s| format!("{:.1} s", s)).unwrap_or_else(|| "없음".into())
+    ));
+    for e in tl.events.iter() {
+        v.push(format!("[EOL] {}", e));
+    }
+    let fit = &a.fit;
+    v.push(format!(
+        "[AUDIT] 적합도: {} × 모재 {} — {} (점수 {:.2}, 약한 쪽 {:.2} · 무딘 쪽 {:.2} 단계) · 마모 ×{:.2} · 치핑 ×{:.1} · 구성인선 ×{:.2} · 조도 ×{:.2} · 칩 막힘 {:.0}%{}",
+        fit.wp_group,
+        fit.substrate,
+        fit.verdict_label(),
+        fit.score,
+        fit.sum_weak,
+        fit.sum_blunt,
+        fit.wear_factor,
+        fit.chip_factor,
+        fit.bue_factor,
+        fit.ra_factor,
+        fit.evac_risk * 100.0,
+        {
+            let r = fit.reasons();
+            if r.is_empty() { String::new() } else { format!(" | {}", r.join(" · ")) }
+        }
+    ));
     for fl in a.flags.iter() {
         v.push(format!("[AUDIT][{}] {} (값 {:.3}, 기대 {}) — {}", ["정보", "주의", "신뢰불가"][fl.severity.min(2) as usize], fl.id, fl.value, fl.expected, fl.message));
+    }
+    for u in a.unknowns.iter() {
+        v.push(format!("[UNKNOWN] {} · 사용 {} · 범위 {} · 영향 {} → {}", u.key, u.used, u.range, u.effect, u.resolve));
     }
     for m in a.measure_next.iter() {
         v.push(format!("[AUDIT][다음 실측] {} · 현재 근거: {} → {}", m.target, m.basis, m.measurement));
