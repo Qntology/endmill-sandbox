@@ -51,6 +51,7 @@
 		  --panel-header-h: 36px;
 		  --statusbar-h: 28px;
 		  --rail-w: 56px;
+		  --bar-h: 38px;
 		  --left-min: 220px;
 		  --left-w: 280px;
 		  --right-min: 260px;
@@ -113,7 +114,7 @@
 
 		/* ── 뷰포트 HUD: 상태와 좌표를 뷰포트 위에 모은다 ─────────────────── */
 		.vp-hud { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; align-items: center; justify-content: space-between; gap: 8px; pointer-events: none; }
-		.vp-hud > div { display: flex; align-items: center; background: rgba(17, 17, 19, 0.84); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 8px; }
+		.vp-hud > div { pointer-events: auto; cursor: help; display: flex; align-items: center; background: rgba(17, 17, 19, 0.84); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 8px; }
 		.status-indicators { gap: 8px; padding: 6px 11px; }
 		.status-text { font-family: var(--font-mono); font-size: 0.64rem; letter-spacing: 0.08em; color: var(--text-dim); }
 		.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px rgba(95, 185, 140, 0.16); }
@@ -232,42 +233,30 @@
 		  position: relative;
 		}
 
-		.panel-right.collapsed {
-		  width: 0 !important;
-		  min-width: 0 !important;
-		  overflow: visible !important;
-		}
+		/* 오른쪽은 접으면 열과 간격을 모두 비워 가운데가 끝까지 채우고, 펼치기 버튼은 가운데 툴바 끝(.vt-reopen)에 둔다.
+		   아래는 접어도 머리글 한 줄이 남는다. (예전처럼 토글을 옆 패널 위로 띄우면 같은 배경색에 묻혔다) */
+		.app-layout:has(.panel-right.collapsed) { grid-template-columns: var(--left-w) var(--resizer-size) minmax(0, 1fr) 0 0; }
+		.app-layout > .panel-right.collapsed,
+		.app-layout:has(.panel-right.collapsed) .resizer-v.right { display: none; }
 
 		.panel-bottom.collapsed {
-		  height: 0 !important;
+		  height: var(--bar-h) !important;
 		  min-height: 0 !important;
-		  overflow: visible !important;
 		}
-
-		.app-layout > .panel-right.collapsed,
-		.app-layout > .panel-bottom.collapsed {
-		  background: transparent;
-		  border-color: transparent;
-		}
-
-		/* 접혔을 때 내용물이 억지로 줄어들며 비정상적인 세로 길이를 생성하지 않도록 아예 숨김 처리 */
-		.panel-right.collapsed > *:not(.panel-toggle-btn),
-		.panel-bottom.collapsed > *:not(.panel-toggle-btn) {
-		  display: none !important;
-		}
+		.panel-bottom.collapsed #secOutput { display: none !important; }
 
 		.panel-toggle-btn {
 		  position: absolute;
 		  top: 8px;
-		  right: 6px;
-		  width: 24px;
-		  height: 24px;
-		  border: 1px solid transparent;
-		  background: transparent;
-		  color: var(--text-muted);
+		  right: 8px;
+		  width: 26px;
+		  height: 26px;
+		  border: 1px solid var(--border-light);
+		  background: var(--bg-card);
+		  color: var(--text-dim);
 		  font-size: 10px;
 		  cursor: pointer;
-		  border-radius: var(--radius-sm);
+		  border-radius: var(--radius);
 		  display: flex;
 		  align-items: center;
 		  justify-content: center;
@@ -275,14 +264,12 @@
 		  transition: background 0.15s, color 0.15s, border-color 0.15s;
 		}
 
-		/* 접혔을 때 토글 버튼이 중앙 영역 쪽으로 튀어나오도록 위치 변경 */
-		.panel-right.collapsed .panel-toggle-btn { right: auto; left: -30px; background: var(--bg-panel); border-color: var(--border-light); }
-		.panel-bottom.collapsed .panel-toggle-btn { top: -30px; right: 6px; background: var(--bg-panel); border-color: var(--border-light); }
-
 		.panel-toggle-btn:hover {
-		  background: var(--bg-hover);
+		  background: var(--bg-active);
+		  border-color: var(--border-hover);
 		  color: var(--text-bright);
 		}
+		.panel-bottom > .panel-toggle-btn { top: 5px; }
 		/* 패널 제목줄: 이 영역이 무엇을 하는 곳인지 한 줄로 말한다 */
 		.panel-title {
 		  display: flex;
@@ -314,7 +301,9 @@
 		.panel-left.collapsed .menu-btn { justify-content: center; padding: 10px 0; }
 		.panel-left.collapsed .panel-section-header { justify-content: center; padding: 0; border-top-color: transparent; }
 		.app-layout:has(.panel-left.collapsed) .resizer-v.left { pointer-events: none; }
-		.app-layout:has(.panel-right.collapsed) .viewport-toolbar { padding-right: 34px; }
+		.app-layout:has(.panel-bottom.collapsed) .resizer-h { pointer-events: none; }
+		.vt-btn.vt-reopen { display: none; }
+		.app-layout:has(.panel-right.collapsed) .vt-btn.vt-reopen { display: inline-flex; }
 
 		/* ── 패널 섹션(아코디언) — 카드 제목 줄 ─────────────────────── */
 		.panel-section-header {
@@ -370,6 +359,52 @@
 		  text-overflow: ellipsis;
 		}
 		.panel-section-header .chevron { flex-shrink: 0; }
+		.step-no.sec-icon svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+		/* 영역 설명 ? 와 툴팁 */
+		.help {
+		  display: inline-flex;
+		  align-items: center;
+		  justify-content: center;
+		  flex-shrink: 0;
+		  width: 15px;
+		  height: 15px;
+		  margin-left: 6px;
+		  border: 1px solid var(--border-strong);
+		  border-radius: 50%;
+		  color: var(--text-muted);
+		  font-family: var(--font-sans);
+		  font-size: 9px;
+		  font-weight: 600;
+		  line-height: 1;
+		  letter-spacing: 0;
+		  text-transform: none;
+		  cursor: help;
+		  vertical-align: middle;
+		  transition: color 0.15s, border-color 0.15s;
+		}
+		.help:hover, .help:focus-visible { color: var(--text-bright); border-color: var(--border-hover); outline: none; }
+		.sec-title .help { margin-left: 0; }
+		.panel-left.collapsed .help { display: none !important; }
+		.tip-pop {
+		  position: fixed;
+		  z-index: 1000;
+		  max-width: 300px;
+		  padding: 9px 11px;
+		  background: #1c1c1f;
+		  border: 1px solid var(--border-strong);
+		  border-radius: 8px;
+		  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+		  color: var(--text);
+		  font-size: 0.7rem;
+		  line-height: 1.6;
+		  white-space: pre-line;
+		  pointer-events: none;
+		  opacity: 0;
+		  transform: translateY(2px);
+		  transition: opacity 0.12s, transform 0.12s;
+		}
+		.tip-pop.show { opacity: 1; transform: none; }
+		.tip-pop b { display: block; margin-bottom: 3px; color: var(--text-bright); }
 
 		.panel-section-header .chevron {
 		  transition: transform var(--panel-transition);
@@ -996,7 +1031,21 @@
 		.ts-note { font-size: 0.62rem; color: var(--text-muted); line-height: 1.5; margin-top: 2px; }
 		.ts-bar { height: 6px; background: var(--bg-darkest); border: 1px solid var(--border-cell); border-radius: 999px; overflow: hidden; margin: 4px 0; }
 		.ts-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--success), var(--warning), var(--danger)); }
-		.ts-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+		.ts-actions { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; justify-content: space-between; margin-top: 2px; }
+		.ts-db { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border-cell); font-size: 0.64rem; color: var(--text-dim); }
+		.ts-ev { display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; padding: 2px 0; font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-muted); }
+		.ts-ev span:nth-child(3) { color: var(--text-dim); }
+		.ts-reset { margin: 10px 0 6px; }
+		.ti-row { padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--border-cell); border-radius: 8px; background: var(--bg-card); }
+		.ti-row.cur { border-color: var(--border-hover); }
+		.ti-row.retired { opacity: 0.6; }
+		.ti-head { display: flex; align-items: baseline; gap: 6px; font-size: 0.7rem; color: var(--text); min-width: 0; }
+		.ti-head b { font-family: var(--font-mono); font-size: 0.64rem; color: var(--text-bright); }
+		.ti-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		.ti-gen { flex-shrink: 0; font-size: 0.6rem; color: var(--text-muted); }
+		.ti-prof { margin: 1px 0 2px; font-size: 0.62rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		.ti-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.62rem; color: var(--text-dim); }
+		.ti-ret { flex-shrink: 0; font-size: 0.6rem; color: var(--text-muted); }
 		.viz-swatch { width: 90px; height: 8px; border-radius: 999px; border: 1px solid var(--border-light); }
 		.vp-busy { position: absolute; left: 50%; top: 52px; transform: translateX(-50%); background: rgba(17, 17, 19, 0.86); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 999px; padding: 4px 12px; font-family: var(--font-mono); font-size: 0.66rem; color: var(--warning); pointer-events: none; }
 		.vp-prep { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); width: min(460px, 86%); background: rgba(17, 17, 19, 0.95); backdrop-filter: blur(8px); border: 1px solid var(--border-light); border-radius: 12px; padding: 16px 18px; z-index: 30; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); }
@@ -1056,15 +1105,15 @@
 	    </div>
 	    <div class="panel-scroll">
 	    <nav class="menu-group" aria-label="화면 전환">
-	      <button class="menu-btn active" id="menu-machining" onclick="switchView('machining', this)" title="가공"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>가공</span></button>
-	      <button class="menu-btn" id="menu-precision" onclick="switchView('precision', this)" title="정밀 분석"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16"/><path d="M8 15l3.5-4 3 2.5L19 8"/></svg><span>정밀 분석</span></button>
-	      <button class="menu-btn" id="menu-reference" onclick="switchView('reference', this)" title="참고 자료"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h10.5a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10.5"/></svg><span>참고 자료</span></button>
-	      <button class="menu-btn" id="menu-settings" onclick="switchView('settings', this)" title="환경·모델 설정"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>환경·모델 설정</span></button>
+	      <button class="menu-btn active" id="menu-machining" onclick="switchView('machining', this)" data-tip-title="가공" data-tip="기본 작업 화면입니다. 왼쪽에서 구성을 고르고, 가운데에서 경로를 재생하고, 오른쪽에서 조건과 공구 마모를 봅니다."><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>가공</span></button>
+	      <button class="menu-btn" id="menu-precision" onclick="switchView('precision', this)" data-tip-title="정밀 분석" data-tip="공구·금형 이미지와 측정 로그를 넣어 형상 벡터, 마찰·냉각·마모, 시계열 예측, 판단(SDS), 라이브러리·큐레이션을 탭별로 봅니다."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16"/><path d="M8 15l3.5-4 3 2.5L19 8"/></svg><span>정밀 분석</span></button>
+	      <button class="menu-btn" id="menu-reference" onclick="switchView('reference', this)" data-tip-title="참고 자료" data-tip="용도별 권장 공구 등급, 주요 브랜드·가격 등급, 샘플 공구 사양 표입니다."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h10.5a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10.5"/></svg><span>참고 자료</span></button>
+	      <button class="menu-btn" id="menu-settings" onclick="switchView('settings', this)" data-tip-title="환경·모델 설정" data-tip="작업장 환경(온도·습도·칠러), 모델 다운로드·삭제, 깊이·마모 표시 색상표를 정합니다."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>환경·모델 설정</span></button>
 	    </nav>
-	    <div class="group-label">준비 · 무엇으로 깎을지</div>
+	    <div class="group-label">준비 · 무엇으로 깎을지<span class="help" tabindex="0" data-tip="① → ④ 순서로 무엇으로 깎을지 정합니다. 접힌 단계 오른쪽에 지금 고른 값이 보이고, 공구·원소재를 바꾸면 절삭 조건을 다시 추천합니다.">?</span></div>
 
 	    <div class="panel-section-header" data-section="secPreset">
-	      <span class="sec-title"><span class="step-no">1</span><span class="sec-name">프로필</span></span><span class="step-sum" id="sum-profile"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">1</span><span class="sec-name">프로필</span><span class="help" tabindex="0" data-tip="프로필은 이 프로젝트에서 쓰는 작업 구성(공구·원소재·냉각·조건)입니다. 목록에서 고르면 화면 전체가 그 프로필 기준으로 바뀝니다.&#10;수정 — 구성 바꾸기 · 복제 · 프리셋으로 저장 · 삭제&#10;＋ 새로 추가 — 프리셋에서 시작하거나 직접 구성">?</span></span><span class="step-sum" id="sum-profile"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secPreset">
 	      <div id="preset-tree"><button class="tree-add" onclick="profileViewOpen('new')">＋ 새로 추가</button></div>
@@ -1072,12 +1121,11 @@
 	    </div>
 
 	    <div class="panel-section-header collapsed" data-section="secToolList">
-	      <span class="sec-title"><span class="step-no">2</span><span class="sec-name">공구</span></span><span class="step-sum" id="sum-tool"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">2</span><span class="sec-name">공구</span><span class="help" tabindex="0" data-tip="현재 프로필에 쓸 엔드밀을 고릅니다. 고르면 사양이 아래에 보이고 절삭 조건을 다시 추천합니다. 목록에 없으면 '커스텀 공구 만들기'로 직접 만듭니다.&#10;이 공구의 마모는 오른쪽 '공구 마모'에서 봅니다.">?</span></span><span class="step-sum" id="sum-tool"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body collapsed" id="secToolList">
 	      <div id="tool-tree"></div>
 	      <div id="tool-spec-panel"></div>
-	      <div id="tool-state-panel"><div class="ts-note">공구 개체 상태를 불러오는 중입니다</div></div>
 	      <details class="sub-block">
 	        <summary>＋ 커스텀 공구 만들기</summary>
 	        <div class="sub-body">
@@ -1175,7 +1223,7 @@
 	    </div>
 
 	    <div class="panel-section-header collapsed" data-section="secMaterial">
-	      <span class="sec-title"><span class="step-no">3</span><span class="sec-name">원소재</span></span><span class="step-sum" id="sum-material"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">3</span><span class="sec-name">원소재</span><span class="help" tabindex="0" data-tip="깎을 소재(재질·크기·클램핑)를 고릅니다. 고르면 절삭 조건을 다시 추천합니다. '커스텀 원소재 만들기'로 크기·경도·공차를 직접 넣을 수 있습니다.">?</span></span><span class="step-sum" id="sum-material"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body collapsed" id="secMaterial">
 	      <div id="workpiece-tree"></div>
@@ -1232,7 +1280,7 @@
 	    </div>
 
 	    <div class="panel-section-header collapsed" data-section="secCoolant">
-	      <span class="sec-title"><span class="step-no">4</span><span class="sec-name">냉각 · 환경</span></span><span class="step-sum" id="sum-coolant"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">4</span><span class="sec-name">냉각 · 환경</span><span class="help" tabindex="0" data-tip="냉각 방식을 고르면 기본 압력·유량으로 바로 적용됩니다. 세부값을 바꾼 뒤에는 '세부값을 프로필에 적용'을 누르세요.&#10;실내 온도·습도는 마찰·산화·치수 오차 계산에 들어갑니다.">?</span></span><span class="step-sum" id="sum-coolant"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body collapsed" id="secCoolant">
 	      <div id="coolant-tree"></div>
@@ -1292,6 +1340,7 @@
 	    <div class="viewport-toolbar">
 	      <div class="vt-row">
 	        <span class="step-no">6</span>
+	        <span class="help" tabindex="0" data-tip="경로 패턴을 고르고 재생하면 1차 계산을 한 뒤 재생합니다. 속도는 실제 가공 시간 대비 배속이고, 슬라이더로 위치를 옮깁니다.&#10;재생이 끝나면 '2차 보정 →'에서 치수 보정 판단을 봅니다.">?</span>
 	        <span class="vt-label">경로</span>
 	        <select id="tp-pattern" onchange="renderToolpath2D()">
 	          <option value="pocket_zigzag">포켓 지그재그</option>
@@ -1319,9 +1368,11 @@
 	        <input type="range" id="vt-seek" min="0" max="1000" value="0" oninput="animSeek(this.value)" title="재생 위치" />
 	        <span class="vt-time" id="vt-time">0.0 / 0.0 s</span>
 	        <button class="vt-btn vt-next" id="vt-comp" onclick="compShow(true)" disabled title="재생(계산 실행) 후 2차 보정 판단·분포·로그 보기">2차 보정 →</button>
+	        <button class="vt-btn vt-reopen" onclick="panelOpen('panelRight')" data-tip-title="조건 패널 펼치기" data-tip="접어 둔 오른쪽 패널(현재 구성 · 공구 마모 · ⑤ 절삭 조건)을 다시 엽니다.">◀ 조건</button>
 	      </div>
 	      <div class="vt-row">
 	        <span class="vt-label">표시</span>
+	        <span class="help" tabindex="0" data-tip="뷰포트에 겹쳐 볼 항목입니다.&#10;공구 · 냉각 — 공구 모양과 냉각 분사&#10;열·응력 — 날끝 온도와 절삭력&#10;깊이 — 깎인 깊이를 색 지도·등고선으로&#10;마모 — 날·높이별 마모 (왼쪽 위 미니 창)&#10;시점 — 피트는 정면, 리셋은 기본 각도">?</span>
 	        <button class="vt-btn active" id="tg-tool" onclick="vpToggle('tool')">공구</button>
 	        <button class="vt-btn active" id="tg-coolant" onclick="vpToggle('coolant')">냉각</button>
 	        <button class="vt-btn active" id="tg-heat" onclick="vpToggle('heat')">열·응력</button>
@@ -1337,11 +1388,11 @@
 	    <div class="viewport-canvas-wrap">
 	      <canvas id="tp-canvas"></canvas>
 	      <div class="vp-hud">
-	        <div class="status-indicators">
+	        <div class="status-indicators" data-tip-title="상태" data-tip="READY 대기 · PREPARING 계산 중 · RUNNING 재생 중 · PAUSED 일시정지 · COMPLETE 재생 끝">
 	          <div class="status-dot" id="status-dot"></div>
 	          <span class="status-text" id="status-text">READY</span>
 	        </div>
-	        <div class="dro-display">
+	        <div class="dro-display" data-tip-title="좌표 · 회전수 · 이송" data-tip="재생 위치의 공구 끝 좌표(mm)와 회전수·이송(mm/min)입니다. 급이송 구간은 RPM 0으로 표시됩니다.">
 	          <div class="dro-item"><span class="dro-label">X</span><span class="dro-value" id="dro-x">0.000</span></div>
 	          <div class="dro-item"><span class="dro-label">Y</span><span class="dro-value" id="dro-y">0.000</span></div>
 	          <div class="dro-item"><span class="dro-label">Z</span><span class="dro-value" id="dro-z">0.000</span></div>
@@ -1794,12 +1845,21 @@
 	    <div class="panel-title"><b>조건</b><small>고른 구성으로 어떻게 깎을지</small></div>
 	    <div class="panel-scroll">
 	    <div class="summary-block">
-	      <div class="ct-sec">현재 구성 · ①–④ 요약</div>
+	      <div class="ct-sec ct-sec-row"><span>현재 구성 · ①–④ 요약</span><span class="help" tabindex="0" data-tip="①–④에서 고른 구성과 지금 프로필의 절삭 조건 요약입니다. ⑤ 계산과 ⑥ 시뮬레이션은 이 구성을 기준으로 합니다.">?</span></div>
 	      <div class="ctx-box" id="param-profile">프로필을 불러오는 중...</div>
 	    </div>
 
+	    <div class="panel-section-header" data-section="secToolWear">
+	      <span class="sec-title"><span class="step-no sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.5 16.5a7.5 7.5 0 1 1 15 0"/><path d="M12 16.5l3.5-4.5"/></svg></span><span class="sec-name">공구 마모</span><span class="help" tabindex="0" data-tip="현재 프로필에 끼운 공구 한 자루(공구 개체)의 마모 상태입니다. '시뮬레이션만'을 끈 채 재생할 때마다 마모(VB)·열피로·절삭 시간이 DB(library.sqlite)에 누적됩니다.&#10;공구를 새로 끼웠으면 '마모 초기화'를 누르세요. 이전 기록은 은퇴한 개체로 DB에 남습니다.">?</span></span><span class="step-sum" id="sum-wear"></span><span class="chevron">▼</span>
+	    </div>
+	    <div class="panel-section-body" id="secToolWear">
+	      <div id="tool-state-panel"><div class="ts-note">공구 개체 상태를 불러오는 중입니다</div></div>
+	      <div class="ct-sec ct-sec-row"><span>DB에 기록된 공구 개체<span class="help" tabindex="0" data-tip="프로필마다 공구 자리가 하나씩 있고, 그 자리에 지금 끼워진 공구 개체의 누적 마모입니다. '은퇴 포함'을 켜면 초기화·교체로 물러난 개체도 보입니다.">?</span></span><label class="pv-check"><input type="checkbox" id="ti-retired" onchange="toolInstancesRefresh()" /> 은퇴 포함</label></div>
+	      <div id="tool-instances"><div class="ts-note">불러오는 중입니다</div></div>
+	    </div>
+
 	    <div class="panel-section-header" data-section="secCutCalc">
-	      <span class="sec-title"><span class="step-no">5</span><span class="sec-name">절삭 조건</span></span><span class="step-sum" id="sum-cond"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">5</span><span class="sec-name">절삭 조건</span><span class="help" tabindex="0" data-tip="현재 구성으로 추천 회전수·이송·절입과 힘·온도·수명을 계산합니다. 계산 입력을 바꾸면 프로필은 그대로 두고 가정으로만 계산합니다.&#10;결과를 확인한 뒤 '추천 조건을 프로필에 적용'을 누르면 프로필 조건이 바뀝니다.">?</span></span><span class="step-sum" id="sum-cond"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secCutCalc">
 	      <div class="ctx-box hidden" id="calc-context"></div>
@@ -1870,7 +1930,7 @@
 	    <button class="panel-toggle-btn" data-toggle="panelBottom" title="하단 패널 접기">▼</button>
 
 	    <div class="panel-section-header" data-section="secOutput">
-	      <span class="sec-title"><span class="step-no">7</span><span class="sec-name">출력</span></span><span class="step-sum">G-code · 경고 · 로그 · 프로필</span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">7</span><span class="sec-name">출력</span><span class="help" tabindex="0" data-tip="G-code — 현재 프로필·경로로 만든 NC 프로그램 미리보기와 파일 저장&#10;경고 — 충돌·간섭 등 확인할 점&#10;로그 — 작업 기록&#10;프로필 — 프로필 JSON 조회·저장">?</span></span><span class="step-sum">G-code · 경고 · 로그 · 프로필</span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secOutput">
 	      <div class="bottom-tabs">
@@ -2180,19 +2240,22 @@
 	        }
 	      } else if (targetId === 'panelRight') {
 	        btn.textContent = isCollapsed ? '◀' : '▶';
+	        btn.title = isCollapsed ? '우측 패널 펼치기' : '우측 패널 접기';
 	        if (isCollapsed) {
 	          const currentW = parseInt(getComputedStyle(root).getPropertyValue('--right-w'));
 	          if (currentW > 0) panelStates.right = currentW;
-	          root.style.setProperty('--right-w', '0px');
+	          root.style.setProperty('--right-w', '0px'); // 가운데가 끝까지 채움 — 다시 열기는 툴바의 '◀ 조건'
 	        } else {
 	          root.style.setProperty('--right-w', panelStates.right + 'px');
 	        }
 	      } else if (targetId === 'panelBottom') {
 	        btn.textContent = isCollapsed ? '▲' : '▼';
+	        btn.title = isCollapsed ? '하단 패널 펼치기' : '하단 패널 접기';
 	        if (isCollapsed) {
 	          const currentH = parseInt(getComputedStyle(root).getPropertyValue('--bottom-h'));
-	          if (currentH > 0) panelStates.bottom = currentH;
-	          root.style.setProperty('--bottom-h', '0px');
+	          const barH = getComputedStyle(root).getPropertyValue('--bar-h').trim();
+	          if (currentH > parseInt(barH)) panelStates.bottom = currentH;
+	          root.style.setProperty('--bottom-h', barH); // 머리글 한 줄로 남김
 	        } else {
 	          root.style.setProperty('--bottom-h', panelStates.bottom + 'px');
 	        }
@@ -2201,7 +2264,8 @@
 	  });
 
 	  document.querySelectorAll('.panel-section-header').forEach(function (header) {
-	    header.addEventListener('click', function () {
+	    header.addEventListener('click', function (e) {
+	      if (e.target.closest('.help')) return;
 	      const sectionId = header.getAttribute('data-section');
 	      
 	      // 2. 하단 출력 패널의 아코디언을 누를 경우, 빈 공간이 남지 않도록 하단 패널 전체 접기 기능과 연동
@@ -2215,9 +2279,9 @@
 	      if (!body) return;
 
 	      // 접힌 레일에서 단계 번호를 누르면 패널을 펼치고 그 단계를 연다
-	      const left = document.getElementById('panelLeft');
-	      if (left.classList.contains('collapsed') && left.contains(header)) {
-	        document.querySelector('.panel-toggle-btn[data-toggle="panelLeft"]').click();
+	      const rail = header.closest('.panel-left.collapsed');
+	      if (rail) {
+	        panelOpen(rail.id);
 	        body.classList.remove('collapsed');
 	        header.classList.remove('collapsed');
 	        return;
@@ -3494,11 +3558,12 @@
 	  try { s = await invoke('tool_state', { profileName: getActiveProfile() }); } catch (e) { el.innerHTML = `<div class="ts-note">공구 개체 상태를 읽지 못했습니다: ${esc(e)}</div>`; return; }
 	  TOOLS.state = s;
 	  toolPanelRender();
+	  toolInstancesRefresh();
 	}
 
 	function toolResetLabel() {
 	  const t = TOOLS.state && TOOLS.state.instance;
-	  return t && t.pending_job_id ? '새 공구 장착 완료 (리셋)' : '마모 리셋 (새 공구 장착)';
+	  return t && t.pending_job_id ? '새 공구 장착 완료 (마모 초기화)' : '마모 초기화 (새 공구 장착)';
 	}
 
 	function toolPanelRender() {
@@ -3515,6 +3580,12 @@
 	  const flutes = (m.flute_band_vb_mm || []).map((v, i) => `날${i + 1} ${fmt(v, 3)}`).join(' · ');
 	  const dry = !!(APP.settings && APP.settings.dry_run);
 	  const head = t.id > 0 ? `<b>공구 개체 #${t.id}</b> · ${t.generation}세대` : '<b>새 공구</b> · 아직 가공 기록 없음';
+	  const sum = document.getElementById('sum-wear');
+	  if (sum) sum.textContent = `수명 ${fmt(pct, 0)}% · VB ${fmt(m.vb_band_mm, 3)}`;
+	  const events = s.events || [];
+	  const db = t.id > 0
+	    ? `DB 기록 중 · 공구 개체 #${t.id} · 최근 마모 기록 ${events.length}${events.length >= 40 ? '+' : ''}건${dry ? ' · 지금은 시뮬레이션만이라 새로 쌓지 않음' : ''}`
+	    : (dry ? '시뮬레이션만 모드라 재생해도 DB에 기록하지 않습니다' : '재생하면 이 프로필의 공구 개체가 DB에 만들어지고 마모가 쌓입니다');
 	  el.innerHTML = `<div class="ts-head">${head} · ${esc(s.tool_name)}</div>
 	    <div class="ts-bar"><span class="${cls}" style="width:${pct.toFixed(0)}%"></span></div>
 	    <div class="ts-row">수명 사용 <b class="${cls}">${fmt(pct, 0)}%</b> (지금까지 도달한 최대 · 이 프로필 조건 ${fmt(now, 0)}%) · VB ${fmt(m.vb_band_mm, 3)} / ${fmt(m.vb_limit_mm, 2)} mm · 국부 ${fmt(m.vb_max_mm, 3)} / ${fmt(m.local_limit_mm, 2)} mm</div>
@@ -3526,8 +3597,66 @@
 	    ${s.spec_changed ? '<div class="ts-note sev-1">프리셋의 공구 사양이 바뀌어 다음 작업을 기록할 때 이 개체를 은퇴시키고 새 공구로 시작합니다 (시뮬레이션만이거나 기록 전에 취소하면 그대로 유지)</div>' : ''}
 	    ${(s.lines || []).map(n => `<div class="ts-note">${esc(n)}</div>`).join('')}
 	    ${(m.notes || []).map(n => `<div class="ts-note">${esc(n)}</div>`).join('')}
-	    <div class="ts-actions"><button class="btn btn-sm btn-outline" id="ts-reset" onclick="toolReset()">${toolResetLabel()}</button><button class="btn btn-sm btn-outline" onclick="jobListShow()">가공 기록</button>
+	    <div class="ts-db">${esc(db)}</div>
+	    ${events.slice(0, 4).map(e => `<div class="ts-ev"><span>${esc(tsWhen(e.created_at))}</span><span>${esc(WEAR_EVENT_LABEL[e.kind] || e.kind)}</span><span>VB ${fmt(e.vb_before_mm, 3)} → ${fmt(e.vb_after_mm, 3)}</span><span>${fmt(e.cut_min_after, 1)}분</span></div>`).join('')}
+	    <button class="btn btn-sm btn-outline btn-block ts-reset" id="ts-reset" onclick="toolReset()">${toolResetLabel()}</button>
+	    <div class="ts-actions"><button class="btn btn-sm btn-outline" onclick="jobListShow()">가공 기록</button>
 	      <label class="pv-check" title="켜면 재생해도 가공 기록·공구 마모 누적을 저장하지 않습니다 (조건 비교용)"><input type="checkbox" id="ts-dry" ${dry ? 'checked' : ''} onchange="toolDryRun(this.checked)"/> 시뮬레이션만</label></div>`;
+	}
+
+	const WEAR_EVENT_LABEL = { pass1: '1차 가공', pass2: '2차 보정', measure: '실측 반영', change_pending: '교체 대기', reset: '초기화', replaced: '사양 변경 교체' };
+
+	function tsWhen(ms) {
+	  if (!ms) return '-';
+	  return new Date(ms).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+	}
+
+	// DB 의 공구 개체 목록 — 프로필마다 공구 자리(slot) 하나, 그 자리의 활성 개체(은퇴 포함 선택)
+	async function toolInstancesRefresh() {
+	  const el = document.getElementById('tool-instances');
+	  if (!el) return;
+	  const retired = document.getElementById('ti-retired').checked;
+	  let rows = [];
+	  try { rows = await invoke('tool_instances', { includeRetired: retired }) || []; } catch (e) { el.innerHTML = `<div class="ts-note">공구 개체 기록을 읽지 못했습니다: ${esc(e)}</div>`; return; }
+	  if (!rows.length) { el.innerHTML = '<div class="ts-note">아직 DB에 기록된 공구 개체가 없습니다. 시뮬레이션만을 끈 채 재생하면 프로필마다 하나씩 생깁니다.</div>'; return; }
+	  const active = getActiveProfile();
+	  el.innerHTML = rows.map(r => {
+	    const prof = r.slot_key.startsWith('profile:') ? r.slot_key.slice(8) : r.slot_key;
+	    const life = Math.max(0, Math.min(100, (r.life_used_max || 0) * 100));
+	    const cls = life >= 100 ? 'sev-3' : life >= 80 ? 'sev-2' : life >= 50 ? 'sev-1' : 'sev-0';
+	    return `<div class="ti-row${r.retired_at ? ' retired' : ''}${!r.retired_at && prof === active ? ' cur' : ''}">
+	      <div class="ti-head"><b>#${r.id}</b><span class="ti-label">${esc(r.label)}</span><span class="ti-gen">${r.generation}세대</span></div>
+	      <div class="ti-prof">${esc(prof)}</div>
+	      <div class="ts-bar"><span class="${cls}" style="width:${life.toFixed(0)}%"></span></div>
+	      <div class="ti-meta"><span>수명 ${fmt(life, 0)}% · VB ${fmt(r.vb_band_mm, 3)} mm · 작업 ${r.jobs}회 · ${fmt(r.cut_min, 1)}분</span>${r.retired_at
+	        ? `<span class="ti-ret">은퇴 ${esc(tsWhen(r.retired_at))}</span>`
+	        : `<button class="tree-act" data-prof="${esc(prof)}" onclick="toolInstanceReset(this)" title="이 프로필의 공구 마모를 초기화 (새 공구 장착)">초기화</button>`}</div>
+	      ${r.retired_at && r.retire_reason ? `<div class="ts-note">${esc(r.retire_reason)}</div>` : ''}
+	    </div>`;
+	  }).join('');
+	}
+
+	// 목록에서 프로필별 초기화 — 실수 방지로 4초 안에 한 번 더 눌러야 실행
+	async function toolInstanceReset(btn) {
+	  if (btn.dataset.armed !== '1') {
+	    btn.dataset.armed = '1';
+	    btn.textContent = '한 번 더';
+	    setTimeout(() => { btn.dataset.armed = ''; btn.textContent = '초기화'; }, 4000);
+	    return;
+	  }
+	  const prof = btn.dataset.prof;
+	  let s;
+	  try { s = await invoke('tool_state_reset', { profileName: prof, reason: null }); } catch (e) { appendLog(`공구 마모 초기화 실패: ${esc(e)}`); return; }
+	  appendLog(`공구 마모 초기화: '${esc(prof)}' → 공구 개체 #${s.instance.id} (${s.instance.generation}세대) · 이전 개체는 기록과 함께 보관`);
+	  if (prof === getActiveProfile()) {
+	    TOOLS.state = s;
+	    toolPanelRender();
+	    JOB.stale = true;
+	    VP.sim = null;
+	    VP.simKey = '';
+	    renderToolpath2D();
+	  }
+	  toolInstancesRefresh();
 	}
 
 	async function toolDryRun(on) {
@@ -3544,7 +3673,7 @@
 	  const now = Date.now();
 	  if (now - TOOLS.resetArm > 4000) {
 	    TOOLS.resetArm = now;
-	    if (btn) btn.textContent = '한 번 더 누르면 리셋 (4초 안)';
+	    if (btn) btn.textContent = '한 번 더 누르면 초기화 (4초 안)';
 	    setTimeout(() => { if (Date.now() - TOOLS.resetArm >= 4000) { const b = document.getElementById('ts-reset'); if (b) b.textContent = toolResetLabel(); } }, 4100);
 	    return;
 	  }
@@ -3553,7 +3682,8 @@
 	  try { s = await invoke('tool_state_reset', { profileName: getActiveProfile(), reason: null }); } catch (e) { appendLog(`공구 리셋 실패: ${esc(e)}`); return; }
 	  TOOLS.state = s;
 	  toolPanelRender();
-	  appendLog(`공구 마모 리셋: '${esc(s.tool_name)}' → 공구 개체 #${s.instance.id} (${s.instance.generation}세대, 새 날) · 이전 개체는 기록과 함께 보관`);
+	  appendLog(`공구 마모 초기화: '${esc(s.tool_name)}' → 공구 개체 #${s.instance.id} (${s.instance.generation}세대, 새 날) · 이전 개체는 기록과 함께 보관`);
+	  toolInstancesRefresh();
 	  (s.lines || []).forEach(l => appendLog(esc(l)));
 	  JOB.stale = true;
 	  VP.sim = null;
@@ -4375,6 +4505,12 @@
 	  set('sum-material', `${w.name} · ${w.material}`);
 	  set('sum-coolant', `${d.coolant.label} · ${fmt(e.ambient_c, 1)} °C ${fmt(e.humidity_pct, 0)} %`);
 	  set('sum-cond', `S${c.spindle_rpm} · F${fmt(c.feed_rate_mm_min, 0)}`);
+	}
+
+	// 접어 둔 패널을 연다 (툴바의 '◀ 조건'처럼 패널 밖에서 펼칠 때)
+	function panelOpen(id) {
+	  const panel = document.getElementById(id);
+	  if (panel && panel.classList.contains('collapsed')) document.querySelector(`.panel-toggle-btn[data-toggle="${id}"]`).click();
 	}
 
 	// 프로젝트 전환·생성은 정밀 분석의 라이브러리 탭에 있다
@@ -6893,6 +7029,34 @@
 	    vlines: [{ x: tr.life_min, color: UI.danger, label: `수명 ${fmt(tr.life_min, 0)}분` }].concat(tr.phase3_min ? [{ x: tr.phase3_min, color: UI.warning, label: '가속' }] : []),
 	  });
 	}
+
+	(function () {
+	  const pop = document.createElement('div');
+	  pop.className = 'tip-pop';
+	  pop.setAttribute('role', 'tooltip');
+	  let cur = null;
+	  function show(el) {
+	    cur = el;
+	    const title = el.dataset.tipTitle;
+	    pop.innerHTML = (title ? `<b>${esc(title)}</b>` : '') + esc(el.dataset.tip);
+	    if (!pop.isConnected) document.body.appendChild(pop);
+	    const r = el.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+	    let x = Math.min(Math.max(8, r.left), innerWidth - w - 8);
+	    let y = r.bottom + 8;
+	    if (y + h > innerHeight - 8) y = Math.max(8, r.top - h - 8);
+	    pop.style.left = x + 'px';
+	    pop.style.top = y + 'px';
+	    pop.classList.add('show');
+	  }
+	  function hide() { cur = null; pop.classList.remove('show'); }
+	  document.addEventListener('mouseover', e => {
+	    const el = e.target.closest('[data-tip]');
+	    if (el && el !== cur) show(el); else if (!el && cur) hide();
+	  });
+	  document.addEventListener('focusin', e => { const el = e.target.closest('[data-tip]'); if (el) show(el); });
+	  document.addEventListener('focusout', hide);
+	  document.addEventListener('scroll', hide, true);
+	})();
 
 	window.addEventListener("DOMContentLoaded", async () => {
 	  switchView('machining', document.querySelector('.menu-btn.active'));
