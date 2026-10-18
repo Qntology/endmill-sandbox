@@ -623,6 +623,10 @@ pub struct EndMillMockupSetting {
     /// 공구 홀더 — 런아웃을 직접 넣지 않았을 때 TIR 기본값과 감쇠비 보정에 쓴다
     #[serde(default)]
     pub holder: HolderType,
+    /// 공구 반경을 회전 상태(레이저 공구 측정기·같은 홀더의 회전 프리세터)로 재서 보정값에 넣었는가.
+    /// 아니면(정지 프리세터·공칭 반경) 가장 긴 날이 벽을 0.85·e 만큼 더 깎는다
+    #[serde(default)]
+    pub radius_measured_rotating: bool,
 }
 
 impl EndMillMockupSetting {
@@ -660,6 +664,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -833,6 +838,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -859,6 +865,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -885,6 +892,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -911,6 +919,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -937,6 +946,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: Some(5.7),
             reach_mm: Some(18.0),
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -963,6 +973,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -989,6 +1000,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -1015,6 +1027,7 @@ impl EndMillMockupSetting {
             neck_diameter_mm: None,
             reach_mm: None,
             holder: HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 
@@ -1269,6 +1282,15 @@ pub struct MachineLimits {
     /// (기존 저장값이 예전 기본 0.03 과 다르면 사용자가 넣은 값으로 본다)
     #[serde(default)]
     pub damping_user: bool,
+    /// 스핀들 모드 (공구 끝에서 본 모드 강성·고유진동수·감쇠비). 돌출 길이와 거의 무관하다:
+    /// HSK-A63 실측 827~974 Hz · 13.7~20 N/µm · ζ 0.050~0.087 (Ozturk·Kumar·Turner·Schmitz 2012), 문헌 범위 500~1500 Hz · 20~60 N/µm · ζ 0.03~0.07.
+    /// 탭 테스트로 공구 끝 FRF 를 넣으면 그 측정이 이미 스핀들 모드를 포함하므로 쓰지 않는다
+    #[serde(default = "default_spindle_k")]
+    pub spindle_stiffness_n_per_um: f64,
+    #[serde(default = "default_spindle_fn")]
+    pub spindle_fn_hz: f64,
+    #[serde(default = "default_spindle_zeta")]
+    pub spindle_zeta: f64,
     #[serde(default)]
     pub tip_fn_hz: Option<f64>,
     #[serde(default)]
@@ -1287,6 +1309,18 @@ fn default_damping_ratio() -> f64 {
 
 /// 예전에 모든 공구에 쓰던 감쇠비 기본값
 pub const LEGACY_DAMPING_RATIO: f64 = 0.03;
+
+fn default_spindle_k() -> f64 {
+    30.0
+}
+
+fn default_spindle_fn() -> f64 {
+    1000.0
+}
+
+fn default_spindle_zeta() -> f64 {
+    0.05
+}
 
 impl MachineLimits {
     /// 감쇠비가 사용자가 넣은 값인가 (플래그가 없던 예전 저장값은 기본 0.03 과 다르면 사용자 값으로 본다)
@@ -1313,6 +1347,9 @@ impl Default for MachineLimits {
             damping_ratio: default_damping_ratio(),
             holder_mass_kg: default_holder_mass_kg(),
             damping_user: false,
+            spindle_stiffness_n_per_um: default_spindle_k(),
+            spindle_fn_hz: default_spindle_fn(),
+            spindle_zeta: default_spindle_zeta(),
             tip_fn_hz: None,
             tip_stiffness_n_per_um: None,
             tip_frf_stickout_mm: None,

@@ -361,6 +361,15 @@ pub struct WallErrorSample {
     pub wall_stress_mpa: f64,
     #[serde(default)]
     pub wall_sigma_per_n: f64,
+    /// 런아웃 과삭 (µm, 음수 = 더 깎음) — 긴 날 하나가 벽을 만들어 0.85·e 만큼 안쪽으로 들어간다 (`surface::RUNOUT_EFFECTIVE`)
+    #[serde(default)]
+    pub runout_um: f64,
+    /// 이 위치 측벽 Ra 기대값 (µm) — 날 궤적 포락선 + 최소 칩 + 마모 + 구성인선 + 채터 확률 가중 (`surface::wall_roughness`)
+    #[serde(default)]
+    pub ra_um: f64,
+    /// 채터 파상도 산-골 (µm) × 채터 확률 — 치수 공차 밖으로 튀는 국부 자국의 기대 크기
+    #[serde(default)]
+    pub waviness_um: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -410,6 +419,17 @@ pub struct SegWallStat {
     pub wall_stress_mpa: f64,
     #[serde(default)]
     pub wall_sigma_per_n: f64,
+    /// 런아웃 과삭 평균 (µm, 음수)
+    #[serde(default)]
+    pub runout_um: f64,
+    /// 측벽 Ra 평균·최대 (µm)
+    #[serde(default)]
+    pub ra_um: f64,
+    #[serde(default)]
+    pub ra_max_um: f64,
+    /// 채터 파상도 기대값 최대 (µm)
+    #[serde(default)]
+    pub waviness_um: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -453,6 +473,9 @@ pub struct WearBin {
     /// 벽면 휨 (절대값)
     #[serde(default)]
     pub defl_um: f64,
+    /// 이 빈에서 벽을 만든 시간 동안의 측벽 Ra 평균 (µm, 벽을 안 만들었으면 0)
+    #[serde(default)]
+    pub ra_um: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -485,6 +508,8 @@ struct BinAcc {
     brk_dt: f64,
     cwf_dt: f64,
     defl_dt: f64,
+    ra_dt: f64,
+    ra_wt: f64,
 }
 
 impl BinAcc {
@@ -504,6 +529,8 @@ impl BinAcc {
         self.brk_dt += o.brk_dt;
         self.cwf_dt += o.cwf_dt;
         self.defl_dt += o.defl_dt;
+        self.ra_dt += o.ra_dt;
+        self.ra_wt += o.ra_wt;
         self.dt += o.dt;
         self.t_end = self.t_end.max(o.t_end);
         self.t_cut_end = self.t_cut_end.max(o.t_cut_end);
@@ -555,6 +582,7 @@ impl BinAcc {
             breakin_um_min: self.brk_dt / dt * 1000.0,
             chatter_wear: self.cwf_dt / dt,
             defl_um: self.defl_dt / dt,
+            ra_um: if self.ra_wt > 0.0 { self.ra_dt / self.ra_wt } else { 0.0 },
         }
     }
 }
@@ -772,6 +800,19 @@ pub struct LoadSimReport {
     pub thermal_fatigue_per_min: f64,
     #[serde(default)]
     pub engage_audit: EngageAudit,
+    /// 최종 벽 측벽 Ra (µm): 평균·90 % 분위·최대 — 경로 위치마다 날 궤적 포락선 모델로 계산
+    #[serde(default)]
+    pub wall_ra_mean_um: f64,
+    #[serde(default)]
+    pub wall_ra_p90_um: f64,
+    #[serde(default)]
+    pub wall_ra_max_um: f64,
+    /// 채터 파상도 기대값 최대 (µm)
+    #[serde(default)]
+    pub wall_waviness_max_um: f64,
+    /// 벽 오차에 넣은 런아웃 과삭 (µm, 양수 = 과삭 크기, 반경을 회전 측정했으면 0)
+    #[serde(default)]
+    pub runout_overcut_um: f64,
 }
 
 fn one_f64() -> f64 {
@@ -1038,7 +1079,7 @@ pub fn wall_deflection(tool: &ToolGeometry, cal_defl: f64, f: &ForceResult, eng:
     let ap = eng.ap_mm;
     let r = tool.radius();
     let comp = physics::tool_compliance(tool, ap, cal_defl);
-    let holder = 1.0 / (tool.holder_stiffness_n_per_um * 1000.0) * cal_defl;
+    let holder = tool.support_compliance_mm_per_n() * cal_defl;
     let steps = f.fy_series.len().max(1);
     let tan_h = tool.helix_deg.to_radians().tan();
     let pitch = f.pitch_rad.max(1e-9);
@@ -1184,6 +1225,10 @@ fn seg_wall_stats(walls: &[WallErrorSample], segments: &[ToolPathSegment], seg_s
                 y_mm: v.iter().map(|w| w.y).sum::<f64>() / n,
                 wall_stress_mpa: stress,
                 wall_sigma_per_n: sigma_per_n,
+                runout_um: v.iter().map(|w| w.runout_um).sum::<f64>() / n,
+                ra_um: v.iter().map(|w| w.ra_um).sum::<f64>() / n,
+                ra_max_um: v.iter().map(|w| w.ra_um).fold(0.0, f64::max),
+                waviness_um: v.iter().map(|w| w.waviness_um).fold(0.0, f64::max),
             }
         })
         .collect();
@@ -1353,6 +1398,10 @@ pub fn simulate_segments_prog(
     let mut grow_t = 0.0f64;
     let mut chat_p_dt = 0.0f64;
     let mut cwf_cache: HashMap<u64, (f64, f64)> = HashMap::new();
+    let mut ra_cache: HashMap<(i64, i64, u64, i64, i64), crate::surface::WallRoughness> = HashMap::new();
+    let wp_group = crate::pairref::WpGroup::of(&ctx.wp);
+    let runout_um = -tool.runout_overcut_um();
+    let h_min_wall = ctx.wp.min_chip_ratio * tool.edge_radius_um / 1000.0;
     let mut tf_damage = 0.0f64;
     let mut growth_calib = 0.0f64;
     let mut growth_fixed = 0.0f64;
@@ -1544,6 +1593,8 @@ pub fn simulate_segments_prog(
             let mut bin_dt = 0.0;
             let mut fz_here = fz_nom;
             let (mut rate_here, mut brk_here, mut cwf_here) = (0.0f64, 0.0f64, 1.0f64);
+            let mut ra_here = 0.0f64;
+            let mut ra_w = 0.0f64;
             if cutting && dt > 0.0 {
                 cut_time += dt;
                 cut_samples += 1;
@@ -1781,6 +1832,11 @@ pub fn simulate_segments_prog(
                     if let Some(w) = tw {
                         wp_defl = w.defl_um;
                     }
+                    let rough = *ra_cache
+                        .entry((quant(fz_here, fz_nom.max(1e-6) * 0.01), quant(vb, 0.005), margin.to_bits(), quant(sample_force.h_max_mm, 1e-4), quant(th.bue_risk, 0.05)))
+                        .or_insert_with(|| crate::surface::wall_roughness(r, tool.flutes, fz_here, tool.runout_ecc_mm(), h_min_wall, sample_force.h_max_mm, vb, wp_group, th.bue_risk, margin, chat_p));
+                    ra_here = rough.ra_um;
+                    ra_w = dt;
                     if wall_errors.len() < 200_000 {
                         wall_errors.push(WallErrorSample {
                             x: wx,
@@ -1793,7 +1849,7 @@ pub fn simulate_segments_prog(
                             wear_um,
                             thermal_tool_um: th_tool,
                             thermal_wp_um: thermal_wp,
-                            total_um: defl_wall + wp_defl + wear_um + th_tool + thermal_wp,
+                            total_um: defl_wall + wp_defl + wear_um + th_tool + thermal_wp + runout_um,
                             workpiece_um: wp_defl,
                             seg: si,
                             final_wall: false,
@@ -1803,6 +1859,9 @@ pub fn simulate_segments_prog(
                             wall_k_n_mm: tw.map(|w| w.k_n_per_mm).unwrap_or(0.0),
                             wall_stress_mpa: tw.map(|w| w.stress_mpa).unwrap_or(0.0),
                             wall_sigma_per_n: tw.map(|w| w.sigma_per_n).unwrap_or(0.0),
+                            runout_um,
+                            ra_um: rough.ra_um,
+                            waviness_um: rough.chatter_wpv_um * rough.chatter_probability,
                         });
                     }
                 }
@@ -1845,6 +1904,8 @@ pub fn simulate_segments_prog(
                     brk_dt: brk_here * bin_dt,
                     cwf_dt: cwf_here * bin_dt,
                     defl_dt: defl_wall.abs() * bin_dt,
+                    ra_dt: ra_here * ra_w,
+                    ra_wt: ra_w,
                 });
             }
             samples.push(SimSample {
@@ -1961,6 +2022,20 @@ pub fn simulate_segments_prog(
     let (heat_packets, heat_field) = heat.finish(6000);
     let episodes = build_episodes(&samples, ctx, profile);
     let stat_walls: Vec<&WallErrorSample> = if final_count > 0 { wall_errors.iter().filter(|w| w.final_wall).collect() } else { wall_errors.iter().collect() };
+    let (wall_ra_mean, wall_ra_p90, wall_ra_max, wall_wav_max) = {
+        let mut ra: Vec<f64> = stat_walls.iter().map(|w| w.ra_um).filter(|v| *v > 0.0).collect();
+        ra.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if ra.is_empty() {
+            (0.0, 0.0, 0.0, 0.0)
+        } else {
+            (
+                ra.iter().sum::<f64>() / ra.len() as f64,
+                quantile_sorted(&ra, 0.9),
+                ra[ra.len() - 1],
+                stat_walls.iter().map(|w| w.waviness_um).fold(0.0, f64::max),
+            )
+        }
+    };
     let (mean_wall, max_wall) = if stat_walls.is_empty() {
         (0.0, 0.0)
     } else {
@@ -2079,6 +2154,11 @@ pub fn simulate_segments_prog(
         wear_log: wear_acc.finish(),
         final_wall_count: final_count,
         transient_wall_count: transient_count,
+        wall_ra_mean_um: wall_ra_mean,
+        wall_ra_p90_um: wall_ra_p90,
+        wall_ra_max_um: wall_ra_max,
+        wall_waviness_max_um: wall_wav_max,
+        runout_overcut_um: -runout_um,
         vb_start_mm: vb_start,
         wear_age0_min: age0,
         chatter_wear_factor: cwf_mean,

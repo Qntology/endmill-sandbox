@@ -1444,6 +1444,7 @@
 	        </div>
 	      </div>
 	      <label class="ct-check"><input type="checkbox" id="cm-vp" onchange="toolFormChanged()" /> 부등분할 (채터 억제)</label>
+	      <label class="ct-check" title="공구 반경을 회전 상태(레이저 툴 세터 등)로 재서 보정값에 넣었으면 체크 — 가장 긴 날의 런아웃 과삭(0.85·TIR/2)을 벽 오차에서 뺀다. 정지 상태(프리세터·마이크로미터) 측정이면 비워 둔다"><input type="checkbox" id="cm-rot" onchange="toolFormChanged()" /> 공구 반경 회전 측정 (레이저)</label>
 	      <div class="ct-sec">소재 (모재 · 코팅 · 등급)</div>
 	      <div class="ct-grid">
 	        <div class="form-group"><label>모재</label>
@@ -4403,6 +4404,7 @@
 	    neck_diameter_mm: neckOn ? num('cm-neck-d') : null,
 	    reach_mm: neckOn ? num('cm-reach') : null,
 	    holder: document.getElementById('cm-holder').value || 'Unknown',
+	    radius_measured_rotating: document.getElementById('cm-rot').checked,
 	  };
 	}
 
@@ -5821,11 +5823,12 @@
 	      ['공구계 강성 · 휨 피크', `${fmt(a.stiffness_n_per_um, 2)} N/µm · ${fmt(a.deflection_peak_um, 1)} µm`],
 	      ['벽면 휨 (상/하)', `${fmt(a.wall.deflection_top_um, 1)} / ${fmt(a.wall.deflection_bottom_um, 1)} µm`],
 	      ['오차 예산 합계 / 공차', `${fmt(eb.total_um, 1)} / ${fmt(eb.tolerance_um, 0)} µm (${fmt(eb.utilization * 100, 0)}%)`],
-	      ['예산 구성 (고정구 / 동적 SLE)', `${fmt(eb.fixture_um, 2)} / ${fmt(eb.dynamic_um, 2)} µm`],
-	      ['면조도 Ra · 스캘럽', `${fmt(a.surface.wall_ra_um, 2)} · ${fmt(a.surface.scallop_um, 2)} µm`],
+	      ['예산 구성 (고정구 / 동적 SLE / 런아웃 과삭)', `${fmt(eb.fixture_um, 2)} / ${fmt(eb.dynamic_um, 2)} / ${fmt(eb.runout_um || 0, 1)} µm`],
+	      ['측벽 Ra · Rz · 스캘럽', `${fmt(a.surface.wall_ra_um, 2)} · ${fmt(a.surface.wall_rz_um || 0, 1)} · ${fmt(a.surface.scallop_um, 2)} µm`],
 	    ]),
 	    card('동특성 · 재생 채터 (공구 끝 FRF · 안정 로브)', [
 	      ['고유진동수 · 강성 · 감쇠', `${fmt(st.fn_hz, 0)} Hz · ${fmt(st.k_n_per_um, 1)} N/µm · ζ ${fmt(st.zeta, 3)} (${st.measured ? (st.stickout_scaled ? '실측 · 돌출 보정' : '실측') : '모델 추정'})`],
+	      ['스핀들 모드 · flip 보정', st.spindle_fn_hz ? `${fmt(st.spindle_fn_hz, 0)} Hz · ${fmt(st.spindle_k_n_per_um, 0)} N/µm${st.spindle_dominates ? ' (채터 지배)' : ''} · ×${fmt(st.flip_factor || 1, 2)}` : `실측 FRF에 포함 · ×${fmt(st.flip_factor || 1, 2)}`],
 	      ['한계 ap (현재 회전수) / 절대 한계', `${fmt(st.ap_lim_mm, 2)} / ${fmt(st.ap_crit_mm, 2)} mm`],
 	      ['채터 여유', `${fmt(st.margin, 2)} 배 ${st.stable ? '(안정)' : '(채터)'}`],
 	      ['채터 주파수 · 공정감쇠 · 부등분할', `${fmt(st.chatter_hz, 0)} Hz · ×${fmt(st.process_damping_gain, 2)} · ×${fmt(st.pitch_gain, 2)}`],
@@ -5846,7 +5849,7 @@
 	      ['열연화 kc 배율', `×${fmt(a.softening, 3)}`],
 	      ['소재 입열 비율 (Boothroyd)', `${fmt(th.heat_to_workpiece_share * 100, 1)} %`],
 	      ['고정구 변위', `${fmt(a.fixture_deflection_um, 2)} µm`],
-	      ['Ra 구성 (이송흔 / 최소칩 / 채터 배율)', `${fmt(a.surface.feed_mark_um, 2)} / ${fmt(a.surface.min_chip_um, 2)} µm / ×${fmt(1 + a.surface.chatter_penalty, 2)}`],
+	      ['Ra 구성 (이송흔 Rt / 런아웃 포함 Rt / 최소칩 / 채터 배율)', `${fmt(a.surface.feed_mark_um, 3)} / ${fmt(a.surface.envelope_rt_um || 0, 2)} / ${fmt(a.surface.min_chip_um, 2)} µm / ×${fmt(1 + a.surface.chatter_penalty, 2)}${a.surface.single_tooth ? ' · 한 날이 벽을 만듦' : ''}`],
 	      ['얇은 벽 최대 휨 (경로)', sim.thin_wall_mm ? `${fmt(sim.max_workpiece_defl_um, 1)} µm (벽 두께 ≈ ${fmt(sim.thin_wall_mm, 1)} mm)` : '-'],
 	    ]),
 	    card('경로 시뮬레이션 요약', [

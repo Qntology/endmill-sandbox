@@ -1,4 +1,4 @@
-use crate::physics::{tool_compliance, CuttingCoeffs, Engagement, ForceResult, MillMode, ToolGeometry};
+use crate::physics::{tool_compliance_lumped, CuttingCoeffs, Engagement, ForceResult, MillMode, ToolGeometry};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
@@ -39,6 +39,10 @@ impl C {
     }
 }
 
+/// 공구 끝 동특성. 공구 모드(공구 보 + 홀더, 단단한 바닥 기준)에 스핀들·베어링 1차 굽힘 모드를 직렬 2자유도 사슬로 붙인다:
+/// 바닥 —(k_s, c_s)— m_s —(k_t, c_t)— m_t(공구 끝). 정적 컴플라이언스는 1/k_t + 1/k_s 로 `tool_compliance` 와 같다.
+/// 두 모드가 ±20~30 % 안으로 가까우면 단순 모드 합은 틀리고(공구 길이 튜닝 효과 — Schmitz & Duncan 2005) 사슬은 그 결합을 그대로 담는다.
+/// 스핀들 모드: 500~1500 Hz, 20~60 N/µm, ζ 0.03~0.07, 돌출 길이에 거의 안 변함 (Zhang·Schmitz 2011: 976~1038 Hz). 실측 FRF 를 쓰면 0 (이미 포함)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolModal {
     pub k_n_per_um: f64,
@@ -46,19 +50,57 @@ pub struct ToolModal {
     pub zeta: f64,
     pub m_eff_kg: f64,
     pub holder_share: f64,
+    #[serde(default)]
+    pub spindle_k_n_per_um: f64,
+    #[serde(default)]
+    pub spindle_fn_hz: f64,
+    #[serde(default)]
+    pub spindle_zeta: f64,
 }
 
 impl ToolModal {
+    pub fn has_spindle_mode(&self) -> bool {
+        self.spindle_k_n_per_um > 0.0 && self.spindle_fn_hz > 0.0
+    }
+
+    /// 정적 공구 끝 강성 (N/µm) — 스핀들 모드가 있으면 직렬 합
+    pub fn static_k_n_per_um(&self) -> f64 {
+        if self.has_spindle_mode() {
+            1.0 / (1.0 / self.k_n_per_um.max(1e-9) + 1.0 / self.spindle_k_n_per_um)
+        } else {
+            self.k_n_per_um
+        }
+    }
+
+    /// 모드 하나의 재생 채터 한계 지표 k·ζ (N/µm) — 작은 쪽이 지배한다 (최소 Re G ≈ −1/(4kζ))
+    pub fn spindle_dominates(&self) -> bool {
+        self.has_spindle_mode() && self.spindle_k_n_per_um * self.spindle_zeta < self.k_n_per_um * self.zeta
+    }
+
     fn frf(&self, omega: f64) -> C {
         let k = self.k_n_per_um * 1000.0;
         let wn = 2.0 * PI * self.fn_hz;
-        let r = omega / wn.max(1e-9);
-        C::new(1.0, 0.0).div(C::new(k * (1.0 - r * r), k * 2.0 * self.zeta * r))
+        if !self.has_spindle_mode() {
+            let r = omega / wn.max(1e-9);
+            return C::new(1.0, 0.0).div(C::new(k * (1.0 - r * r), k * 2.0 * self.zeta * r));
+        }
+        let ks = self.spindle_k_n_per_um * 1000.0;
+        let ws = 2.0 * PI * self.spindle_fn_hz;
+        let (mt, ms) = (k / (wn * wn).max(1e-9), ks / (ws * ws).max(1e-9));
+        let ct = 2.0 * self.zeta * (k * mt).sqrt();
+        let cs = 2.0 * self.spindle_zeta * (ks * ms).sqrt();
+        let zt = C::new(k, omega * ct);
+        let zs = C::new(ks, omega * cs);
+        let w2 = omega * omega;
+        let a = zs.add(zt).sub(C::new(w2 * ms, 0.0));
+        let b = zt.sub(C::new(w2 * mt, 0.0));
+        a.div(a.mul(b).sub(zt.mul(zt)))
     }
 }
 
+/// 공구 모드만 (홀더 포함, 스핀들 제외) 추정하고 스핀들 모드를 기계 설정에서 붙인다
 pub fn estimated_modal(tool: &ToolGeometry, ap: f64, cal: f64) -> ToolModal {
-    let comp = tool_compliance(tool, ap, cal);
+    let comp = tool_compliance_lumped(tool, ap, cal);
     let k_total = comp.stiffness_n_per_um.max(1e-6);
     let holder_share = (k_total * cal / tool.holder_stiffness_n_per_um.max(1e-6)).clamp(0.0, 1.0);
     let d = tool.diameter_mm;
@@ -79,6 +121,9 @@ pub fn estimated_modal(tool: &ToolGeometry, ap: f64, cal: f64) -> ToolModal {
         zeta: tool.damping_ratio,
         m_eff_kg: m_eff,
         holder_share,
+        spindle_k_n_per_um: tool.spindle_stiffness_n_per_um.max(0.0) / cal.max(1e-6),
+        spindle_fn_hz: tool.spindle_fn_hz.max(0.0),
+        spindle_zeta: tool.spindle_zeta.clamp(0.005, 0.3),
     }
 }
 
@@ -108,6 +153,7 @@ pub fn tool_modal(tool: &ToolGeometry, ap: f64, cal: f64) -> ToolModal {
         zeta: tool.damping_ratio,
         m_eff_kg: k * 1e6 / (wn * wn).max(1e-9),
         holder_share: model.holder_share,
+        ..Default::default()
     }
 }
 
@@ -141,6 +187,65 @@ pub struct Stability {
     pub envelope: Vec<LobePoint>,
     #[serde(default)]
     pub stickout_scaled: bool,
+    /// ZOA 가 놓치는 flip(주기 2배) 로브 보정 배수 (1 = 보정 없음) — `flip_factor`
+    #[serde(default = "one")]
+    pub flip_factor: f64,
+    /// 스핀들 모드 (추정 FRF 일 때만, 실측이면 0)
+    #[serde(default)]
+    pub spindle_fn_hz: f64,
+    #[serde(default)]
+    pub spindle_k_n_per_um: f64,
+    /// 이 회전수의 채터 한계를 스핀들 모드가 정하는가 (채터 주파수가 공구 모드보다 스핀들 모드에 가까움).
+    /// 저속에서는 고주파 공구 모드가 공정감쇠를 더 받아 짧은 공구일수록 스핀들 모드 채터가 먼저 온다 (Schmitz 2012, R8)
+    #[serde(default)]
+    pub spindle_dominates: bool,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+/// ZOA(평균 방향 계수) 안정 한계의 flip 로브 보정. 반경 절입이 작으면 방향 계수의 고조파가 커져 날 통과/고유진동수 비
+/// r = f_tp/f_n ≈ 2/(2k+1) (2, 0.67, 0.4, …) 근처에 ZOA 가 못 보는 주기 2배 불안정 섬이 생기고, ae/D ≤ 0.05~0.1 이면 ZOA 안정 영역 안까지
+/// 들어온다 (Insperger·Stépán, Gradišek 외 2005; Merdol·Altintas 2004). 그 근처에서는 b_lim 에 0.5~0.7 을 곱하는 것이 권고 (R8).
+/// 헬릭스는 고조파를 줄여 ap 가 축방향 날 간격 πD/(N·tanβ) 의 정수배면 flip 이 사라진다 (Zatarain 외 2006) — 1차 고조파 크기 |sinc(ap/p)| 로 가중.
+/// r ≲ 0.3 (저속, 로브가 빽빽한 영역)이면 ZOA 와 SD 차이는 몇 % 라 보정하지 않는다
+pub fn flip_factor(tool: &ToolGeometry, eng: &Engagement, rpm: f64, ap: f64, modal: &ToolModal, chatter_hz: f64) -> f64 {
+    let d = tool.diameter_mm.max(1e-6);
+    let immersion = eng.ae_mm / d;
+    if !(immersion > 0.0 && immersion < 0.2) || rpm <= 0.0 || ap <= 0.0 {
+        return 1.0;
+    }
+    let n = tool.flutes.max(1) as f64;
+    let f_tp = rpm / 60.0 * n;
+    let fn_hz = if modal.has_spindle_mode() && (chatter_hz - modal.spindle_fn_hz).abs() < (chatter_hz - modal.fn_hz).abs() {
+        modal.spindle_fn_hz
+    } else {
+        modal.fn_hz
+    };
+    let r = f_tp / fn_hz.max(1e-9);
+    if r <= 0.3 {
+        return 1.0;
+    }
+    let near = (0..4).any(|k| {
+        let c = 2.0 / (2 * k + 1) as f64;
+        (r / c - 1.0).abs() < 0.15
+    });
+    if !near {
+        return 1.0;
+    }
+    let tan_b = tool.helix_deg.to_radians().tan();
+    let harmonic = if tan_b > 1e-6 {
+        let x = PI * ap / (PI * d / (n * tan_b));
+        if x < 1e-6 {
+            1.0
+        } else {
+            (x.sin() / x).abs()
+        }
+    } else {
+        1.0
+    };
+    1.0 - 0.4 * harmonic
 }
 
 fn directional(eng: &Engagement, kr: f64) -> (f64, f64, f64, f64) {
@@ -166,13 +271,27 @@ fn scan(modal: &ToolModal, dir: (f64, f64, f64, f64), kt: f64, n_teeth: f64) -> 
     let (axx, axy, ayx, ayy) = dir;
     let det_a = axx * ayy - axy * ayx;
     let wn = 2.0 * PI * modal.fn_hz;
-    let steps = 900;
+    // 스핀들 모드가 있으면 두 모드 모두의 0.55~3배 구간을 로그 간격으로 훑는다 (없으면 예전과 같은 선형 900 점)
+    let span = if modal.has_spindle_mode() {
+        let ws = 2.0 * PI * modal.spindle_fn_hz;
+        Some((0.55 * wn.min(ws), 3.0 * wn.max(ws)))
+    } else {
+        None
+    };
+    let steps = match span {
+        Some((lo, hi)) => ((900.0 * (hi / lo).ln() / (3.0f64 / 0.55).ln()).round() as usize).clamp(900, 1800),
+        None => 900,
+    };
     let mut br = Branches {
         omega: Vec::with_capacity(steps),
         a: [Vec::with_capacity(steps), Vec::with_capacity(steps)],
     };
     for i in 0..steps {
-        let omega = wn * (0.55 + 2.45 * i as f64 / (steps - 1) as f64);
+        let u = i as f64 / (steps - 1) as f64;
+        let omega = match span {
+            Some((lo, hi)) => lo * (hi / lo).powf(u),
+            None => wn * (0.55 + 2.45 * u),
+        };
         br.omega.push(omega);
         let g = modal.frf(omega);
         let a0 = g.mul(g).scale(det_a);
@@ -370,7 +489,8 @@ pub fn stability_margin(
     let (a, om) = limit_at(&br, rpm, n_teeth).unwrap_or((crit, 2.0 * PI * modal.fn_hz));
     let pd_eff = pd_material * crate::pairref::pd_clearance_factor(tool.clearance_deg);
     let gain = if tool.variable_pitch { 1.4 } else { 1.0 } * process_damping_gain(vc_m_min, om / (2.0 * PI), tool.flank_wear_mm, pd_eff);
-    a * gain / ap
+    let flip = flip_factor(tool, eng, rpm, ap, &modal, om / (2.0 * PI));
+    a * gain * flip / ap
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -403,6 +523,9 @@ pub fn stability(
         stable: true,
         measured,
         stickout_scaled,
+        flip_factor: 1.0,
+        spindle_fn_hz: modal.spindle_fn_hz,
+        spindle_k_n_per_um: modal.spindle_k_n_per_um,
         ..Default::default()
     };
     if ap <= 0.0 || rpm <= 0.0 || eng.span() <= 0.0 {
@@ -420,8 +543,10 @@ pub fn stability(
     let pd = process_damping_gain(vc_m_min, chatter_hz, tool.flank_wear_mm, pd_material * crate::pairref::pd_clearance_factor(tool.clearance_deg));
     out.process_damping_gain = pd;
     out.chatter_hz = chatter_hz;
+    out.spindle_dominates = modal.has_spindle_mode() && (chatter_hz - modal.spindle_fn_hz).abs() < (chatter_hz - modal.fn_hz).abs();
     out.ap_crit_mm = crit * gain_static;
-    out.ap_lim_mm = a_raw * gain_static * pd;
+    out.flip_factor = flip_factor(tool, eng, rpm, ap, &modal, chatter_hz);
+    out.ap_lim_mm = a_raw * gain_static * pd * out.flip_factor;
     out.margin = out.ap_lim_mm / ap;
     out.stable = out.margin >= 1.0;
     let lo_view = 0.3 * rpm;
@@ -492,6 +617,19 @@ pub fn stability(
     if pd > 1.2 {
         out.notes.push(format!("저속 공정감쇠로 한계가 {:.1}배 높아졌습니다 (파장 짧음)", pd));
     }
+    if out.flip_factor < 0.999 {
+        out.notes.push(format!(
+            "반경 절입이 작고(ae/D {:.2}) 날 통과/고유진동수 비가 flip 로브 위치(2/(2k+1)) 근처라 ZOA 한계에 {:.2} 를 곱했습니다 — 주기 2배 채터는 날 하나 건너 자국을 남깁니다",
+            eng.ae_mm / tool.diameter_mm.max(1e-9),
+            out.flip_factor
+        ));
+    }
+    if out.spindle_dominates && !out.stable {
+        out.notes.push(format!(
+            "이 회전수의 채터 한계는 스핀들 모드({:.0} Hz, {:.0} N/µm, 채터 {:.0} Hz)가 정합니다 — 저주파라 공정감쇠도 약하고, 공구를 짧게 해도 한계가 크게 오르지 않습니다 (스핀들 모드 값은 기계 기본값, 탭 테스트로 확정)",
+            out.spindle_fn_hz, out.spindle_k_n_per_um, chatter_hz
+        ));
+    }
     out
 }
 
@@ -533,6 +671,8 @@ pub fn forced_vibration(f: &ForceResult, modal: &ToolModal, rpm: f64, flutes: u3
         }
         let g = modal.frf(2.0 * PI * tooth_hz * h as f64).sub(modal.frf(0.0));
         ys.push(g.mul(fy));
+        // 공진 근접 표시는 공구 모드만 — 스핀들 모드는 기계 기본값(1000 Hz)이라 실제는 500~1500 Hz 어디든 될 수 있다.
+        // 응답 크기(진폭·SLE)에는 FRF 를 통해 스핀들 모드가 그대로 들어간다
         let ratio = tooth_hz * h as f64 / modal.fn_hz;
         if (ratio - 1.0).abs() < 0.15 {
             out.near_resonance = true;
@@ -643,6 +783,60 @@ mod tests {
                 assert!(m >= 1.1, "S{} {:+.0}: margin {}", n, dn, m);
             }
         }
+    }
+
+    #[test]
+    fn spindle_mode_keeps_static_compliance_and_softens_stubby_tools() {
+        let (mut c, _) = ctx();
+        c.tool.stickout_mm = 2.5 * c.tool.diameter_mm;
+        let m = tool_modal(&c.tool, 5.0, 1.0);
+        assert!(m.has_spindle_mode());
+        let g0 = m.frf(0.0).abs();
+        assert!((g0 * 1000.0 * m.static_k_n_per_um() - 1.0).abs() < 1e-6, "static {}", g0);
+        let comp = crate::physics::tool_compliance(&c.tool, 5.0, 1.0);
+        assert!((comp.stiffness_n_per_um / m.static_k_n_per_um() - 1.0).abs() < 0.02, "{} vs {}", comp.stiffness_n_per_um, m.static_k_n_per_um());
+        // 스핀들 모드 근처에 공진 봉우리가 생긴다 (공구 모드만이면 그 주파수에서 거의 정적 값)
+        let ws = 2.0 * PI * m.spindle_fn_hz;
+        let peak = (0..200).map(|i| m.frf(ws * (0.8 + 0.4 * i as f64 / 199.0)).abs()).fold(0.0, f64::max);
+        let tool_only = ToolModal { spindle_k_n_per_um: 0.0, ..m.clone() };
+        assert!(peak > 2.0 * tool_only.frf(ws).abs(), "peak {} vs {}", peak, tool_only.frf(ws).abs());
+        // 짧은 공구는 스핀들 모드가 절대 한계를 끌어내린다 (스핀들을 사실상 강체로 둔 경우와 비교, 공정감쇠 없이)
+        let co = crate::physics::cutting_coeffs(&c);
+        let d = c.tool.diameter_mm;
+        let eng = Engagement::side(2.0, 0.5 * d, d, true);
+        let mut stubby = c.tool.clone();
+        stubby.stickout_mm = 1.5 * d;
+        let mut rigid = stubby.clone();
+        rigid.spindle_stiffness_n_per_um = 1e7;
+        let s = stability(&stubby, &co, &eng, 0.05, 1500.0, 2.0, 1.0, 12000.0, 0.0, 1.0);
+        let s0 = stability(&rigid, &co, &eng, 0.05, 1500.0, 2.0, 1.0, 12000.0, 0.0, 1.0);
+        assert!(s.ap_crit_mm < 0.95 * s0.ap_crit_mm, "with spindle {} vs rigid {}", s.ap_crit_mm, s0.ap_crit_mm);
+        // 실측 FRF 는 스핀들을 이미 담고 있어 따로 붙이지 않는다
+        c.tool.measured_fn_hz = Some(2500.0);
+        c.tool.measured_k_n_per_um = Some(8.0);
+        assert!(!tool_modal(&c.tool, 5.0, 1.0).has_spindle_mode());
+    }
+
+    #[test]
+    fn flip_correction_only_near_flip_ratios_at_low_immersion() {
+        let (c, _) = ctx();
+        let d = c.tool.diameter_mm;
+        let m = tool_modal(&c.tool, 0.5, 1.0);
+        let n = c.tool.flutes as f64;
+        // 날 통과/고유진동수 = 2/3 이 되는 회전수
+        let rpm_flip = (2.0 / 3.0) * m.fn_hz * 60.0 / n;
+        let low = Engagement::side(0.5, 0.05 * d, d, true);
+        let wide = Engagement::side(0.5, 0.5 * d, d, true);
+        let f = flip_factor(&c.tool, &low, rpm_flip, 0.5, &m, m.fn_hz);
+        assert!(f < 0.75 && f >= 0.6, "flip {}", f);
+        assert_eq!(flip_factor(&c.tool, &wide, rpm_flip, 0.5, &m, m.fn_hz), 1.0);
+        // 저속(비 ≪ 0.3)이나 로브 사이(비 0.5)에서는 보정하지 않는다
+        assert_eq!(flip_factor(&c.tool, &low, 0.1 * m.fn_hz * 60.0 / n, 0.5, &m, m.fn_hz), 1.0);
+        assert_eq!(flip_factor(&c.tool, &low, 0.5 * m.fn_hz * 60.0 / n, 0.5, &m, m.fn_hz), 1.0);
+        // ap 가 축방향 날 간격과 같으면 헬릭스가 flip 을 지운다
+        let pitch = PI * d / (n * c.tool.helix_deg.to_radians().tan());
+        let full = Engagement::side(pitch, 0.05 * d, d, true);
+        assert!(flip_factor(&c.tool, &full, rpm_flip, pitch, &m, m.fn_hz) > 0.98);
     }
 
     #[test]

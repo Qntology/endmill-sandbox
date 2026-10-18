@@ -14,7 +14,7 @@ use crate::wearcomp::CompOutcome;
 use crate::wearlog::WearLog;
 use serde::{Deserialize, Serialize};
 
-pub const AUDIT_VERSION: u32 = 2;
+pub const AUDIT_VERSION: u32 = 3;
 
 /// 경로 ae 를 격자가 읽은 값과 기하 기대값(알 수 있는 패턴만)이 이 비율 이상 다르면 주의
 pub const AE_GEOMETRY_TOL: f64 = 0.15;
@@ -236,6 +236,15 @@ pub struct AuditWear {
     pub mrr_cm3_min: f64,
     pub path_volume_cm3: f64,
     pub specific_wear_um_cm3: f64,
+    /// 공구 수명 불확실성: 공구 간 편차 σ, 모델 오차 σ, 보수(10 % 분위) 배수 — `pairref::life_spread`
+    #[serde(default)]
+    pub life_sigma_scatter: f64,
+    #[serde(default)]
+    pub life_sigma_model: f64,
+    #[serde(default)]
+    pub parts_p10_factor: f64,
+    #[serde(default)]
+    pub parts_p10_scatter_only: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -262,12 +271,28 @@ pub struct AuditDynamics {
     pub zoa_reliable: bool,
     pub forced_sle_um: f64,
     pub forced_amplitude_um: f64,
-    /// 채터(margin<1)가 벽면 오차 값에 반영되는가 — 지금은 마모 가속과 Ra 에만 반영
+    /// 채터(margin<1)가 벽면 오차 중앙값에 반영되는가 — 떨림 자국은 산-골 자국이라 중앙값이 아니라 벽 샘플의 파상도 기대값(`waviness_um`)과 Ra 로 따로 남긴다
     pub chatter_in_wall_error: bool,
-    /// margin<1 일 때의 파상도(떨림 자국) 참고 대역 (µm): 한계에서 0.15·h_max, 한계 +15% 부근부터 공구가 절삭에서 이탈하는 수준(≈ h_max).
-    /// 그 이상은 예측하지 않고 플래그만 낸다 (Dombovari 외 2008·2019 / 자체 시간영역 시험). 벽면 오차에는 더하지 않는다
+    /// margin<1 일 때 떨림 자국 산-골 대역 (µm): W ≈ h_max·ρ (ρ = ap/ap_lim = 1/여유), 대역 0.5~2배, 상한 3·h_max.
+    /// 아임계 분기라 한계에서 바로 유한 진폭으로 뛰고, 날이 절삭에서 이탈하면 h/(2|sin(ε/2)|) 부근에서 포화 (Honeycutt·Schmitz 2018, R8)
     pub chatter_waviness_low_um: f64,
     pub chatter_waviness_high_um: f64,
+    /// 스핀들·베어링 1차 굽힘 모드 (추정 FRF 일 때 공구 모드와 2자유도 사슬로 결합, 실측 FRF 면 0)
+    #[serde(default)]
+    pub spindle_fn_hz: f64,
+    #[serde(default)]
+    pub spindle_k_n_per_um: f64,
+    #[serde(default)]
+    pub spindle_zeta: f64,
+    /// 이 회전수의 채터 한계를 스핀들 모드가 정하는가 (채터 주파수가 스핀들 모드 쪽)
+    #[serde(default)]
+    pub spindle_dominates: bool,
+    /// 정적 공구 끝 강성 (공구·홀더 + 스핀들 직렬, N/µm)
+    #[serde(default)]
+    pub static_k_n_per_um: f64,
+    /// ZOA flip 로브 보정 배수 (1 = 보정 없음)
+    #[serde(default)]
+    pub flip_factor: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -295,9 +320,43 @@ pub struct AuditDeflection {
     pub wall_down_um: f64,
     /// 이 경로에서 다운밀링으로 깎은 벽 구간의 비율 (0 = 전부 업밀링)
     pub path_down_share: f64,
-    /// 가장 긴 날이 벽을 만드는 반경 런아웃 과삭 (µm, 음수=과삭) — 벽면 오차 값에는 더하지 않았다.
-    /// 회전 상태 레이저 공구 측정으로 반경을 잡으면 상쇄되고, 정지 상태 측정이면 그대로 남는다 (Kline & DeVor 1983)
+    /// 가장 긴 날이 벽을 만드는 반경 런아웃 과삭 (µm, 음수=과삭) = −0.85·e (e = TIR/2) — 벽면 오차 값에 들어간다.
+    /// 회전 상태 레이저로 공구 반경을 쟀으면(`radius_measured_rotating`) 0 (Kline & DeVor 1983, Schmitz 외 2007)
     pub runout_overcut_um: f64,
+    /// 스핀들(베어링·테이퍼) 정적 컴플라이언스 (µm/N)
+    #[serde(default)]
+    pub spindle_compliance_um_per_n: f64,
+    /// 반경을 회전 상태로 측정해 런아웃 과삭이 상쇄되었는가
+    #[serde(default)]
+    pub runout_compensated: bool,
+}
+
+/// 측벽 표면조도 — 날 궤적 하한 포락선 모델 (`surface::wall_roughness`)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditSurface {
+    /// 실행 ae·공칭 fz, 새 공구에서의 Ra 기대값 / 안정 절삭 Ra / Rz (µm)
+    pub ra_um: f64,
+    pub ra_stable_um: f64,
+    pub rz_um: f64,
+    /// 이송 자국만의 Rt = fz²/8R 와 런아웃까지 넣은 날 궤적 포락선 Rt (µm)
+    pub rt_feed_um: f64,
+    pub rt_envelope_um: f64,
+    /// 표면을 실제로 만드는 날 수 / 공구 날 수
+    pub forming_teeth: u32,
+    pub flutes: u32,
+    /// Ra 의 소재 바닥값·최소 칩 밀림 항 (µm)
+    pub floor_um: f64,
+    pub hmin_term_um: f64,
+    pub bue_factor: f64,
+    /// 경로 끝 VB 에서의 마모 배수
+    pub wear_factor_end: f64,
+    pub chatter_wpv_um: f64,
+    pub chatter_probability: f64,
+    /// 경로(최종 벽) Ra 평균·90 % 분위·최대, 파상도 기대값 최대 (µm)
+    pub path_ra_mean_um: f64,
+    pub path_ra_p90_um: f64,
+    pub path_ra_max_um: f64,
+    pub path_waviness_max_um: f64,
 }
 
 /// 아직 실측으로 확정되지 않은 모델 항목과, 그 값을 확정하는 가장 싼 측정 (실측 장비가 생겼을 때의 우선순위)
@@ -320,6 +379,8 @@ pub struct SimAudit {
     pub wear: AuditWear,
     pub dynamics: AuditDynamics,
     pub deflection: AuditDeflection,
+    #[serde(default)]
+    pub surface: AuditSurface,
     pub flags: Vec<AuditFlag>,
     pub measure_next: Vec<MeasureNext>,
     /// 이 작업에 쓴 공구–피삭재 조합 기준값과 근거 (`pairref`)
@@ -708,6 +769,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         Some(o) if vb_dim < limit && part_cut_min > 1e-9 => Some(o.draft.path_trajectory.minutes_between(o.vb_after_mm, vb_dim) / part_cut_min),
         _ => None,
     };
+    let spread = crate::pairref::life_spread(ctx, rep.chatter_fraction, rep.min_chatter_margin, out.map(|o| o.draft.radial_source != "simulated").unwrap_or(false));
     let mrr_cm3_min = rep.removed_volume_cm3 / job_min;
     let path_volume = path_life * mrr_cm3_min;
     let specific_wear = if path_volume > 1e-9 { limit * 1000.0 / path_volume } else { 0.0 };
@@ -745,6 +807,10 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         mrr_cm3_min: f(mrr_cm3_min),
         path_volume_cm3: f(path_volume),
         specific_wear_um_cm3: f(specific_wear),
+        life_sigma_scatter: f(spread.sigma_scatter),
+        life_sigma_model: f(spread.sigma_model),
+        parts_p10_factor: f(spread.p10_total),
+        parts_p10_scatter_only: f(spread.p10_scatter_only),
     };
     if vb_dim < limit {
         flag(
@@ -915,8 +981,14 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         forced_sle_um: f(nominal.forced.sle_um),
         forced_amplitude_um: f(nominal.forced.amplitude_um),
         chatter_in_wall_error: false,
-        chatter_waviness_low_um: if st.margin > 0.0 && st.margin < 1.0 { f(0.15 * exec_view.h_max_um) } else { 0.0 },
-        chatter_waviness_high_um: if st.margin > 0.0 && st.margin < 1.0 { f(exec_view.h_max_um) } else { 0.0 },
+        chatter_waviness_low_um: if st.margin > 0.0 && st.margin < 1.0 { f((0.5 * exec_view.h_max_um / st.margin).min(3.0 * exec_view.h_max_um)) } else { 0.0 },
+        chatter_waviness_high_um: if st.margin > 0.0 && st.margin < 1.0 { f((2.0 * exec_view.h_max_um / st.margin).min(3.0 * exec_view.h_max_um)) } else { 0.0 },
+        spindle_fn_hz: f(modal.spindle_fn_hz),
+        spindle_k_n_per_um: f(modal.spindle_k_n_per_um),
+        spindle_zeta: f(modal.spindle_zeta),
+        spindle_dominates: st.spindle_dominates,
+        static_k_n_per_um: f(modal.static_k_n_per_um()),
+        flip_factor: f(st.flip_factor),
     };
     if rep.min_chatter_margin > 0.0 && rep.min_chatter_margin < 1.0 {
         flag(
@@ -926,12 +998,14 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             rep.min_chatter_margin,
             ">= 1",
             format!(
-                "채터 여유 최소 {:.2} (경로의 {:.0}% 가 한계 밖)인데 벽면 오차 {:.1} µm 에는 정적 휨·열·마모만 들어가고 채터 떨림 자국은 없다 — 이 벽 오차는 안정 절삭일 때의 값. 불안정이면 떨림 자국이 {:.1}~{:.1} µm (한계에서 0.15·h_max, 공구가 절삭에서 이탈하는 수준 ≈ h_max) 더해질 수 있고, 한계의 1.3배 넘게 깊으면 크기를 예측하지 못한다",
+                "채터 여유 최소 {:.2} (경로의 {:.0}% 가 한계 밖) — 벽면 오차 중앙값 {:.1} µm 는 안정 절삭 기준이고, 떨림 자국은 산-골 {:.1}~{:.1} µm (W ≈ h_max·ap/ap_lim, 대역 0.5~2배, 상한 3·h_max) 로 따로 본다. 경로 벽 샘플의 채터 확률 가중 파상도 최대 {:.1} µm · 측벽 Ra 최대 {:.2} µm 에 반영됨. 아임계 분기라 한계 바로 아래(여유 0.8~1.0)에서도 충격 한 번이면 자국이 날 수 있다",
                 rep.min_chatter_margin,
                 rep.chatter_fraction * 100.0,
                 rep.mean_wall_error_um,
                 dynamics.chatter_waviness_low_um,
-                dynamics.chatter_waviness_high_um
+                dynamics.chatter_waviness_high_um,
+                rep.wall_waviness_max_um,
+                rep.wall_ra_max_um
             ),
         );
     }
@@ -946,12 +1020,19 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             immersion,
             ">= 0.25 이면 ZOA 신뢰",
             format!(
-                "반경 절입 ae/D = {:.2} 로 작아 ZOA 안정 한계의 오차는 ±15% 안팎(반정수화 시험 계산 0.86~1.13배)이다 — 여유 {:.2} 는 방향성과 자릿수로 읽을 것 (날 통과 {:.0} Hz, 고유진동수 {:.0} Hz, 비 {:.1}; 날 통과가 고유진동수보다 훨씬 낮아 flip 로브 영역 밖)",
+                "반경 절입 ae/D = {:.2} 로 작아 ZOA 안정 한계의 오차는 ±15% 안팎(반정수화 시험 계산 0.86~1.13배)이다 — 여유 {:.2} 는 방향성과 자릿수로 읽을 것 (날 통과 {:.0} Hz, 고유진동수 {:.0} Hz, 날 통과/고유 {:.2}; {})",
                 immersion,
                 dynamics.margin_executed,
                 tooth_hz,
                 modal.fn_hz,
-                modal.fn_hz / tooth_hz.max(1e-9)
+                tooth_hz / modal.fn_hz.max(1e-9),
+                if st.flip_factor < 0.999 {
+                    format!("flip 로브 위치 2/(2k+1) 근처라 한계에 {:.2} 를 곱했다 — 주기 2배 채터는 날 하나 건너 자국을 남긴다", st.flip_factor)
+                } else if tooth_hz / modal.fn_hz.max(1e-9) <= 0.3 {
+                    "날 통과가 고유진동수의 0.3배 이하라 flip 로브 영역 밖".to_string()
+                } else {
+                    "flip 로브 위치(2, 0.67, 0.4)에서 벗어났거나 헬릭스가 ap 를 덮어 보정 없음".to_string()
+                }
             ),
         );
     }
@@ -980,7 +1061,17 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             0,
             modal.fn_hz,
             "탭 테스트",
-            format!("고유진동수 {:.0} Hz · 강성 {:.2} N/µm · 감쇠비 {:.3} 는 공구·홀더 모델 추정값 (홀더 {:.0} N/µm 가정) — 채터 여유의 로그 표준편차 0.4 로 취급", modal.fn_hz, modal.k_n_per_um, modal.zeta, t.holder_stiffness_n_per_um),
+            format!(
+                "고유진동수 {:.0} Hz · 강성 {:.2} N/µm · 감쇠비 {:.3} 는 공구·홀더 모델 추정값 (홀더 {:.0} N/µm 가정) + 스핀들 모드 {:.0} Hz · {:.0} N/µm · ζ {:.3} (기계 설정 기본값, 문헌 500~1500 Hz · 20~60 N/µm){} — 채터 여유의 로그 표준편차 0.4 로 취급",
+                modal.fn_hz,
+                modal.k_n_per_um,
+                modal.zeta,
+                t.holder_stiffness_n_per_um,
+                modal.spindle_fn_hz,
+                modal.spindle_k_n_per_um,
+                modal.spindle_zeta,
+                if st.spindle_dominates { ", 이 회전수의 채터 한계는 스핀들 모드가 정함 (채터 주파수가 스핀들 쪽)" } else if modal.spindle_dominates() { ", 스핀들 모드의 k·ζ 가 공구 모드보다 작음" } else { "" }
+            ),
         );
     }
 
@@ -988,6 +1079,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
     let comp = physics::tool_compliance(t, ap_exec, ctx.calib.deflection);
     let total_c = 1.0 / comp.stiffness_n_per_um.max(1e-9);
     let holder_c = ctx.calib.deflection / t.holder_stiffness_n_per_um.max(1e-9);
+    let spindle_c = ctx.calib.deflection / t.spindle_stiffness_n_per_um.max(1e-9);
     let force_at_wall = rep.max_wall_defl_um.max(1e-12);
     // 벽이 만들어지는 순간의 법선 힘: 업밀링과 다운밀링을 같은 실행 ae·ap 로 나란히 계산한다
     let eng_up = Engagement::side(ap_exec, ae_exec.clamp(1e-6, d), d, false);
@@ -1000,10 +1092,10 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
     let down_share = if all_n > 0.0 { down_n / all_n } else { 0.0 };
     let deflection = AuditDeflection {
         tool_tip_stiffness_n_per_um: f(comp.stiffness_n_per_um),
-        beam_compliance_um_per_n: f((total_c - holder_c).max(0.0)),
+        beam_compliance_um_per_n: f((total_c - holder_c - spindle_c).max(0.0)),
         holder_compliance_um_per_n: f(holder_c),
-        holder_share: f(holder_c / total_c.max(1e-12)),
-        spindle_taper_compliance_modeled: false,
+        holder_share: f((holder_c + spindle_c) / total_c.max(1e-12)),
+        spindle_taper_compliance_modeled: true,
         load_point_from_holder_mm: f(comp.load_point_from_holder_mm),
         wall_defl_nominal_um: f(nominal.wall.deflection_um),
         wall_defl_top_um: f(nominal.wall.deflection_top_um),
@@ -1018,7 +1110,9 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         wall_down_force_n: f(wall_dn_n),
         wall_down_um: f(wall_dn_um),
         path_down_share: f(down_share),
-        runout_overcut_um: f(-0.5 * t.runout_um),
+        runout_overcut_um: f(-t.runout_overcut_um()),
+        spindle_compliance_um_per_n: f(spindle_c),
+        runout_compensated: t.runout_compensated,
     };
     {
         let (lo, hi) = (wall_up_um.abs().min(wall_dn_um.abs()), wall_up_um.abs().max(wall_dn_um.abs()));
@@ -1044,15 +1138,23 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         if t.runout_um > 0.5 {
             flag(
                 &mut flags,
-                "deflection_runout_overcut_excluded",
-                0,
+                "deflection_runout_overcut",
+                if !t.runout_compensated && t.runout_overcut_um() > 0.25 * ctx.tolerance_mm * 1000.0 { 1 } else { 0 },
                 deflection.runout_overcut_um,
                 "정보",
-                format!(
-                    "런아웃 TIR {:.1} µm 면 가장 긴 날이 벽을 {:.1} µm 과삭한다(편심 e = TIR/2) — 벽면 오차 값에는 넣지 않았다. 공구 반경을 회전 상태 레이저로 재면 상쇄되고 정지 상태 측정이면 그대로 남는다",
-                    t.runout_um,
-                    0.5 * t.runout_um
-                ),
+                if t.runout_compensated {
+                    format!(
+                        "런아웃 TIR {:.1} µm — 공구 반경을 회전 상태(레이저)로 재서 긴 날 반경이 이미 보정값에 들어 있어 과삭 0 으로 뒀다 (정지 측정이면 약 {:.1} µm 과삭, 공구 교체마다 테이퍼·스핀들 반복성 1~3 µm 는 남음)",
+                        t.runout_um,
+                        crate::surface::RUNOUT_EFFECTIVE * t.runout_ecc_mm() * 1000.0
+                    )
+                } else {
+                    format!(
+                        "런아웃 TIR {:.1} µm 면 가장 긴 날이 벽을 {:.1} µm 과삭한다 (0.85·e, e = TIR/2, 긴 날이 더 휘어 e 의 0.7~1.0) — 벽면 오차·2차 보정 바이어스에 넣었다. 공구 반경을 회전 상태 레이저로 재면(공구 설정 '반경 회전 측정') 0 이 된다",
+                        t.runout_um,
+                        t.runout_overcut_um()
+                    )
+                },
             );
         }
     }
@@ -1063,9 +1165,91 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             0,
             deflection.holder_share,
             "정보",
-            format!("공구 끝 컴플라이언스 {:.3} µm/N 중 홀더·스핀들 몫 {:.0}% — 스핀들·테이퍼 접촉 컴플라이언스는 모델에 따로 없고 홀더 스프링 한 개({:.0} N/µm)로 대신함", total_c, deflection.holder_share * 100.0, t.holder_stiffness_n_per_um),
+            format!("공구 끝 컴플라이언스 {:.3} µm/N 중 홀더({:.0} N/µm)·스핀들({:.0} N/µm) 몫 {:.0}% — 공구 보 굽힘이 휨을 거의 다 정한다", total_c, t.holder_stiffness_n_per_um, t.spindle_stiffness_n_per_um, deflection.holder_share * 100.0),
         );
     }
+
+    // ---- 표면조도 ----
+    let group = crate::pairref::WpGroup::of(&ctx.wp);
+    let chat_p_exec = crate::toolwear::chatter_probability(st.margin, st.measured);
+    let rough = crate::surface::wall_roughness(
+        0.5 * d,
+        t.flutes,
+        nominal.fz_mm,
+        t.runout_ecc_mm(),
+        co.h_min_mm,
+        exec_view.h_max_um / 1000.0,
+        0.0,
+        group,
+        nominal.thermal.bue_risk,
+        st.margin,
+        chat_p_exec,
+    );
+    let surface = AuditSurface {
+        ra_um: f(rough.ra_um),
+        ra_stable_um: f(rough.ra_stable_um),
+        rz_um: f(rough.rz_um),
+        rt_feed_um: f(rough.rt_feed_um),
+        rt_envelope_um: f(rough.rt_envelope_um),
+        forming_teeth: rough.forming_teeth,
+        flutes: t.flutes,
+        floor_um: f(rough.floor_um),
+        hmin_term_um: f(rough.hmin_term_um),
+        bue_factor: f(rough.bue_factor),
+        wear_factor_end: f(crate::surface::wear_factor(group, rep.vb_end_mm)),
+        chatter_wpv_um: f(rough.chatter_wpv_um),
+        chatter_probability: f(rough.chatter_probability),
+        path_ra_mean_um: f(rep.wall_ra_mean_um),
+        path_ra_p90_um: f(rep.wall_ra_p90_um),
+        path_ra_max_um: f(rep.wall_ra_max_um),
+        path_waviness_max_um: f(rep.wall_waviness_max_um),
+    };
+    if t.flutes > 1 && rough.forming_teeth < t.flutes {
+        flag(
+            &mut flags,
+            "surface_runout_single_tooth",
+            0,
+            rough.forming_teeth as f64,
+            "날 수",
+            format!(
+                "런아웃 편심 {:.1} µm 가 이송 자국 깊이(fz²/8R = {:.3} µm)보다 커서 {}날 중 {}날만 최종 벽을 만든다 — 자국 간격이 날당이 아니라 회전당 이송이 되어 Rt {:.2} µm (런아웃 없으면 {:.3} µm). 실측 정삭 조도가 기하 이송 자국의 수십 배인 주된 이유 (Schmitz 외 2007, Wojciechowski 2011)",
+                t.runout_ecc_mm() * 1000.0,
+                rough.rt_feed_um,
+                t.flutes,
+                rough.forming_teeth,
+                rough.rt_envelope_um,
+                rough.rt_feed_um
+            ),
+        );
+    }
+    if surface.path_ra_max_um > 1.5 * surface.ra_um.max(1e-6) && surface.path_ra_max_um > 0.4 {
+        flag(
+            &mut flags,
+            "surface_ra_rises_along_path",
+            0,
+            surface.path_ra_max_um / surface.ra_um.max(1e-6),
+            "< 1.5",
+            format!(
+                "경로 최종 벽 Ra 평균 {:.2} · 90 % {:.2} · 최대 {:.2} µm 로 새 공구 공칭 {:.2} µm 의 {:.1}배 — 마모(경로 끝 배수 {:.2})·채터(파상도 기대 최대 {:.1} µm)·코너 이송 변화가 원인",
+                surface.path_ra_mean_um,
+                surface.path_ra_p90_um,
+                surface.path_ra_max_um,
+                surface.ra_um,
+                surface.path_ra_max_um / surface.ra_um.max(1e-6),
+                surface.wear_factor_end,
+                surface.path_waviness_max_um
+            ),
+        );
+    }
+    // 기계(스핀들·주축대) 열변위: 예열·열보정이 된 기계라 XY 벽 오차에는 넣지 않았다 (실내 온도 변동 드리프트만 반영)
+    flag(
+        &mut flags,
+        "machine_thermal_warmup_excluded",
+        0,
+        0.0,
+        "예열 후 가공",
+        "스핀들·주축대 열변위는 넣지 않았다 — 예열·열보정된 기계의 XY 잔여 2~5 µm (Z 3~10 µm). 냉간 시동 직후면 XY 3~15 µm · Z 15~50 µm 가 시상수 20~40 분으로 쌓이므로 정밀 벽은 20~30 분 예열 후 가공 (ISO 230-3, Uhlmann 외 2022)".to_string(),
+    );
 
     // ---- 공칭 vs 경로 조건 차이 ----
     if c.radial_doc_mm > 1e-9 && (ae_exec / c.radial_doc_mm - 1.0).abs() > 0.3 {
@@ -1111,9 +1295,14 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         "IR 카메라(칩 배출 쪽) 또는 공구-칩 열전대로 건식/플러드 한 쌍 측정. 계면 온도가 해석식의 절반 이하면 thermal_factor 를 낮춤",
     );
     want(
-        "벽면 치수 오차 분해 (휨 · 마모 · 열 · 채터)",
-        "정적 휨 + 반경 마모 + 열팽창 합 (채터 떨림 자국 제외)",
-        "CMM 또는 마이크로미터로 1차 벽 높이별 3점 측정, 같은 조건 안정(ap 절반) 가공과 비교하면 채터 몫이 분리됨",
+        "벽면 치수 오차 분해 (휨 · 마모 · 열 · 런아웃 · 채터)",
+        "정적 휨(스핀들 포함) + 반경 마모 + 열팽창 + 런아웃 과삭 0.85·e 합 (채터 떨림 자국은 파상도로 따로)",
+        "CMM 또는 마이크로미터로 1차 벽 높이별 3점 측정, 같은 조건 안정(ap 절반) 가공과 비교하면 채터 몫이 분리됨. 다이얼 게이지로 공구 끝 TIR 을 회전 측정하면 런아웃 몫이 분리됨",
+    );
+    want(
+        "측벽 조도 Ra·Rz (소재 바닥값, 최소 칩 밀림, 마모 배수)",
+        "날 궤적 포락선 + 문헌 바닥값 (정삭 실측 7075 0.10~0.15 · 강 0.15~0.2 · SUS 0.3 µm)",
+        "촉침식 조도계로 벽 3곳 이송 방향 측정 (λc 0.8 mm). 새 공구와 경로 끝 공구로 각각 재면 마모 배수가 분리됨",
     );
     if wear.breakin_share > BREAKIN_SHARE_WARN {
         want(
@@ -1146,6 +1335,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         wear,
         dynamics,
         deflection,
+        surface,
         flags,
         measure_next,
         pair,
@@ -1238,7 +1428,7 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
     ));
     let w = &a.wear;
     v.push(format!(
-        "[AUDIT] 마모: VB {:.2}→{:.2} µm / {:.3} min = {:.2} µm/min (정상 {:.2} + 길들이기 {:.2}, 길들이기 {:.0}%) | 길들이기 VB {:.0} µm τ {:.1} min 소진 {:.1}% | κ {:.3} 공칭 {:.2} µm/min 수명 {:.0}/{:.0} min | 경로계수 k {:.3} 경로 수명 {:.0} min | 채터 배수 경로 x{:.2} 공칭 x{:.2} | 교체까지 p50 {} p90 {} (단순 환산 {:.0} · 정상율만 {:.0} · 남은 {:.0} min / 부품 {:.3} min) | 치수 기준 VB_dim {:.0} µm → {} 개 | MRR {:.2} cm³/min 경로 수명 동안 {:.0} cm³ 비마모 {:.2} µm/cm³ | 지배 {}",
+        "[AUDIT] 마모: VB {:.2}→{:.2} µm / {:.3} min = {:.2} µm/min (정상 {:.2} + 길들이기 {:.2}, 길들이기 {:.0}%) | 길들이기 VB {:.0} µm τ {:.1} min 소진 {:.1}% | κ {:.3} 공칭 {:.2} µm/min 수명 {:.0}/{:.0} min | 경로계수 k {:.3} 경로 수명 {:.0} min | 채터 배수 경로 x{:.2} 공칭 x{:.2} | 교체까지 p50 {} p90 {} (수명 편차 σ {:.2}·모델 σ {:.2} → 보수 ×{:.2}, 편차만 ×{:.2} · 단순 환산 {:.0} · 정상율만 {:.0} · 남은 {:.0} min / 부품 {:.3} min) | 치수 기준 VB_dim {:.0} µm → {} 개 | MRR {:.2} cm³/min 경로 수명 동안 {:.0} cm³ 비마모 {:.2} µm/cm³ | 지배 {}",
         w.vb_start_mm * 1000.0,
         w.vb_end_mm * 1000.0,
         w.job_cut_min,
@@ -1259,6 +1449,10 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
         w.chatter_wear_nominal,
         w.parts_left_p50.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "-".into()),
         w.parts_left_p90.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "-".into()),
+        w.life_sigma_scatter,
+        w.life_sigma_model,
+        w.parts_p10_factor,
+        w.parts_p10_scatter_only,
         w.parts_naive_total_rate,
         w.parts_steady_rate_only,
         w.path_remaining_min,
@@ -1272,7 +1466,7 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
     ));
     let d = &a.dynamics;
     v.push(format!(
-        "[AUDIT] 동역학: fn {:.0} Hz k {:.2} N/µm ζ {:.3} m_eff {:.1} g (홀더 몫 {:.0}%) 날통과 {:.0} Hz (fn/f {:.1}) kt {:.0} N/mm² | ap {:.1} → 한계 {:.2} (임계 {:.2}) 여유 실행 {:.2} 공칭 {:.2} 경로 최소 {:.2} 비율 {:.0}% 확률 {:.0}% | ae/D {:.2} ZOA {} FRF {} | 강제진동 SLE {:.2} 진폭 {:.2} µm | 채터→벽 오차 {} (마진<1 일 때 파상도 참고 {:.1}~{:.1} µm)",
+        "[AUDIT] 동역학: fn {:.0} Hz k {:.2} N/µm ζ {:.3} m_eff {:.1} g (홀더 몫 {:.0}%) 날통과 {:.0} Hz (fn/f {:.1}) kt {:.0} N/mm² | ap {:.1} → 한계 {:.2} (임계 {:.2}) 여유 실행 {:.2} 공칭 {:.2} 경로 최소 {:.2} 비율 {:.0}% 확률 {:.0}% | ae/D {:.2} ZOA {} flip x{:.2} FRF {} | 스핀들 모드 {:.0} Hz {:.0} N/µm ζ {:.3} (지배 {}) 정적 끝 강성 {:.2} N/µm | 강제진동 SLE {:.2} 진폭 {:.2} µm | 채터→벽 오차 {} (마진<1 일 때 떨림 자국 산-골 {:.1}~{:.1} µm)",
         d.fn_hz,
         d.k_n_per_um,
         d.zeta,
@@ -1291,7 +1485,13 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
         d.chatter_probability * 100.0,
         d.immersion_over_d,
         if d.zoa_reliable { "신뢰" } else { "저절입(부정확)" },
+        d.flip_factor,
         if d.frf_measured { "실측" } else { "추정" },
+        d.spindle_fn_hz,
+        d.spindle_k_n_per_um,
+        d.spindle_zeta,
+        if d.spindle_dominates { "스핀들" } else { "공구" },
+        d.static_k_n_per_um,
         d.forced_sle_um,
         d.forced_amplitude_um,
         if d.chatter_in_wall_error { "반영" } else { "미반영" },
@@ -1300,10 +1500,11 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
     ));
     let df = &a.deflection;
     v.push(format!(
-        "[AUDIT] 휨: 공구 끝 강성 {:.2} N/µm (보 {:.3} + 홀더 {:.3} µm/N, 홀더 몫 {:.0}%, 스핀들 테이퍼 {}) 하중점 {:.1} mm | 벽 휨 공칭 {:.2} (상 {:.2}/하 {:.2}) 경로 평균 {:.2} 최대 {:.2} µm | 벽 순간 법선 힘 업 {:.1} N → {:.2} µm / 다운 {:.1} N → {:.2} µm (경로 다운밀링 {:.0}%) | 런아웃 과삭(미반영) {:.1} µm | 고정 {:.2} 소재 열 {:.2} µm",
+        "[AUDIT] 휨: 공구 끝 강성 {:.2} N/µm (보 {:.3} + 홀더 {:.3} + 스핀들 {:.3} µm/N, 지지부 몫 {:.0}%, 스핀들 테이퍼 {}) 하중점 {:.1} mm | 벽 휨 공칭 {:.2} (상 {:.2}/하 {:.2}) 경로 평균 {:.2} 최대 {:.2} µm | 벽 순간 법선 힘 업 {:.1} N → {:.2} µm / 다운 {:.1} N → {:.2} µm (경로 다운밀링 {:.0}%) | 런아웃 과삭(반영{}) {:.1} µm | 고정 {:.2} 소재 열 {:.2} µm",
         df.tool_tip_stiffness_n_per_um,
         df.beam_compliance_um_per_n,
         df.holder_compliance_um_per_n,
+        df.spindle_compliance_um_per_n,
         df.holder_share * 100.0,
         if df.spindle_taper_compliance_modeled { "모델" } else { "미모델" },
         df.load_point_from_holder_mm,
@@ -1317,9 +1518,31 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
         df.wall_down_force_n,
         df.wall_down_um,
         df.path_down_share * 100.0,
+        if df.runout_compensated { ", 회전 측정 반경으로 상쇄" } else { "" },
         df.runout_overcut_um,
         df.fixture_um,
         df.thermal_wp_um
+    ));
+    let sf = &a.surface;
+    v.push(format!(
+        "[AUDIT] 조도: 측벽 Ra {:.2} (안정 {:.2}) Rz {:.1} µm | 포락선 Rt {:.2} (이송 자국만 {:.3}) µm · 표면 형성 날 {}/{} | 바닥 {:.2} + 최소 칩 {:.2} µm · 구성인선 x{:.2} · 경로 끝 마모 x{:.2} | 채터 파상도 {:.1} µm × 확률 {:.0}% | 경로 Ra 평균 {:.2} · 90% {:.2} · 최대 {:.2} µm · 파상도 기대 최대 {:.1} µm",
+        sf.ra_um,
+        sf.ra_stable_um,
+        sf.rz_um,
+        sf.rt_envelope_um,
+        sf.rt_feed_um,
+        sf.forming_teeth,
+        sf.flutes,
+        sf.floor_um,
+        sf.hmin_term_um,
+        sf.bue_factor,
+        sf.wear_factor_end,
+        sf.chatter_wpv_um,
+        sf.chatter_probability * 100.0,
+        sf.path_ra_mean_um,
+        sf.path_ra_p90_um,
+        sf.path_ra_max_um,
+        sf.path_waviness_max_um
     ));
     let pr = &a.pair;
     v.push(format!(

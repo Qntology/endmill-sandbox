@@ -184,6 +184,7 @@ impl EndMillAttr {
             neck_diameter_mm: self.neck_diameter_mm,
             reach_mm: self.reach_mm,
             holder: crate::profile::HolderType::Unknown,
+            radius_measured_rotating: false,
         }
     }
 

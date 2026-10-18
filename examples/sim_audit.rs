@@ -154,6 +154,11 @@ fn main() {
         "오차예산 휨 {:.2} 마모10분 {:.2} 열(공구) {:.2} 열(소재) {:.2} 고정 {:.2} 동적 {:.2} 환경 {:.2} 드리프트 {:.2} 합 {:.2} / 공차 {:.0} um",
         eb.deflection_um, eb.wear_10min_um, eb.thermal_tool_um, eb.thermal_workpiece_um, eb.fixture_um, eb.dynamic_um, eb.environment_um, eb.drift_um, eb.total_um, eb.tolerance_um
     );
+    let sf = &a.surface;
+    println!(
+        "표면 Ra {:.3} um 이송흔 {:.3} 최소칩 {:.3} 채터 x{:.2} 스캘럽 {:.3} | Rz {:.2} 안정 Ra {:.3} 포락선 Rt {:.3} 형성 날 {}/{} 채터 파상도 {:.2} um | 런아웃 과삭 {:.2} um",
+        sf.wall_ra_um, sf.feed_mark_um, sf.min_chip_um, 1.0 + sf.chatter_penalty, sf.scallop_um, sf.wall_rz_um, sf.wall_ra_stable_um, sf.envelope_rt_um, sf.forming_teeth, ctx.tool.flutes, sf.chatter_wpv_um, eb.runout_um
+    );
     for n in a.notes.iter() {
         println!("  노트: {}", n);
     }

@@ -31,6 +31,7 @@ pub mod wearlog;
 pub mod wearcomp;
 pub mod toolwear;
 pub mod pairref;
+pub mod surface;
 pub mod simaudit;
 
 pub use application::*;

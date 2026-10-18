@@ -276,7 +276,9 @@ fn tool_instance_accumulates_across_jobs_records_passes_and_resets() {
     let t1 = out1.tool.clone().unwrap();
     assert_eq!(row.id, t1.id);
     assert_eq!(t1.jobs, 1);
-    assert!((t1.vb_band_mm - j1.report.vb_end_mm).abs() < 0.01 * j1.report.vb_end_mm + 1e-6, "stored {} vs simulated {}", t1.vb_band_mm, j1.report.vb_end_mm);
+    // 저장값은 날별 마모장의 '마지막 ap 띠' 평균이고 시뮬레이션 값은 경로 끝 스칼라 VB — 램프·부분 깊이 스텝은 얕은 띠에 쌓여
+    // 두 값이 1 % 안팎 다르다 (스핀들 모드로 스텝마다 채터 마모 배수 차이가 커져 1.0 % 를 넘음)
+    assert!((t1.vb_band_mm - j1.report.vb_end_mm).abs() < 0.02 * j1.report.vb_end_mm + 1e-6, "stored {} vs simulated {}", t1.vb_band_mm, j1.report.vb_end_mm);
     assert!(t1.cut_min >= j1.report.cut_time_min - 1e-9);
     assert!(out1.records > 0);
     let (j2, mut row2) = tracked_job(&mut store, &mut sds, &p, &opts);

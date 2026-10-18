@@ -182,6 +182,52 @@ pub fn pd_clearance_factor(clearance_deg: f64) -> f64 {
     ((10f64).to_radians().tan() / a).powf(0.4).clamp(0.7, 1.5)
 }
 
+/// 공구 수명의 불확실성 (로그 수명 표준편차 σ). 교체까지 부품 수의 보수(10 % 분위) 예측 = 중앙값 × exp(−1.2816·σ_total).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct LifeSpread {
+    /// 같은 조건에서 공구마다 다른 수명 (측정으로 줄일 수 없음)
+    pub sigma_scatter: f64,
+    /// 모델 예측 오차 (실측·보정으로 줄어듦)
+    pub sigma_model: f64,
+    pub sigma_total: f64,
+    /// 공구 간 편차만 반영한 10 % 분위 / 중앙값
+    pub p10_scatter_only: f64,
+    /// 둘 다 반영한 10 % 분위 / 중앙값
+    pub p10_total: f64,
+    pub chipping_regime: bool,
+    pub calibrated: bool,
+}
+
+/// 공구 간 수명 편차(σ_ln ≈ CoV, Weibull 형상 β ≈ 1.2/CoV)와 보정 전후 모델 오차.
+/// 실측: 강 초경 마모 지배 0.12~0.19 (Karandikar·Abbas·Schmitz 2013, 1018 강 3속도 × 3공구), Ti-6Al-4V 코팅 초경 0.14
+/// (Heliyon 2020 반복 12쌍), 스테인리스·Ni 20~30 % (고전 집계), 치핑·채터가 지배하면 파괴형이라 0.40~0.60 (β 2~3).
+/// 알루미늄·CFRP 는 자료가 없어 0.30 (가정). 보정 전 모델 오차는 문헌 Taylor 상수가 한 사례에서 8.4배, 맞춤 외삽 1.3~2.1배 → σ 0.5,
+/// 같은 조합 실측(VB·수명) 또는 원장 보정이 있으면 0.2. 공구 간 편차는 측정으로 없어지지 않는다
+pub fn life_spread(ctx: &CutContext, chatter_fraction: f64, min_margin: f64, measured: bool) -> LifeSpread {
+    let g = WpGroup::of(&ctx.wp);
+    let base: f64 = match g {
+        WpGroup::CarbonSteel | WpGroup::AlloySteel => 0.18,
+        WpGroup::Titanium => 0.20,
+        WpGroup::Stainless | WpGroup::Nickel => 0.28,
+        WpGroup::Hardened => 0.40,
+        WpGroup::Aluminum | WpGroup::Cfrp => 0.30,
+    };
+    let chipping = chatter_fraction > 0.3 && min_margin > 0.0 && min_margin < 1.0;
+    let sigma_scatter = if chipping { base.max(0.45) } else { base };
+    let calibrated = measured || (ctx.calib.wear - 1.0).abs() > 1e-6;
+    let sigma_model = if calibrated { 0.2 } else { 0.5 };
+    let sigma_total = (sigma_scatter * sigma_scatter + sigma_model * sigma_model).sqrt();
+    LifeSpread {
+        sigma_scatter,
+        sigma_model,
+        sigma_total,
+        p10_scatter_only: (-1.2816 * sigma_scatter).exp(),
+        p10_total: (-1.2816 * sigma_total).exp(),
+        chipping_regime: chipping,
+        calibrated,
+    }
+}
+
 /// 런아웃 기본값의 출처
 pub fn runout_source(s: &crate::profile::EndMillMockupSetting) -> &'static str {
     if s.runout_um.is_some() {

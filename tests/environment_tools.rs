@@ -2,7 +2,7 @@ use endmill_model::calc::{self, CalcOverrides};
 use endmill_model::environment;
 use endmill_model::gcode::ToolPathPattern;
 use endmill_model::loadsim;
-use endmill_model::physics::{self, tool_compliance, CutContext, ThermalBody, ToolGeometry, WorkpieceProps};
+use endmill_model::physics::{self, tool_compliance, tool_compliance_lumped, CutContext, ThermalBody, ToolGeometry, WorkpieceProps};
 use endmill_model::profile::{
     boiling_point_c, CoolantConfig, CoolantMethod, EndMillMockupSetting, MachineLimits, MachiningPreset, MachiningProfile, ShopEnvironment,
     ToolSubstrate,
@@ -144,7 +144,10 @@ fn neck_and_substrate_change_tool_physics() {
     let carbide = EndMillMockupSetting::default_10mm_4flute();
     let th = ToolGeometry::from_setting(&hss, &wp, &m, Some(&hss.substrate.base()));
     let tc = ToolGeometry::from_setting(&carbide, &wp, &m, Some(&carbide.substrate.base()));
-    assert!(tool_compliance(&th, 5.0, 1.0).stiffness_n_per_um < 0.5 * tool_compliance(&tc, 5.0, 1.0).stiffness_n_per_um);
+    // 모재 탄성률(HSS ≈ 1/3 초경)은 공구·홀더 사슬에서 강성을 절반 아래로 만든다. 두 공구에 같은 스핀들 스프링(30 N/µm)이 직렬로
+    // 붙는 전체 끝 강성에서는 그 몫만큼 비가 희석되어 0.5 를 조금 넘는다
+    assert!(tool_compliance_lumped(&th, 5.0, 1.0).stiffness_n_per_um < 0.5 * tool_compliance_lumped(&tc, 5.0, 1.0).stiffness_n_per_um);
+    assert!(tool_compliance(&th, 5.0, 1.0).stiffness_n_per_um < 0.6 * tool_compliance(&tc, 5.0, 1.0).stiffness_n_per_um);
     let mut p = profile(MachiningPreset::default_steel_general());
     let life_c = analyze(&p).wear.tool_life_min;
     p.endmill_setting = hss.clone();
