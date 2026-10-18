@@ -3586,10 +3586,47 @@
 	    ${events.slice(0, 4).map(e => `<div class="ts-ev"><span>${esc(tsWhen(e.created_at))}</span><span>${esc(WEAR_EVENT_LABEL[e.kind] || e.kind)}</span><span>VB ${fmt(e.vb_before_mm, 3)} → ${fmt(e.vb_after_mm, 3)}</span><span>${fmt(e.cut_min_after, 1)}분</span></div>`).join('')}
 	    <button class="btn btn-sm btn-outline btn-block ts-reset" id="ts-reset" onclick="toolReset()">${toolResetLabel()}</button>
 	    <div class="ts-actions"><button class="btn btn-sm btn-outline" onclick="jobListShow()">가공 기록</button>
-	      <label class="pv-check" title="켜면 재생해도 가공 기록·공구 마모 누적을 저장하지 않습니다 (조건 비교용)"><input type="checkbox" id="ts-dry" ${dry ? 'checked' : ''} onchange="toolDryRun(this.checked)"/> 시뮬레이션만</label></div>`;
+	      <label class="pv-check" title="켜면 재생해도 가공 기록·공구 마모 누적을 저장하지 않습니다 (조건 비교용)"><input type="checkbox" id="ts-dry" ${dry ? 'checked' : ''} onchange="toolDryRun(this.checked)"/> 시뮬레이션만</label></div>
+	    ${toolLifeSettingsRow()}`;
 	}
 
-	const WEAR_EVENT_LABEL = { pass1: '1차 가공', pass2: '2차 보정', measure: '실측 반영', change_pending: '교체 대기', reset: '초기화', replaced: '사양 변경 교체' };
+	// 공구 수명 관리: 수명 판정(VB 한계 × 비율)에 닿았을 때 기계가 하는 일 — 실제 제어기·부하 감시 동작
+	const TL_POLICIES = [
+	  ['stop', '정지', '마모 경보 → 지금 절삭을 마치고 정지 (작업자가 교체)'],
+	  ['change_tool', '교체 후 계속', '지금 절삭을 마치고 예비 공구로 교체한 뒤 계속 (길들이기 다시 · 교체 단차)'],
+	  ['finish_part', '프로그램 끝까지', '횟수·시간 공구 수명 관리 — 만료돼도 프로그램은 끝까지, 다음 작업부터 예비 공구'],
+	  ['run_to_failure', '감시 없음', '파손까지 계속 — 무엇이 일어나는지 보는 용도'],
+	];
+
+	function toolLifeSettingsRow() {
+	  const t = (APP.settings && APP.settings.tool_life) || { policy: 'stop', end_fraction: 1, change_s: 30 };
+	  const cur = TL_POLICIES.find(p => p[0] === t.policy) || TL_POLICIES[0];
+	  return `<div class="ts-row" title="파손(과부하·피로·날끝 붕괴·소성 변형)은 정책과 관계없이 그 자리에서 정지합니다">수명 판정 도달 시
+	      <select id="ts-tl-policy" style="max-width:100%;" onchange="toolLifeSet()">${TL_POLICIES.map(([k, l]) => `<option value="${k}" ${t.policy === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+	    <div class="ts-note">${esc(cur[2])}</div>
+	    <div class="ts-row">판정 <input type="number" id="ts-tl-frac" value="${fmt(t.end_fraction, 2)}" step="0.05" min="0.3" max="2" style="width:56px;" onchange="toolLifeSet()"/> × VB 한계
+	      · 교체 <input type="number" id="ts-tl-change" value="${fmt(t.change_s, 0)}" step="5" min="0" max="3600" style="width:56px;" onchange="toolLifeSet()"/> s</div>`;
+	}
+
+	async function toolLifeSet() {
+	  const toolLife = {
+	    policy: document.getElementById('ts-tl-policy').value,
+	    end_fraction: parseFloat(document.getElementById('ts-tl-frac').value),
+	    change_s: parseFloat(document.getElementById('ts-tl-change').value),
+	  };
+	  let s;
+	  try { s = await invoke('settings_set_tool_life', { toolLife }); } catch (e) { appendLog(`공구 수명 관리 설정 실패: ${esc(e)}`); toolPanelRender(); return; }
+	  APP.settings = s;
+	  ST.settings = s;
+	  JOB.stale = true;
+	  VP.sim = null;
+	  VP.simKey = '';
+	  const pol = TL_POLICIES.find(p => p[0] === toolLife.policy) || ['', toolLife.policy, ''];
+	  appendLog(`공구 수명 관리: ${esc(pol[1])} (${esc(pol[2])}) · 판정 ${fmt(toolLife.end_fraction, 2)} × VB 한계 · 교체 ${fmt(toolLife.change_s, 0)} s — 다음 재생부터 적용`);
+	  toolPanelRender();
+	}
+
+	const WEAR_EVENT_LABEL = { pass1: '1차 가공', pass2: '2차 보정', measure: '실측 반영', change_pending: '교체 대기', reset: '초기화', replaced: '사양 변경 교체', life_end: '수명 판정 교체', failure: '파손', tlm_expired: '수명 관리 만료' };
 
 	function tsWhen(ms) {
 	  if (!ms) return '-';
@@ -6337,6 +6374,7 @@
 	      ['바닥 Z 오차 평균', `${fmt(sim.floor_error_mean_um, 2)} µm`],
 	      ['최대 동력 · 힘 · 온도', `${fmt(sim.max_power_kw, 2)} kW · ${fmt(sim.max_force_n, 0)} N · ${fmt(sim.max_temp_c, 0)} °C`],
 	      ['소재 종료 온도 · 플런지', `${fmt(sim.wp_temp_end_c, 1)} °C · ${sim.plunge_count}회`],
+	      ...toolLifeRows(sim.tool_life),
 	    ]),
 	  ].join('');
 	  document.getElementById('pv-coolant').innerHTML = pvTable([
@@ -6369,6 +6407,24 @@
 	  pvDrawSim();
 	  pvDrawLobes();
 	  pvDrawTraj();
+	}
+
+	// 경로 시뮬레이션의 공구 수명 감시 요약 (LoadSimReport.tool_life)
+	function toolLifeRows(tl) {
+	  if (!tl || !tl.policy) return [];
+	  // pvKv 가 키·값을 이스케이프하므로 일반 문자열로 만든다
+	  const done = tl.total_feed_mm > 0 ? Math.max(0, Math.min(1, 1 - (tl.uncut_feed_mm || 0) / tl.total_feed_mm)) : 1;
+	  const mark = tl.failed ? '⛔ ' : tl.unfinished ? '⚠ ' : (tl.tool_changes > 0 || tl.expired) ? '△ ' : '';
+	  const pol = (TL_POLICIES.find(p => p[0] === tl.policy) || ['', tl.policy])[1];
+	  const ev = (tl.events || []).filter(e => ['life_end', 'tool_change', 'failure', 'stop', 'start_worn'].includes(e.kind));
+	  const rows = [
+	    ['공구 수명 감시', `${mark}${tl.state || '-'} · 경로 완료 ${fmt(done * 100, 0)}% · 공구 ${tl.tools_used || 1}개${tl.failed ? ` · 파손(${tl.failure_cause})` : ''}${tl.expired ? ' · 수명 관리 만료' : ''} · ${pol}`],
+	    ['수명 사용 최대 · VB 한계 / 3차 시작 / 붕괴', `${fmt((tl.life_used_max || 0) * 100, 0)}% · ${fmt(tl.vb_limit_mm, 2)} / ${fmt(tl.params ? tl.params.vb_accel_mm : 0, 2)} / ${fmt(tl.params ? tl.params.vb_collapse_mm : 0, 2)} mm`],
+	    ['몸체 주응력 · 피로 · 치핑 확률', `${fmt(tl.peak_stress_mpa, 0)} MPa (정적 강도 ×${fmt(tl.peak_stress_ratio, 2)}, ${tl.critical_section || '-'}) · ${fmt(tl.fatigue_damage, 3)} · ${fmt((tl.chip_probability || 0) * 100, 0)}%`],
+	    ['부하 감시 (새 날 대비 동력)', `최대 ×${fmt(tl.load_ratio_max || 0, 2)}${tl.load_ratio_at_life_end ? ` · 수명 판정 시점 ×${fmt(tl.load_ratio_at_life_end, 2)}${tl.load_ratio_at_life_end < 1.2 ? ' (1.2배 경보로는 못 잡음)' : ''}` : ''}`],
+	  ];
+	  ev.forEach(e => rows.push([`${e.kind} #${e.tool_no} · ${fmt(e.t_s, 1)} s`, e.message]));
+	  return rows;
 	}
 
 	function pvDrawSim() {

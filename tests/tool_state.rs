@@ -299,7 +299,7 @@ fn tool_instance_accumulates_across_jobs_records_passes_and_resets() {
     assert!(list.iter().all(|j| j.passes.len() == 2 && j.passes[0].pass == 1 && j.passes[1].pass == 2));
     let detail = store.rdb.job_detail(out2.job_id).unwrap().unwrap();
     assert!(!detail.records.is_empty() && detail.events.iter().any(|e| e.kind == "pass1"));
-    let tan = j2.ctx.tool.clearance_deg.to_radians().tan();
+    let tan = j2.ctx.tool.radial_per_vb();
     let measured = t2.vb_band_mm * 1000.0 * tan * 1.3;
     let comp = replan_comp(&p, &j2, measured);
     let mut row3 = store.rdb.active_tool(&t2.slot_key).unwrap().unwrap();
@@ -349,7 +349,7 @@ fn second_pass_wear_is_charged_reverted_on_replan_and_chained_replans_keep_the_r
     assert!((t1.cut_min - (p1_min + p2_min)).abs() < 1e-9);
     let pass2 = store.rdb.job_passes(out1.job_id).unwrap().into_iter().find(|p| p.pass == 2).unwrap();
     assert!(pass2.committed && pass2.status == "planned");
-    let tan = j1.ctx.tool.clearance_deg.to_radians().tan();
+    let tan = j1.ctx.tool.radial_per_vb();
     let m1 = j1.report.vb_end_mm * 1000.0 * tan * 1.8;
     let c1 = replan_comp(&p, &j1, m1);
     let mut r1 = store.rdb.active_tool(&t1.slot_key).unwrap().unwrap();
@@ -579,7 +579,7 @@ fn replanning_after_a_reset_charges_only_the_new_second_pass_to_the_new_tool() {
         assert_eq!(dec.final_action, CompAction::ToolChange, "{:?}", d.reasons);
         wearcomp::finalize(&p, &j1.ctx, &j1.report, &j1.segs, &j1.log, &d, &dec, &o)
     };
-    let tan = j1.ctx.tool.clearance_deg.to_radians().tan();
+    let tan = j1.ctx.tool.radial_per_vb();
     let measured = (j1.report.vb_end_mm * 1000.0 * tan * 1.2).max(4.0);
     let c1 = plan_fresh(measured);
     let mut retired = store.rdb.tool_by_id(old.id).unwrap().unwrap();
@@ -611,7 +611,7 @@ fn a_corrected_measurement_replaces_the_mistaken_one_but_never_undercuts_an_earl
     let opts = CompOptions::default();
     let (j1, mut row) = tracked_job(&mut store, &mut sds, &p, &opts);
     let o1 = record(&store, &mut row, &p, &j1, &j1.comp, "M1", None, false);
-    let tan = j1.ctx.tool.clearance_deg.to_radians().tan();
+    let tan = j1.ctx.tool.radial_per_vb();
     let sim_um = j1.report.vb_end_mm * 1000.0 * tan;
     let typo = (sim_um * 3.0).max(9.0);
     let right = (sim_um * 1.1).max(4.0);
@@ -780,7 +780,7 @@ fn measured_wear_moves_the_parts_left_forecast() {
     let mut sds = SdsStore::open(&dir.join("sds"));
     let r = wearcomp::run_pipeline(&p, "pocket_zigzag", &mut sds, None, None, &CompOptions::default(), None, None, &mut |_, _| true).unwrap();
     let ctx = CutContext::from_profile(&p);
-    let tan = ctx.tool.clearance_deg.to_radians().tan();
+    let tan = ctx.tool.radial_per_vb();
     let mut opts = CompOptions::default();
     opts.measured_radial_um = Some(1.05 * ctx.vb_limit_mm() * 1000.0 * tan);
     let draft = wearcomp::evaluate(&p, &ctx, &r.report, &r.log, &opts, None);
@@ -947,14 +947,19 @@ fn tool_change_parts_left_follows_a_fresh_tool_on_the_same_path() {
 }
 
 #[test]
-fn a_job_that_reaches_the_wear_cap_does_not_stretch_the_path_life() {
+fn a_job_that_reaches_the_life_limit_stops_there_and_keeps_the_path_life_consistent() {
+    // 예전에는 VB 를 한계의 2배에서 자르고 끝까지 깎았다 (이 시험의 옛 이름: wear cap). 지금은 정지 정책(기본)이 수명 판정에서
+    // 지금 절삭을 마치고 멈춘다 — 그 앞까지의 마모 기록으로 만든 경로 수명이 시뮬레이션의 한계 도달 시각과 맞아야 한다
     let p = preset("인코넬");
     let ctx = CutContext::from_profile(&p);
+    assert_eq!(ctx.machine.tool_life_policy, endmill_model::profile::ToolLifePolicy::Stop);
     let r = simulate(&p, &ctx);
-    if r.vb_end_mm < 2.0 * ctx.vb_limit_mm() - 1e-9 {
+    if !r.tool_life.events.iter().any(|e| e.kind == "life_end") {
         return;
     }
-    assert!(r.growth_cut_min < r.cut_time_min, "{} vs {}", r.growth_cut_min, r.cut_time_min);
+    assert!(r.tool_life.unfinished, "the worn-out tool stops instead of cutting the rest of the pocket");
+    assert!(r.vb_end_mm < endmill_model::toollife::HARD_LIMIT_FACTOR * ctx.vb_limit_mm() + 0.01, "no deep overrun: {:.3}", r.vb_end_mm);
+    assert!((r.growth_cut_min - r.cut_time_min).abs() < 1e-9, "no cap is reached any more: {} vs {}", r.growth_cut_min, r.cut_time_min);
     let nominal = physics::analyze_cut(&ctx, &p.conditions, true, ThermalBody::of_setup(&p.workpiece_setup, &ctx.wp));
     let (_, tr) = wearcomp::path_wear(&nominal.trajectory, &r);
     let limit = ctx.vb_limit_mm();

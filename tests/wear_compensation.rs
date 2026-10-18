@@ -515,7 +515,7 @@ fn fresh_tool_single_pass_is_not_offered_on_slender_walls() {
     }))
     .unwrap();
     let mut mild = CompOptions::default();
-    mild.measured_radial_um = Some(0.5 * stocky.vb_limit_mm * ctx.tool.clearance_deg.to_radians().tan() * 1000.0);
+    mild.measured_radial_um = Some(0.5 * stocky.vb_limit_mm * ctx.tool.radial_per_vb() * 1000.0);
     let img_stocky = wearcomp::evaluate(&p, &ctx, &rep, &log, &mild, Some(&alert));
     assert_eq!(img_stocky.rule_action, CompAction::ToolChange);
     let img_slender = wearcomp::evaluate(&p, &ctx, &slender, &log, &mild, Some(&alert));

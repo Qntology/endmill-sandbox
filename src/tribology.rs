@@ -744,7 +744,8 @@ pub fn bue_risk(ctx: &CutContext, t_c: f64, access: f64) -> f64 {
             let window = smoothstep((t_c - lo) / ramp) * (1.0 - smoothstep((t_c - (hi - ramp)) / ramp));
             let p = pair(&ctx.tool, &ctx.wp, t_c);
             let adh = (p.adhesion / 1.2).clamp(0.2, 1.4).powi(2);
-            (0.8 * window * adh * (1.0 - 0.7 * access.clamp(0.0, 1.0))).clamp(0.0, 0.85)
+            // 형상 적합도: 음의 경사·큰 호닝을 알루미늄·스테인리스에 쓰면 구성인선이 쉽게 생긴다 (`appfit`)
+            (0.8 * window * adh * ctx.tool.fit_bue.clamp(1.0, 4.0) * (1.0 - 0.7 * access.clamp(0.0, 1.0))).clamp(0.0, 0.85)
         }
         None => 0.0,
     }

@@ -214,9 +214,9 @@ impl WearField {
         }
     }
 
-    pub fn radial_um(&self, clearance_deg: f64) -> Vec<f64> {
-        let t = clearance_deg.clamp(2.0, 30.0).to_radians().tan();
-        self.vb_mm.iter().map(|v| v * t * 1000.0).collect()
+    /// 날 위치별 반경 후퇴 (µm). `radial_per_vb` 는 `ToolGeometry::radial_per_vb` (경사각 보정 포함)
+    pub fn radial_um(&self, radial_per_vb: f64) -> Vec<f64> {
+        self.vb_mm.iter().map(|v| v * radial_per_vb.max(0.0) * 1000.0).collect()
     }
 }
 
@@ -495,7 +495,7 @@ pub fn summarize(field: &WearField, tool: &ToolGeometry, ap_mm: f64, vb_limit_mm
         flute_band_vb_mm: per,
         coating_strip_um: strip,
         coating_exposed: coating_exposure(tool, band),
-        radial_max_um: mx * tool.clearance_deg.clamp(2.0, 30.0).to_radians().tan() * 1000.0,
+        radial_max_um: mx * tool.radial_per_vb() * 1000.0,
         life_used,
         notes,
         thermal_damage: 0.0,

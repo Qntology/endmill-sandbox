@@ -101,6 +101,7 @@ fn main() {
             commands::settings_set_models,
             commands::settings_set_ui,
             commands::settings_set_comp,
+            commands::settings_set_tool_life,
             commands::settings_set_viz,
             commands::settings_set_dry_run,
             commands::tool_state,

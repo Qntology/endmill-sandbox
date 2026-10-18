@@ -865,6 +865,17 @@ pub struct ToolGeometry {
     pub spindle_fn_hz: f64,
     #[serde(default = "default_spindle_zeta")]
     pub spindle_zeta: f64,
+    /// 용도 적합도(`appfit`) — 공구 형상·날끝·모재가 이 피삭재의 권장 창 밖이면 정상 마모율·치핑 위험·구성인선 경향을 키우는 배수.
+    /// 기준 상태(정규화) 공구에서는 1 (`reset_to_reference_substrate`)
+    #[serde(default = "one")]
+    pub fit_wear: f64,
+    #[serde(default = "one")]
+    pub fit_chip: f64,
+    #[serde(default = "one")]
+    pub fit_bue: f64,
+    /// 경사각·여유각·호닝을 공구에 입력하지 않아 피삭재 기본값을 썼는가 (그 소재용 공구라고 가정한 것)
+    #[serde(default)]
+    pub geometry_from_workpiece: bool,
 }
 
 fn default_spindle_k() -> f64 {
@@ -886,6 +897,14 @@ fn default_substrate_max_c() -> f64 {
 pub const CARBIDE_PROPS: (f64, f64, f64, f64, f64, f64, f64, f64) = (600.0, 80.0, 5.5e-6, 14500.0 * 220.0, 1.0, 14500.0, 0.22, 10.0);
 
 pub const COATING_EDGE_GROWTH: f64 = 0.8;
+
+/// 플랭크 마모 랜드 VB 가 만드는 날끝의 반경 방향 후퇴: KE = VB·tanα / (1 − tanα·tanγ) (Kronenberg; α 여유각, γ 경사각).
+/// 예전에는 VB·tanα 만 썼다 — 경사 18°·여유 12° 알루미늄 공구에서 7 %, 경사 10°·여유 10° 에서 3 % 작게 읽는다 (음의 경사는 조금 작아짐)
+pub fn radial_per_vb(clearance_deg: f64, rake_deg: f64) -> f64 {
+    let ta = clearance_deg.clamp(2.0, 30.0).to_radians().tan();
+    let tg = rake_deg.clamp(-30.0, 30.0).to_radians().tan();
+    ta / (1.0 - ta * tg).max(0.5)
+}
 
 pub fn coated_edge_um(hone_um: f64, coating_um: f64) -> f64 {
     hone_um.max(0.0) + COATING_EDGE_GROWTH * coating_um.max(0.0)
@@ -921,7 +940,7 @@ impl ToolGeometry {
         } else {
             crate::pairref::default_damping(stickout / s.diameter_mm.max(1e-6), s.holder)
         };
-        Self {
+        let mut t = Self {
             diameter_mm: s.diameter_mm,
             flutes: z,
             helix_deg: s.helix_angle_deg,
@@ -962,7 +981,21 @@ impl ToolGeometry {
             spindle_stiffness_n_per_um: machine.spindle_stiffness_n_per_um.max(1.0),
             spindle_fn_hz: machine.spindle_fn_hz.max(50.0),
             spindle_zeta: machine.spindle_zeta.clamp(0.005, 0.3),
-        }
+            fit_wear: 1.0,
+            fit_chip: 1.0,
+            fit_bue: 1.0,
+            geometry_from_workpiece: s.rake_deg.is_none() || s.clearance_deg.is_none() || s.edge_radius_um.is_none(),
+        };
+        t.refresh_fit(wp);
+        t
+    }
+
+    /// 용도 적합도 배수를 이 피삭재 기준으로 다시 계산한다 (형상·모재를 바꾼 뒤 호출)
+    pub fn refresh_fit(&mut self, wp: &WorkpieceProps) {
+        let fit = crate::appfit::evaluate(self, wp, false);
+        self.fit_wear = fit.wear_factor;
+        self.fit_chip = fit.chip_factor;
+        self.fit_bue = fit.bue_factor;
     }
 
     pub fn has_neck(&self) -> bool {
@@ -1011,10 +1044,18 @@ impl ToolGeometry {
         self.reach_mm = 0.0;
         self.substrate = "carbide".into();
         self.substrate_max_c = 1000.0;
+        self.fit_wear = 1.0;
+        self.fit_chip = 1.0;
+        self.fit_bue = 1.0;
     }
 
     pub fn radius(&self) -> f64 {
         self.diameter_mm / 2.0
+    }
+
+    /// 플랭크 마모 VB 1 mm 당 반경(날끝) 후퇴 (mm/mm) — `radial_per_vb`
+    pub fn radial_per_vb(&self) -> f64 {
+        radial_per_vb(self.clearance_deg, self.rake_deg)
     }
 
     pub fn local_radius(&self, z_from_tip: f64) -> (f64, f64) {
@@ -2003,13 +2044,13 @@ pub fn wear_at(ctx: &CutContext, f: &ForceResult, th: &ThermalResult, vc: f64, f
     let rf = (1.0 + 2.0 * ctx.tool.runout_ecc_mm() / fz.max(1e-4)).powf(1.0 - ctx.wp.mc).min(2.0);
     let evac = 1.0 + 0.3 * (1.0 - ctx.coolant.chip_evacuation()) * (0.3 + 0.7 * chip_confinement(eng));
     let base_rate = 0.2 / ctx.wp.ref_life_min.max(1.0);
-    let rate = base_rate * mech * rf * ctx.tool.base_wear_factor * evac * ctx.calib.wear * (1.0 + 1.5 * th.thermal_crack_risk) * substrate_softening(ctx, th.interface_c);
+    let rate = base_rate * mech * rf * ctx.tool.base_wear_factor * ctx.tool.fit_wear.max(1.0) * evac * ctx.calib.wear * (1.0 + 1.5 * th.thermal_crack_risk) * substrate_softening(ctx, th.interface_c);
     let limit = ctx.vb_limit_mm();
     let (mechanisms, dominant) = tribology::mechanism_report(&reference.shares, &parts);
     WearResult {
         vb_rate_mm_per_min: rate,
         tool_life_min: if rate > 0.0 { limit / rate } else { f64::INFINITY },
-        radial_loss_rate_um_per_min: rate * ctx.tool.clearance_deg.to_radians().tan() * 1000.0,
+        radial_loss_rate_um_per_min: rate * ctx.tool.radial_per_vb() * 1000.0,
         vb_limit_mm: limit,
         temperature_factor: tf,
         stress_factor: sf,
@@ -2076,9 +2117,13 @@ fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: 
     let mut vb = 0.0f64;
     let mut min_rate = f64::INFINITY;
     let mut life: Option<f64> = None;
+    // 3차(가속) 마모: 마모 랜드 → 발열 → 마모 되먹임 가운데 힘·온도 식에 없는 몫 (날끝 둥글어짐·코팅 상실·미세 결손)을
+    // 피삭재 그룹별 가속 시작 VB 위에서 곱한다 — 경로 시뮬레이션(`loadsim`)과 같은 식 (`toollife::accel_factor`)
+    let eol = crate::toollife::eol_params(crate::pairref::WpGroup::of(&ctx.wp));
     for _ in 0..1500 {
         c.tool.flank_wear_mm = vb;
         let (steady, force, temp) = if vb <= 0.0 { (r0, f0, t0) } else { eval(&c) };
+        let steady = steady * crate::toollife::accel_factor(&eol, vb);
         let rate = steady + vb_b / tau * (-s / tau).exp();
         out.s.push(s);
         out.vb.push(vb);
@@ -2102,7 +2147,7 @@ fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: 
             let (steady, force, temp) = eval(&c);
             out.s.push(s);
             out.vb.push(vb);
-            out.rate.push(steady);
+            out.rate.push(steady * crate::toollife::accel_factor(&eol, vb));
             out.force.push(force);
             out.temp.push(temp);
             break;
@@ -2622,7 +2667,7 @@ pub fn analyze_cut(ctx: &CutContext, conds: &CuttingConditions, down: bool, body
     let spindle = f.cutting_power_kw / ctx.machine.efficiency.max(0.1);
     let avail = ctx.machine.available_power_kw(rpm);
     let defl_peak = f.f_res_peak / comp.stiffness_n_per_um;
-    let wear10 = trajectory.vb_at(10.0 * cwf) * ctx.tool.clearance_deg.to_radians().tan() * 1000.0;
+    let wear10 = trajectory.vb_at(10.0 * cwf) * ctx.tool.radial_per_vb() * 1000.0;
     let wp_rise = th.workpiece_steady_rise_c * (1.0 - (-600.0 / th.workpiece_time_constant_s.max(1.0)).exp());
     let wp_um = ctx.wp.expansion * body.size_mm * wp_rise * 1000.0;
     let fixture_um = f.fy_mean.abs() / ctx.fixture_stiffness_n_per_um.max(1e-6);

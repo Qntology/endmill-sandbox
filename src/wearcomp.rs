@@ -774,7 +774,7 @@ pub fn evaluate_with(
     let tol_um = (ctx.tolerance_mm * 1000.0).max(1.0);
     let target = opts.target_fraction.clamp(-0.5, 0.8) * tol_um;
     let vb_limit = ctx.vb_limit_mm();
-    let tan_clear = ctx.tool.clearance_deg.to_radians().tan().max(1e-6);
+    let tan_clear = ctx.tool.radial_per_vb().max(1e-6);
     let vb1 = rep.vb_end_mm;
     let radial_sim = rep.radial_loss_end_um;
     let mut notes: Vec<String> = Vec::new();
@@ -1139,6 +1139,42 @@ pub fn evaluate_with(
             )
         },
     });
+    // 1차가 공구 수명 종료(정지)나 파손으로 끝까지 가지 못했으면 깎지 못한 벽은 잔여량 표본이 없다 — 보정 계산의 전제가 깨진다
+    let tlr = &rep.tool_life;
+    let pass1_unfinished = tlr.unfinished;
+    let all_cuts = [CompAction::Execute, CompAction::ExecuteReduced, CompAction::Split, CompAction::ToolChange];
+    if pass1_unfinished || tlr.tool_changes > 0 || tlr.failed {
+        gates.push(CompGate {
+            id: "pass1_complete".into(),
+            label: "1차 경로 완료 (공구 수명·파손)".into(),
+            value: tlr.completed_fraction(),
+            limit: 1.0,
+            unit: "".into(),
+            severity: if pass1_unfinished { 3 } else { 1 },
+            blocks: if pass1_unfinished { all_cuts.to_vec() } else { vec![] },
+            sole: false,
+            message: if tlr.failed {
+                format!(
+                    "1차가 공구 파손으로 이송 경로의 {:.0}% 에서 멈춤 — {} → 부품·공구 검사 후 조건(절입·돌출·공구)을 바꿔 다시 계획 (보정 계산 안 함)",
+                    tlr.completed_fraction() * 100.0,
+                    tlr.stop_reason().unwrap_or_default()
+                )
+            } else if pass1_unfinished {
+                format!(
+                    "1차가 공구 수명 판정으로 이송 경로의 {:.0}% 에서 정지 ({:.0} mm 미가공) — 공구 교체 후 남은 1차를 마친 뒤 다시 계산 (깎지 않은 벽은 잔여량 표본이 없어 보정 대상에서 빠짐)",
+                    tlr.completed_fraction() * 100.0,
+                    tlr.uncut_feed_mm
+                )
+            } else {
+                format!(
+                    "1차 중 공구 {}회 교체 (공구 {}개 사용) — 교체 지점 앞뒤 벽은 서로 다른 공구가 깎아 마모·런아웃 단차가 있음 (보정은 마지막 공구 기준, 교체 단차 ±{:.1} µm 는 측정으로 확인)",
+                    tlr.tool_changes,
+                    tlr.tools_used,
+                    crate::toollife::change_step_um(&ctx.tool)
+                )
+            },
+        });
+    }
     let vb_sev = if vb_now >= vb_limit { 3 } else if vb_now >= 0.8 * vb_limit { 1 } else { 0 };
     gates.push(CompGate {
         id: "vb_now".into(),
@@ -1511,7 +1547,10 @@ pub fn evaluate_with(
     let mut fresh_slender = false;
     let mut allowed: Vec<CompAction> = Vec::new();
     let mut reasons: Vec<String> = Vec::new();
-    if need {
+    if pass1_unfinished {
+        allowed.push(CompAction::Skip);
+        allowed.push(CompAction::Hold);
+    } else if need {
         for a in cutting.iter() {
             if blocked_by(&gates, *a).is_empty() && !extra.tool_replaced {
                 allowed.push(*a);
@@ -1542,7 +1581,14 @@ pub fn evaluate_with(
         }
     }
     let watch_force = gates.iter().any(|g| (g.id == "pass2_deflection" || g.id == "pass2_chatter" || g.id == "thin_wall") && g.severity == 1);
-    let rule_action = if !need && !unfixable.is_empty() {
+    let rule_action = if pass1_unfinished {
+        reasons.push(if tlr.failed {
+            "1차 중 공구 파손 → 보류: 부품·공구를 검사하고 조건을 바꿔 다시 계획".to_string()
+        } else {
+            "1차가 공구 수명 판정으로 정지 → 보류: 공구를 교체해 남은 1차를 마친 뒤 다시 계산 (지금 보정하면 깎지 않은 벽을 빠뜨림)".to_string()
+        });
+        CompAction::Hold
+    } else if !need && !unfixable.is_empty() {
         reasons.push(format!(
             "2차로 고칠 수 없는 공차 밖 구간 {:?} (1차 과삭, 또는 최소 절삭 절입보다 얇은 공차 밖 잔여) → 보정 안 함 대신 보류: 측정 후 재계획",
             unfixable
@@ -2735,7 +2781,7 @@ fn pass_samples(
     } else {
         draft.vb_end1_mm
     };
-    let tan_clear = ctx.tool.clearance_deg.to_radians().tan();
+    let tan_clear = ctx.tool.radial_per_vb();
     let axial = AxialProfile::of(ctx);
     let mut field = WearField::for_tool(&ctx.tool);
     let bulk = rep.bulk_c + draft.bulk_excess_k * if draft.thermal_err_um > 1e-9 { draft.thermal_err_after_um / draft.thermal_err_um } else { 1.0 };
@@ -2974,10 +3020,30 @@ pub fn analyze_job_with(
     let nominal = physics::analyze_cut(ctx, &profile.conditions, true, body);
     let residuals: Vec<f64> = report.wall_errors.iter().filter(|w| w.final_wall).map(|w| w.total_um).collect();
     let (_, traj) = path_wear(&nominal.trajectory, report);
-    let tan_clear = ctx.tool.clearance_deg.to_radians().tan();
+    let tan_clear = ctx.tool.radial_per_vb();
     let prior: Vec<(f64, f64)> = tool.map(|t| t.history.clone()).unwrap_or_default();
+    // 경로 중 공구를 바꿨으면 VB 계열이 톱니가 된다 — 예측은 지금 장착된(마지막) 공구의 구간만 쓴다
+    let tl = &report.tool_life;
+    let last_bins: Vec<crate::loadsim::WearBin>;
+    let bins: &[crate::loadsim::WearBin] = if tl.tool_changes > 0 {
+        let t0 = tl.retired.last().map(|r| r.t_cut_change_s).unwrap_or(0.0);
+        let last = tl.tools_used.max(1);
+        last_bins = report
+            .wear_log
+            .iter()
+            .filter(|b| b.tool_no == last)
+            .map(|b| {
+                let mut c = b.clone();
+                c.t_cut_s = (c.t_cut_s - t0).max(0.0);
+                c
+            })
+            .collect();
+        &last_bins
+    } else {
+        &report.wear_log
+    };
     let mut log = crate::wearlog::analyze_ext(
-        &report.wear_log,
+        bins,
         &residuals,
         Some(&traj),
         ttm,
@@ -2987,6 +3053,18 @@ pub fn analyze_job_with(
         report.vb_start_mm * tan_clear * 1000.0,
         &prior,
     );
+    if tl.tool_changes > 0 {
+        log.notes.push(format!(
+            "경로 중 공구 {}회 교체 (공구 {}개) — 마모 로그 분석·예측은 마지막 공구 #{} 구간(절삭 {:.2}분)만 사용, 앞 공구들은 공구 수명 요약(tool_life.retired)에 남김",
+            tl.tool_changes,
+            tl.tools_used,
+            tl.tools_used,
+            tl.last_tool_cut_min
+        ));
+    }
+    if tl.unfinished {
+        log.notes.push(format!("1차 경로 미완료 ({:.0}% 지점에서 정지) — {}", tl.completed_fraction() * 100.0, tl.stop_reason().unwrap_or_default()));
+    }
     // 짧은 작업의 VB 성장은 길들이기 항이 지배한다 — 로그의 '정상 마모' 구간 속도를 정상 마모율로 읽지 않도록 표시한다
     let grown = report.growth_calib_mm + report.growth_fixed_mm;
     if grown > 1e-9 && report.growth_fixed_mm / grown > 0.5 && report.growth_cut_min > 1e-9 {
