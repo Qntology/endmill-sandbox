@@ -1,8 +1,9 @@
 //! 측벽(주변 밀링) 표면조도 — 날마다 다른 유효 반경으로 그린 궤적의 하한 포락선.
 //!
 //! 예전 식 `Ra = (fz²/8R + h_min/2)/4 + TIR/4` 는 정삭 측벽에서 실측보다 한 자릿수 작았다: 55 HRC D12 6날 fz 0.1 mm 에서 실측 조도는
-//! 기하 이송 자국(Rt 0.21 µm)의 19~38배였고, Rz 는 반경 변위 폭(4~6 µm)과 같았다 (Wojciechowski 2011/2016). 런아웃이 몇 µm 만
-//! 되어도 한 날이 표면을 만들어 자국 간격이 회전당 이송이 된다 (Schmitz 외 2007). 그래서 날 j 의 유효 반경 r_j = R + Δ_j 로 각 날의
+//! 기하 이송 자국(Rt 0.21 µm)의 19~38배였고, Rz 는 반경 변위 폭(4~6 µm)과 같았다 (Wojciechowski 2011 Metrol. Meas. Syst. 18:429,
+//! Wojciechowski 외 2016 Precis. Eng. 46:158 — 그림에서 읽은 값). 런아웃이 몇 µm 만
+//! 되어도 한 날이 표면을 만들어 자국 간격이 회전당 이송이 된다 (Schmitz 외 2007, IJMTM 47:841). 그래서 날 j 의 유효 반경 r_j = R + Δ_j 로 각 날의
 //! 원호를 그리고, 그 하한 포락선에서 Rt·Ra 를 수치로 구한다. 소재 바닥값·최소 칩 밀림·플랭크 마모·구성인선·채터는 실측 경향을 따른다.
 
 use crate::pairref::WpGroup;
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// (긴 날의 과삭은 e·cos(π/N) ~ e, 휨으로 조금 줄어 0.7~1.0 e — Schmitz 외 2007). 치수(과삭)와 조도에 같은 값을 쓴다
 pub const RUNOUT_EFFECTIVE: f64 = 0.85;
 
-/// 최소 칩 밀림(탄성 복원·쟁기질) 조도 항 Ra += k·h_min 의 k. Nowakowski 2023 (H11) 은 k = 0.37~0.4 이지만 그 h_min 은 조도에서 역산한
+/// 최소 칩 밀림(탄성 복원·쟁기질) 조도 항 Ra += k·h_min 의 k. Nowakowski 외 2023 (Materials 16:7661, X37CrMoV5-1 = H11 상당) 은 k = 0.37~0.4 이지만 그 h_min 은 조도에서 역산한
 /// 0.3~1.7 µm 로, 이 모델의 역학 h_min (최소 칩 비 × 날끝 반경, 1~4 µm) 의 약 1/4 이다 — 그래서 0.4 × 0.25 = 0.1.
 /// 소재 바닥값(최저 실측 정삭 Ra)에 보통 날끝의 밀림 몫이 이미 들어 있어 이 항은 날끝이 둥근(호닝 큰) 공구의 증가분에 가깝다. 근거 약함
 pub const HMIN_RA_COEF: f64 = 0.1;
@@ -126,8 +127,8 @@ pub fn wall_roughness(radius_mm: f64, flutes: u32, fz_mm: f64, ecc_mm: f64, h_mi
     let wf = wear_factor(g, vb_mm);
     let bue = 1.0 + 1.2 * bue_risk.clamp(0.0, 0.85);
     let ra_stable = (ra_env_profile + hmin_term + floor) * wf * bue;
-    // 채터: 공구가 절삭에서 이탈할 때까지 커지는 떨림 — 파상도 ≈ h_max·ρ (ρ = ap/ap_lim), 3·h_max 에서 포화 (Honeycutt & Schmitz 2018,
-    // 아임계 발생). 떨림이 지배하면 Ra ≈ 0.20·Rt. 마모·구성인선 배수는 미세 조도(바닥값·최소 칩 밀림)에만 걸고 떨림 파형에는 걸지 않는다
+    // 채터: 공구가 절삭에서 이탈할 때까지 커지는 떨림 — 파상도 ≈ h_max·ρ (ρ = ap/ap_lim), 3·h_max 에서 포화 (밀링 분기 정리 Honeycutt & Schmitz 2018,
+    // JMSE 140:120801 을 이 모델에 맞춘 해석 — 아임계 발생). 떨림이 지배하면 Ra ≈ 0.20·Rt. 마모·구성인선 배수는 미세 조도(바닥값·최소 칩 밀림)에만 걸고 떨림 파형에는 걸지 않는다
     let micro = (hmin_term + floor) * wf * bue;
     let (wpv, ra_chat, rz_chat) = if margin.is_finite() && margin > 0.0 && margin < 1.0 {
         let rho = 1.0 / margin;

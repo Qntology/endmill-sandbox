@@ -29,7 +29,7 @@ pub const BREAKIN_SHARE_WARN: f64 = 0.5;
 /// 교체 개수(물리 궤적)와 작업 평균 마모율로 단순 환산한 개수가 이 배수 이상 다르면 설명이 필요하다
 pub const PARTS_RATIO_WARN: f64 = 3.0;
 /// ZOA(영차 근사) 채터 한계는 반경 절입이 이 비율(ae/D)보다 작고 날 통과 주파수가 고유진동수에 가까우면 flip(주기 2배) 로브를
-/// 놓친다 (Altintas·Stépán·Merdol·Dombovari 2008: ae > D/4 에서 충분)
+/// 놓친다 (Altintas·Stépán·Merdol·Dombovari 2008, CIRP J. Manuf. Sci. Technol. 1:35 — ae > D/4 에서 충분)
 pub const ZOA_MIN_IMMERSION: f64 = 0.25;
 /// 비에너지(절삭동력/MRR) 허용 띠 — 금속 절삭 일반 범위 (J/mm³)
 pub const SPECIFIC_ENERGY_BAND: (f64, f64) = (0.3, 8.0);
@@ -274,7 +274,8 @@ pub struct AuditDynamics {
     /// 채터(margin<1)가 벽면 오차 중앙값에 반영되는가 — 떨림 자국은 산-골 자국이라 중앙값이 아니라 벽 샘플의 파상도 기대값(`waviness_um`)과 Ra 로 따로 남긴다
     pub chatter_in_wall_error: bool,
     /// margin<1 일 때 떨림 자국 산-골 대역 (µm): W ≈ h_max·ρ (ρ = ap/ap_lim = 1/여유), 대역 0.5~2배, 상한 3·h_max.
-    /// 아임계 분기라 한계에서 바로 유한 진폭으로 뛰고, 날이 절삭에서 이탈하면 h/(2|sin(ε/2)|) 부근에서 포화 (Honeycutt·Schmitz 2018, R8)
+    /// 아임계 분기라 한계에서 바로 유한 진폭으로 뛰고, 날이 절삭에서 이탈하면 h/(2|sin(ε/2)|) 부근에서 포화 (날 이탈 비선형·밀링 분기 정리:
+    /// Honeycutt·Schmitz 2018, JMSE 140:120801 — '아임계·포화'는 리뷰의 직접 표현이 아니라 그 내용을 이 모델에 맞춘 해석, R8)
     pub chatter_waviness_low_um: f64,
     pub chatter_waviness_high_um: f64,
     /// 스핀들·베어링 1차 굽힘 모드 (추정 FRF 일 때 공구 모드와 2자유도 사슬로 결합, 실측 FRF 면 0)
@@ -321,7 +322,7 @@ pub struct AuditDeflection {
     /// 이 경로에서 다운밀링으로 깎은 벽 구간의 비율 (0 = 전부 업밀링)
     pub path_down_share: f64,
     /// 가장 긴 날이 벽을 만드는 반경 런아웃 과삭 (µm, 음수=과삭) = −0.85·e (e = TIR/2) — 벽면 오차 값에 들어간다.
-    /// 회전 상태 레이저로 공구 반경을 쟀으면(`radius_measured_rotating`) 0 (Kline & DeVor 1983, Schmitz 외 2007)
+    /// 회전 상태 레이저로 공구 반경을 쟀으면(`radius_measured_rotating`) 0 (Kline & DeVor 1983 IJMTDR 23:123, Schmitz 외 2007 IJMTM 47:841)
     pub runout_overcut_um: f64,
     /// 스핀들(베어링·테이퍼) 정적 컴플라이언스 (µm/N)
     #[serde(default)]
@@ -895,7 +896,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             ),
         );
     }
-    // 알루미늄 Ø6~8 초경 엔드밀의 문헌 범위 (Grigoriev 외 2020 외 R3 조사): 정상 VB 속도 0.4~7 µm/min, VB 0.2 까지 30~200분,
+    // 알루미늄 Ø6~8 초경 엔드밀의 문헌 범위 (Grigoriev 외 2020 Coatings 10:1038 외 R3 조사): 정상 VB 속도 0.4~7 µm/min, VB 0.2 까지 30~200분,
     // 공구당 100~700 cm³, 비마모 0.1~2.3 µm/cm³. 측정은 대부분 건식 무코팅·작은 MRR 이고 VB 한계에 실제로 도달시키는 조건이라
     // 긴 수명(코팅·가벼운 정삭) 쪽은 자료가 드물다 — 그쪽으로 벗어난 값은 주의(노랑)까지만, 짧은 수명 쪽(10분 미만·400 µm/min 초과 등)은 신뢰불가(빨강)
     if ctx.wp.key == "aluminum" && d <= 8.5 && path_life > 0.0 {
@@ -950,8 +951,8 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             ),
         );
     }
-    // 수명의 반경 절입 의존: 일정 칩 두께에서 실측 수명은 T ∝ ae^−1.0 (Ti-6Al-4V TiAlN, Heliyon 2020 의 맞춤 R² 0.97, Wu 외 2019 도
-    // 같은 경향). 이 모델은 결합 시간 비율(작은 ae 에서 ≈ ae^0.5)만큼만 바뀐다 — 열이 지배하는 소재에서 기준 ae 와 많이 다르면 남긴다
+    // 수명의 반경 절입 의존: 일정 칩 두께에서 실측 수명은 T ∝ ae^−1.0 (Ti-6Al-4V TiAlN, Tatar 외 2020 Heliyon 의 맞춤 R² 0.97 — 판정은
+    // 노치 마모 0.2 mm. Liu 외 2019 는 제거 체적이 ae 의 2차 함수). 이 모델은 결합 시간 비율(작은 ae 에서 ≈ ae^0.5)만큼만 바뀐다 — 열이 지배하는 소재에서 기준 ae 와 많이 다르면 남긴다
     {
         use crate::pairref::WpGroup;
         let g = WpGroup::of(&ctx.wp);
@@ -1313,7 +1314,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         0,
         0.0,
         "예열 후 가공",
-        "스핀들·주축대 열변위는 넣지 않았다 — 예열·열보정된 기계의 XY 잔여 2~5 µm (Z 3~10 µm). 냉간 시동 직후면 XY 3~15 µm · Z 15~50 µm 가 시상수 20~40 분으로 쌓이므로 정밀 벽은 20~30 분 예열 후 가공 (ISO 230-3, Uhlmann 외 2022)".to_string(),
+        "스핀들·주축대 열변위는 넣지 않았다 — 예열·열보정된 기계의 XY 잔여 2~5 µm (Z 3~10 µm). 냉간 시동 직후면 XY 3~15 µm · Z 15~50 µm 가 시상수 20~40 분으로 쌓이므로 정밀 벽은 20~30 분 예열 후 가공 (ISO 230-3 시험법, Uhlmann 외 2022 euspen 등 여러 열변위 자료를 모은 범위)".to_string(),
     );
 
     // ---- 공칭 vs 경로 조건 차이 ----

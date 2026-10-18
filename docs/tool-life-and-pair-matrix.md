@@ -25,8 +25,8 @@ u 가 판정 비율(기본 1.0)에 닿으면 **기계 설정의 정책**대로 �
 | 정책 (`ToolLifePolicy`) | 근거가 된 실제 동작 | 시뮬레이션 |
 |---|---|---|
 | `stop` (기본) | 부하 감시 마모 경보(학습 부하 1.2~1.25배, 0.5~1 s) → 지금 절삭을 마치고 정지 (US4633424 · US4723219, Haas Setting 84 Feedhold) | 지금 세그먼트를 마치고 정지, 남은 경로 미가공 → 2차 보정 보류. 치핑 감지면 그 자리에서 정지, 공구 은퇴 |
-| `change_tool` | Caron TMAC: "completes the current cut, safely expires the tool, and indexes to the next available tool" · SINUMERIK 840D 대체(duplo) 공구 | 지금 세그먼트를 마치고(치핑 감지면 즉시) 예비 공구로 교체(교체 시간), 길들이기 다시 시작, 교체 단차 불확도 기록 |
-| `finish_part` | FANUC 30i 공구 수명 관리: 만료돼도 "Machining … continues until the end of the program", 다음 T 호출에 예비 공구 | 끝까지 깎되 3차 마모·파손 판정 적용, 작업 기록 뒤 공구 개체 은퇴 |
+| `change_tool` | Caron TMAC 제품 설명: 지금 하던 절삭을 마친 뒤 그 공구를 수명 만료로 처리하고 다음 예비 공구로 넘어감 · SINUMERIK 840D 대체(duplo) 공구 | 지금 세그먼트를 마치고(치핑 감지면 즉시) 예비 공구로 교체(교체 시간), 길들이기 다시 시작, 교체 단차 불확도 기록 |
+| `finish_part` | FANUC 30i 공구 수명 관리 설명서(A-79409E): 수명이 만료돼도 그 프로그램은 끝까지 가공하고, 다음 T 호출에 예비 공구 | 끝까지 깎되 3차 마모·파손 판정 적용, 작업 기록 뒤 공구 개체 은퇴 |
 | `run_to_failure` | 감시 없음 | 3차 마모 → 날끝 붕괴·피로·과부하·치핑 확률 90 % 중 먼저 오는 것으로 정지 |
 
 u 가 판정의 1.2배를 넘었거나 VB 가 3차 마모 구간의 중간(가속 시작 ~ 붕괴)을 넘으면 '지금 절삭을 마치는' 유예 없이 그 자리에서 처리한다
@@ -59,7 +59,7 @@ r = r_ss · exp(ln(배수) · (VB − VB_가속) / (VB_붕괴 − VB_가속)), V
 
 * **정적 과부하**: 합력 피크·토크가 만드는 몸체 최대 주응력 σ₁ = σ_b/2 + √(σ_b²/4 + τ²) (초경은 취성) 를 날 끝 단면(등가 직경 core_ratio·D, 플루트 끝
   응력 집중 1.3) · 넥 시작(넥 직경, 1.2) · 홀더 면(샹크) 에서 보고, 정적 유효 강도 = 항절력 × 정적 비 이상이면 파손.
-  항절력: 미립 WC-10Co 3,800 · 초미립 WC-12Co 4,200 (평균 4,220, CrystEngComm 2013) · HSS M2 3,200 · M42 3,000 MPa.
+  항절력: 미립 WC-10Co 3,800 · 초미립 4,200 (초미립 WC-10Co 4,260 MPa — Wei 외 2013, CrystEngComm) · HSS M2 3,200 · M42 3,000 MPa.
   Ø6 2날을 돌출 30 mm 에서 약 1.3 kN (1,308 N, 정적 유효 2,660 MPa) 에 부러뜨린다 (리서치 추산 26·D² N @ 4 GPa 와 같은 자릿수).
 * **회전 굽힘 피로**: 힘 방향은 공작물에 고정이고 공구가 돌아 몸체 한 점이 회전마다 완전 반복 굽힘을 받는다. N = 10⁷·(σ_e/σ_a)^20, Miner 합 ≥ 1 이면 파손.
 * **날끝 붕괴**: 균일 VB ≥ 붕괴 VB 또는 국부 VBmax ≥ 붕괴 VB × 5/3.
@@ -152,9 +152,11 @@ Ti 여유각 8° 가 10° 보다 나쁨, HSS 로 58 HRC 는 부적합, 알루미
 3. **공구 몸체 강도** — 등급·연삭 상태·Weibull 계수(10~20)를 모름 (±15~20 %). 날 부분 단면을 등가 원으로 본 근사 (코어 직경 0.55~0.65D 와 랜드 몫 사이).
 4. **용도 적합도 배수의 크기** — 방향은 제조사 자료·시험과 맞지만 크기는 가정. CFRP 헬릭스–박리, 알루미늄·강·고경도의 여유각 효과는 수치 자료를 못 찾음.
    고경도 호닝 하한은 문헌(15 µm, 무거운 절입)과 내장 볼(10 µm, 미세 정삭) 사이에서 8 µm 로 둠.
-5. **알루미늄용 Ø6 공구의 TiAlN 코팅** — Al 함유 질화물 코팅은 알루미늄에서 DLC·무코팅 연마날 대비 수명 0.4~0.7배·구성인선 (Hovsepian).
+5. **알루미늄용 Ø6 공구의 TiAlN 코팅** — 알루미늄에서 Al 함유 질화물 코팅의 수명은 자료마다 갈린다. Hovsepian 외 2006 의 건식 고속 밀링에서
+   Al7010 은 TiAlN/VN ≈ DLC 이고 TiAlCrYN 은 그 절반 이하(약 1/2.3), AlSi9Cu1 은 DLC 이득 없음 · TiAlCrYN +65 % · TiAlN/VN +100 % (무코팅 대비).
+   'Al 함유 질화물은 일반적으로 DLC 보다 나쁘다'는 근거는 아니다.
    내장 공구 사양을 바꾸면 알루미늄 프리셋 보정값이 모두 바뀌어 그대로 두고 행렬에 '주의' 로 남김.
-6. **Ti 계 코팅 × Ti 의 비호환** — 리서치에서는 TiAlN 이 무코팅의 1.44배 수명 (벌점 근거 없음). 지금의 TiN·TiCN·TiSiN 경고(등급 1)는 유지, 재검토 필요.
+6. **Ti 계 코팅 × Ti 의 비호환** — 리서치에서는 TiAlN 이 무코팅의 1.44배 수명 (Uddin 외 2017, 건식 밀링 절삭 거리 16 m — 벌점 근거 없음). 지금의 TiN·TiCN·TiSiN 경고(등급 1)는 유지, 재검토 필요.
 7. **이전 작업의 열피로·몸체 피로·치핑 위험** — 공구 개체에 열피로만 저장되고 몸체 피로·치핑 위험은 작업마다 0 에서 시작 (이어 쓰는 공구는 과소평가).
 8. **런아웃·유효 반경·길이 보정·FRF·날끝 반경·기계 열변위·소재 온도·냉각 도달·고정 강성·로트 경도·코너 이송·공구 수명 분포** —
    `[UNKNOWN]` 항목별 측정 방법 참조.
@@ -162,8 +164,9 @@ Ti 여유각 8° 가 10° 보다 나쁨, HSS 로 58 HRC 는 부적합, 알루미
 ## 7. 출처 (리서치 정리에서 인용, 일부는 2차 자료)
 
 ISO 8688-2:1989 (견본) · ISO 3685 · FANUC 30i-A Tool Life Management (A-79409E) · SINUMERIK 840D 공구 감시 · Caron TMAC · Haas Setting 84 ·
-US4633424 · US4723219 · US5631851 · US12338517 · Kuczmaszewski 외 2017 (Mechanik 3/2017) · Matuszak 외 2023 (Materials 16:5361) ·
-Gao 외 2022 (Micromachines 13:1805) · Wojciechowski 외 (arXiv 2403.15554) · Usui 외 1984 · Kops & Vo 1990 · Karandikar 2021 (tool life data) ·
-Schmitz 2008 (milling error sources) · Colantonio 2025 · Uhlmann 2022 (euspen) · Tan 2021 (IN718 surface integrity) · Dai 2020 · Mičietová 2023 ·
-Abbas 2021 · Hovsepian (Al 코팅 비교, SHU) · AIM (Ti TiAlN vs 무코팅) · Harvey Tool/Performance · OSG · Kennametal · Mitsubishi Materials ·
+US4633424 · US4723219 · US5631851 · Kuczmaszewski 외 2017 (Mechanik 3/2017) · Matuszak 외 2023 (Materials 16:5361) ·
+Gao 외 2022 (Micromachines 13:1805) · Wojciechowski 외 2023 (Tribol. Int. 181:108313, arXiv 2403.15554) · Usui 외 1984 · Kops & Vo 1990 · Karandikar 2021 (tool life data) ·
+Schmitz 2008 (milling error sources) · Colantonio 외 2025 (IJPHM 16(4)) · Uhlmann 외 2022 (euspen TI22105) · Tan 외 2021 (IJAMT 116) · Dai 외 2020 (Materials 13:2202) ·
+Mičietová 외 2023 (Materials 16:1709) · Abbas 외 2021 (Materials 14:7128) · Hovsepian 외 2006 (Surf. Coat. Technol. 201) · Uddin 외 2017 (Adv. Manuf. 5) ·
+Wei 외 2013 (CrystEngComm 15) · Harvey Tool/Performance · OSG · Kennametal · Mitsubishi Materials ·
 Sandvik Coromant · Oerlikon Balzers · Platit · Renishaw NC4 · Blum LaserControl · Haimer · Rego-Fix · BIG KAISER.

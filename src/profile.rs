@@ -1283,7 +1283,7 @@ pub struct MachineLimits {
     #[serde(default)]
     pub damping_user: bool,
     /// 스핀들 모드 (공구 끝에서 본 모드 강성·고유진동수·감쇠비). 돌출 길이와 거의 무관하다:
-    /// HSK-A63 실측 827~974 Hz · 13.7~20 N/µm · ζ 0.050~0.087 (Ozturk·Kumar·Turner·Schmitz 2012), 문헌 범위 500~1500 Hz · 20~60 N/µm · ζ 0.03~0.07.
+    /// HSK-A63 실측 827~974 Hz · 13.7~20 N/µm · ζ 0.050~0.087 (Ozturk·Kumar·Turner·Schmitz 2012, CIRP Annals 61:343 — 예압 46/35/20 bar), 문헌 범위 500~1500 Hz · 20~60 N/µm · ζ 0.03~0.07.
     /// 탭 테스트로 공구 끝 FRF 를 넣으면 그 측정이 이미 스핀들 모드를 포함하므로 쓰지 않는다
     #[serde(default = "default_spindle_k")]
     pub spindle_stiffness_n_per_um: f64,

@@ -87,8 +87,8 @@ pub struct WorkpieceProps {
     #[serde(default)]
     pub lift_factor: f64,
     /// 반경력/접선력 비(kr)의 하한. Merchant 관계 tan(β−α) 는 직교절삭의 추력비라 엔드밀 측정 계수(Krc/Ktc)보다 낮게 나올 수 있다.
-    /// 알루미늄은 6061·AlMgSi 엔드밀 6세트가 0.33~0.52 (Rubeo & Schmitz 2016, Schmitz 외 2022, Honeycutt & Schmitz 2018,
-    /// Gradišek 외 2004), 반경 힘이 작으면 벽 순간의 접선·반경 성분이 상쇄되어 휨이 과소평가된다.
+    /// 알루미늄은 6061·AlMgSi 엔드밀 6세트가 0.33~0.52 (Rubeo & Schmitz 2016 Precis. Eng. 45:311, Schmitz 외 2022 IFAC-PapersOnLine 55(36):103,
+    /// Honeycutt & Schmitz 2018 JMSE 140:120801, Gradišek 외 2004 IJMTM 44:401), 반경 힘이 작으면 벽 순간의 접선·반경 성분이 상쇄되어 휨이 과소평가된다.
     #[serde(default = "default_kr_floor")]
     pub kr_floor: f64,
     /// 절삭 중 공구–칩 겉보기 마찰계수 (무코팅 초경 기준, 힘 측정에서 역산한 값 — 핀온디스크 값이 아님).
@@ -224,7 +224,7 @@ impl WorkpieceProps {
             rake_deg: 10.0,
             adhesion: 1.0,
             wear_activation_k: 7500.0,
-            // 1.0 → 0.88: C45 엔드밀 Vc 180 에서 606 °C 로, 문헌 대역 420~580 °C 보다 높았다 (Hosokawa 2000 의 Vc 628 플랭크 770 °C 를
+            // 1.0 → 0.88: C45 엔드밀 Vc 180 에서 606 °C 로, 문헌 대역 420~580 °C 보다 높았다 (Hosokawa 외 2000, 精密工学会誌 66:1786 의 Vc 628 플랭크 770 °C 를
             // Vc 180 으로 환산하면 470~550 °C, 4140 Vc 300 플랭크 304~345 °C)
             thermal_factor: 0.88,
             melt_c: 1460.0,
@@ -262,7 +262,7 @@ impl WorkpieceProps {
             wear_transition_c: 877.0,
             mech_shares: [0.30, 0.15, 0.45, 0.10],
             lift_factor: 0.8,
-            // 45강(C45) 초경 엔드밀 실측 Kr/Kt 0.34~0.38 (Sensors 2023, 2·4날 초경과 HSS 3세트)
+            // 45강(C45) 초경 엔드밀 실측 Kr/Kt 0.34~0.38 (Sun 외 2023, Sensors 23:8954 — 2·4날 초경과 3날 HSS 3세트)
             kr_floor: 0.33,
             cut_mu: 0.50,
             kte_factor: 1.0,
@@ -297,7 +297,8 @@ impl WorkpieceProps {
                 ae_ratio: 0.5,
                 edge_radius_um: 4.0,
                 // 240 → 60: 기준 상태(Ø10, ae 0.5D, ap 1D, 300 m/min)의 240분은 공구 하나당 2~5만 cm³ 로, 같은 Ø6 급 초경 엔드밀의
-                // 알루미늄 실측(VB 0.2~0.4 mm 까지 59~342분, 119~684 cm³; Grigoriev 외 2020 등)보다 한 자릿수 길었다. 이 앵커가 경로 수명을
+                // 알루미늄 실측(VB 0.2~0.4 mm 까지 59~342분, 119~684 cm³; Grigoriev 외 2020 Coatings 10:1038 등 — 본문은 0.4 mm 까지 무코팅 99분 · DLC 342분(684 cm³),
+                // 59분·119 cm³ 는 그림에서 읽은 값)보다 한 자릿수 길었다. 이 앵커가 경로 수명을
                 // 841분/2,100 cm³ 로 만들었고, 길들이기 시상수(선형 수명의 3%)도 9.6분으로 문헌(0.5~5분)보다 늘렸다. 60 이면 알루미늄 황삭
                 // 프리셋(rect_profile)의 경로 수명이 283분/702 cm³, 시상수 4.0분 — 문헌 대역 위쪽 끝이라 감사가 노란 플래그를 세운다
                 // (확신도 보통: 실측 VB 계열이 들어오면 SDS 원장 보정으로 대체됨).
@@ -305,7 +306,7 @@ impl WorkpieceProps {
                 min_chip_ratio: 0.30,
                 work_hardening: 0.03,
                 softening_m: 1.34,
-                // 0.4 → 1.0: 압입 계수 Ksp 가 Al7075 4e4 N/mm³ (Budak & Tunç), Ti-6Al-4V 3e4 로 같은 자릿수 — 알루미늄의 공정감쇠가 약한 것은
+                // 0.4 → 1.0: 압입 계수 Ksp 가 Al7075 4e4 N/mm³ (Budak & Tunç 2010, CIRP Annals 59:403 — 2차 인용으로 확인), Ti-6Al-4V 3e4 로 같은 자릿수 — 알루미늄의 공정감쇠가 약한 것은
                 // 계수가 작아서가 아니라 절삭속도가 높아 파장이 길기 때문이고, 그 효과는 `process_damping_gain` 의 파장 항에 이미 있다 (확신도 낮음)
                 process_damping: 1.0,
                 chem: WpChem::Aluminum,
@@ -330,7 +331,7 @@ impl WorkpieceProps {
                 kr_floor: 0.40,
                 // 엔드밀 Krc/Ktc 0.46 (경사 10~15°) 에서 β ≈ 35~40° → μ 0.7~0.85
                 cut_mu: 0.78,
-                // 엔드밀 4세트 Kre/Kte 0.83~1.0 (Rubeo & Schmitz 2016, AlSi9Cu3 2세트 Sci. Rep. 2024)
+                // 엔드밀 4세트 Kre/Kte 0.83~1.0 (Rubeo & Schmitz 2016; AlSi9Cu3 2세트 0.83·0.86 — Andersson Lassila 외 2024, Sci. Rep. 14:1459)
                 kre_over_kte: 0.9,
                 // 알루미늄용 엔드밀 1차 여유각 10~14° (2차 ~20°)
                 clearance_deg: 12.0,
@@ -375,7 +376,7 @@ impl WorkpieceProps {
                     rake_deg: (8.0 - 0.5 * (h - 40.0).max(0.0)).clamp(-6.0, 8.0),
                     adhesion: 0.95,
                     // 고경도 정삭에서 계면 온도를 과대평가했다 (58 HRC Ø6 볼 Vc 70 에서 745 °C, 문헌 대역 350~600 °C —
-                    // H13 52 HRC 볼 엔드밀 Vc 200 까지 계면 200~400 °C, Dewes 외 1999). 전단 띠 형성으로 경사면에 가는 열이 줄어드는 몫
+                    // H13 52 HRC 볼 엔드밀 Vc 200 까지 계면 200~400 °C, Dewes 외 1999 J. Mater. Process. Technol. 92–93:293). 전단 띠 형성으로 경사면에 가는 열이 줄어드는 몫
                     thermal_factor: interp(&[(25.0, 0.88), (40.0, 0.78), (50.0, 0.55), (58.0, 0.40), (65.0, 0.34)], h),
                     ref_life_min: if h > 45.0 { 35.0 } else { 60.0 },
                     bue_range_c: if h > 40.0 { None } else { Some((300.0, 480.0)) },
@@ -391,7 +392,8 @@ impl WorkpieceProps {
                     fz_coeff: fz,
                     ae_ratio: if h > 45.0 { 0.1 } else { 0.3 },
                     edge_radius_um: if h > 45.0 { 20.0 } else { 12.0 },
-                    // 고경도: 0.20 → 0.35 (날카로운 날 0.63~0.80, 일반 호닝 강 0.2~0.4 — Wojciechowski 리뷰 2022, arXiv 2403.15554)
+                    // 고경도: 0.20 → 0.35 (볼 엔드밀 날카로운 날 h_min/r 0.66~0.80, 경화강 선삭 0.63 — Wojciechowski 외 2023, Tribol. Int. 181 · arXiv 2403.15554.
+                    // 일반 호닝 날 0.2~0.4 는 이 논문에 없음 — 출처 미확인)
                     min_chip_ratio: if h > 45.0 { 0.35 } else { 0.25 },
                     work_hardening: if h > 45.0 { 0.02 } else { 0.06 },
                     process_damping: if h > 45.0 { 1.2 } else { 1.0 },
@@ -437,10 +439,10 @@ impl WorkpieceProps {
                 ae_ratio: 0.25,
                 edge_radius_um: 10.0,
                 ref_life_min: 45.0,
-                // 0.35 → 0.28: 304 선삭 h_min/r 0.25~0.30 (FE·실측, Materials 2026)
+                // 0.35 → 0.28: 304 선삭 h_min/r 0.25~0.30 (FE 해석, Zou 외 2026 Materials 19:591 — 실험은 힘·경도만 확인)
                 min_chip_ratio: 0.28,
                 work_hardening: 0.30,
-                // 1.1 → 1.8: 공정감쇠 계수 C 가 304 4.1~5.8e5 N/m, 1018 강 1.3~2.0e5 (같은 공구·조건, Tyler·Karandikar·Schmitz 2014) →
+                // 1.1 → 1.8: 공정감쇠 계수 C 가 304 4.1~5.8e5 N/m, 1018 강 1.3~2.0e5 (같은 공구·조건, Tyler·Schmitz 2014, NAMRI/SME 42) →
                 // C 비 약 3.2 배. 이 모델의 이득은 계수의 제곱으로 커지므로 √3.2 ≈ 1.8
                 process_damping: 1.8,
                 thermo: vec![
@@ -469,7 +471,7 @@ impl WorkpieceProps {
                 clearance_deg: 9.0,
                 // 스테인리스 실무 판정 0.2 mm
                 vb_criterion_mm: 0.2,
-                // 호닝 8~10 µm nACo 코팅으로 316L 을 깎으면 30분간 마모가 보이지 않음 (Materials 2025) → 작은 길들이기
+                // 호닝 8~10 µm nACo 코팅으로 316L 을 깎으면 30분간 마모가 보이지 않음 (Tymczyszyn 외 2025, Materials 18:1959 — 미세 마모는 30분 뒤부터) → 작은 길들이기
                 breakin_vb_um: 20.0,
                 breakin_tau_min: 2.0,
                 ..base("stainless", "스테인리스강 (SUS304)")
@@ -496,7 +498,7 @@ impl WorkpieceProps {
                 min_chip_ratio: 0.30,
                 work_hardening: 0.12,
                 softening_m: 1.1,
-                // 1.3 → 1.0: 공정감쇠 계수 C 가 Ti-6Al-4V 1.2~1.8e5 N/m 로 1018 강과 같은 수준 (Tyler 외 2014)
+                // 1.3 → 1.0: 공정감쇠 계수 C 가 Ti-6Al-4V 1.2~1.8e5 N/m 로 1018 강과 같은 수준 (Tyler·Schmitz 2014)
                 process_damping: 1.0,
                 chem: WpChem::Titanium,
                 thermo: vec![
@@ -519,15 +521,15 @@ impl WorkpieceProps {
                 wear_transition_c: 850.0,
                 mech_shares: [0.10, 0.45, 0.40, 0.05],
                 lift_factor: 1.3,
-                // Krc/Ktc: Ø12 4날 초경 엔드밀 실측 0.5 (Ktc 2000·Krc 1000 N/mm², Kte 41·Kre 77 N/mm — J. Vibroeng.), TC4 볼 실측 0.37
-                // (Sci. Rep. 2026), Budak 1996 직교 데이터베이스의 경사 변환 0.29 → 중앙 0.37
+                // Krc/Ktc: Ø12 4날 초경 엔드밀 실측 0.5 (Ktc 2000·Krc 1000 N/mm², Kte 41·Kre 77 N/mm — Li 외 2014, J. Vibroeng. 16:2657, Ti6Al4V), TC4 볼 실측 0.37
+                // (Tian 외 2026, Sci. Rep. 16:6541 — 축 위치각에 따라 변하며 κ≈0.3 rad 부근 값), Budak 외 1996 (JMSE 118:216) 직교 데이터베이스의 경사 변환 0.29 → 중앙 0.37
                 kr_floor: 0.37,
-                // 무코팅 초경 직교절삭 실측 μ 0.4~0.6 (ETH, arXiv 2209.04197), 날끝 힘을 뺀 β 20~23° → 0.36~0.42
+                // 무코팅 초경 직교절삭 실측 μ 0.4~0.6 (ETH — Klippel 외 2022 arXiv 2209.04197, 학술지판 IJAMT 135:2871 2024), 날끝 힘을 뺀 β 20~23° → 0.36~0.42
                 cut_mu: 0.45,
                 kte_factor: 1.7,
                 kre_over_kte: 1.9,
                 clearance_deg: 10.0,
-                // Ti 판정 VB 평균 0.2 mm / 최대 0.3 mm (Wu 외 2019)
+                // Ti 판정 VB 평균 0.2 mm / 최대 0.3 mm (Liu 외 2019, Materials 12:1937 — 예전 표기 'Wu 외 2019' 는 확인 안 됨)
                 vb_criterion_mm: 0.2,
                 // AlCrN Vc 150 에서 5 m 이송에 115 µm, PVD 코팅이 수 초~수 분에 벗겨짐 → 권장 속도에서 50~100 µm, 속도에 따라 커짐
                 breakin_vb_um: 60.0,
@@ -898,7 +900,7 @@ pub const CARBIDE_PROPS: (f64, f64, f64, f64, f64, f64, f64, f64) = (600.0, 80.0
 
 pub const COATING_EDGE_GROWTH: f64 = 0.8;
 
-/// 플랭크 마모 랜드 VB 가 만드는 날끝의 반경 방향 후퇴: KE = VB·tanα / (1 − tanα·tanγ) (Kronenberg; α 여유각, γ 경사각).
+/// 플랭크 마모 랜드 VB 가 만드는 날끝의 반경 방향 후퇴: KE = VB·tanα / (1 − tanα·tanγ) (Kronenberg 1966, Machining Science and Application; α 여유각, γ 경사각).
 /// 예전에는 VB·tanα 만 썼다 — 경사 18°·여유 12° 알루미늄 공구에서 7 %, 경사 10°·여유 10° 에서 3 % 작게 읽는다 (음의 경사는 조금 작아짐)
 pub fn radial_per_vb(clearance_deg: f64, rake_deg: f64) -> f64 {
     let ta = clearance_deg.clamp(2.0, 30.0).to_radians().tan();
@@ -1137,8 +1139,9 @@ impl CoolantState {
     /// 공작물 표면 대류 열전달계수 (W/m²K). 절삭 부근 공작물 면에 닿는 냉각 기준이며
     /// 이전 패스 열의 감쇠(loadsim 예열), 덩어리 온도, 정상 상태 공작물 온도에 쓰인다.
     /// 문헌 값: 건식 7~100, 공기 분사 약 540 (실측), MQL 약 560~1,000 (실측),
-    /// 수용성 플러드 1,000~2,700 (FE 모델·Kops & Arenson), 유성 플러드 최대 10,000, 고압 액체 분사 10³~10⁴ 이상.
-    /// (Rai & Xirouchakis IJAMT 2009; Brandão 외 JBSMSE 2010; Shokrani 외 Procedia CIRP 2021; Stegmann 외 Energies 2024)
+    /// 수용성 플러드 1,000~2,700 (FE 모델·Kops & Arenson 1999, CIRP Annals 48:47), 유성 플러드 최대 10,000, 고압 액체 분사 10³~10⁴ 이상.
+    /// (Rai & Xirouchakis 2009 IJAMT 42:429; Brandão 외 2010 JBSMSE 32:154; Shokrani 외 2021 Procedia CIRP 101:358;
+    /// Stegmann 외 2024 Energies 17:3189 — 원형 톱 냉각 채널의 Nu 상관식이라 밀링 h 값의 직접 근거는 아님)
     /// 내부 급유도 액체이므로 플러드보다 낮을 수 없다 — 예전 값 320 은 공기 분사 수준이어서 니켈·티타늄처럼 열이 안 빠지는
     /// 소재에서 이전 패스 열이 과하게 쌓였다 (인코넬 황삭 경로 예열 335 K → 공칭 대비 마모 7.5배).
     pub fn workpiece_h_of(method: &CoolantMethod, flow_l_min: f64) -> f64 {

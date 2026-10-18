@@ -340,7 +340,7 @@ that have no direct measurement behind them (`pair_reference_low_confidence`).
 | Default clearance | 10° | Al 12, C45/alloy 8, hardened 7, SS 9, Ti 10, Ni 9, CFRP 15° | manufacturer/patent consensus; it changes the radial loss per VB (ΔR = VB·tan α) |
 | Runout TIR | 3 µm premium / 10 µm | by holder: shrink-fit/hydraulic/polygon 3, ER UP 5, ER precision 10, ER standard 15, milling chuck 8, side-lock 15 µm (unknown holder keeps the old rule) | holder catalogues, ISO 15488 collet classes |
 | Tool-tip damping ζ | 0.03 | 0.28·(L/D)^−1.38, 0.010–0.045 (+0.005 hydraulic) unless entered by a tap test | measured 0.05 (L/D 3.75), 0.026 (5.8), 0.009 (12); holder mode 0.02–0.025 |
-| Process damping factor | Al 0.4, steel 1.0, SS 1.1, Ti 1.3 | Al 1.0, steel 1.0, SS 1.8, Ti 1.0, × (tan 10°/tan α)^0.4 | Tyler/Karandikar/Schmitz 2014: C 304 ≈ 3.2× 1018, Ti ≈ 1.06×; C +23–42 % from 15° to 11° relief |
+| Process damping factor | Al 0.4, steel 1.0, SS 1.1, Ti 1.3 | Al 1.0, steel 1.0, SS 1.8, Ti 1.0, × (tan 10°/tan α)^0.4 | Tyler & Schmitz 2014: C 304 ≈ 3.2× 1018, Ti ≈ 1.06×; C +23–42 % from 15° to 11° relief |
 | Thermal factor | C45 1.0, hardened 1 − 0.015·(HRC−25) | C45 0.88, hardened 0.40 at 58 HRC, CFRP 0.42; Kienzle size effect not extrapolated below a 20 µm chip in the temperature formula | measured interface bands per preset (see below) |
 
 Interface temperatures of the built-in presets against bands built from published measurements (dry): Al roughing
@@ -385,7 +385,7 @@ also weaker in the model (≈ 0–6 %).
 * Altintas–Budak analytic stability lobes (2-branch eigenvalue solution)
 * FRF: cantilever beam + holder spring (tool mode) **plus a spindle/bearing mode** coupled as a 2-DOF chain
   (ground —k_s,c_s— spindle mass —k_t,c_t— tool tip). Defaults 1000 Hz · 30 N/µm · ζ 0.05 (`machine.spindle_*`;
-  published spindle modes 500–1500 Hz, 20–60 N/µm, ζ 0.03–0.07, almost independent of overhang — Zhang & Schmitz 2011).
+  published spindle modes 500–1500 Hz, 20–60 N/µm, ζ 0.03–0.07, almost independent of overhang — Zhang et al. 2011).
   The static tip compliance is beam + holder + spindle, the same in the deflection and the FRF. A chain instead of a
   modal sum keeps the coupling right when the tool mode lies within ±30 % of the spindle mode (tool-length tuning).
   The spindle mode decides the chatter limit when its k·ζ is the smaller one (stubby tools, L/D ≲ 2–2.5 at D ≥ 12 mm), and
