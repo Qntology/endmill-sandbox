@@ -5,40 +5,43 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 	<title>End Mill Sandbox</title>
 	<style>
-		/* 디자인 토큰 — 바탕·카드·셀 3단 표면과 글자 3단은 pick-grapes 대시보드 실측값,
-		   선택 파랑·시리즈 색·로그 레벨 색은 tactile-viewer(Rerun) 실측값. 캔버스도 이 토큰을 읽는다(UI 객체). */
+		/* 디자인 토큰 — 화면 틀은 무채색(zinc) 단계만 쓰고, 색은 상태(정상·주의·위험)와 데이터 표시에만 남긴다.
+		   캔버스도 이 토큰을 읽는다(UI 객체). */
 		:root {
 		  color-scheme: dark;
-		  --bg-darkest: #06080a;
-		  --bg-dark: #090b0e;
-		  --bg-panel: #0c0e12;
-		  --bg-card: #10141a;
-		  --bg-input: #080a0d;
-		  --bg-hover: #151a21;
-		  --bg-plot: #030405;
-		  --plot-grid: #14181e;
-		  --plot-grid-strong: #262b33;
-		  --border: #161a1e;
-		  --border-cell: #1b1f25;
-		  --border-light: #22272e;
-		  --border-strong: #303640;
-		  --accent: #5c97ec;
-		  --accent-strong: #1869dd;
-		  --accent-hover: #2a78e8;
-		  --accent-dim: rgba(24, 105, 221, 0.22);
-		  --accent-glow: rgba(24, 105, 221, 0.12);
-		  --accent-text: #dbe8fd;
-		  --signal: #9cb8cc;
-		  --text-bright: #f3f5f9;
-		  --text: #d6d9de;
-		  --text-dim: #9d9ea5;
-		  --text-muted: #696d73;
-		  --danger: #df4f50;
-		  --alert: #ea9539;
-		  --warning: #e3c35a;
-		  --success: #53c679;
-		  --violet: #be70e9;
-		  --log-debug: #c3cbfb;
+		  --bg-darkest: #09090b;
+		  --bg-dark: #0c0c0e;
+		  --bg-panel: #111113;
+		  --bg-card: #161618;
+		  --bg-input: #0d0d0f;
+		  --bg-hover: #1b1b1e;
+		  --bg-active: #232326;
+		  --bg-active-hover: #2b2b2f;
+		  --bg-plot: #060607;
+		  --plot-grid: #18181b;
+		  --plot-grid-strong: #27272a;
+		  --path: #6b7280;   /* 뷰포트에서 깎인 경로 — 밝은 강조색으로 칠하면 덩어리져 보여 중간 회색 */
+		  --border: #1d1d20;
+		  --border-cell: #232326;
+		  --border-light: #2b2b2f;
+		  --border-strong: #3a3a3f;
+		  --border-hover: #4a4a50;
+		  --accent: #d4d4d8;
+		  --accent-strong: #71717a;
+		  --accent-dim: rgba(255, 255, 255, 0.07);
+		  --accent-glow: rgba(255, 255, 255, 0.07);
+		  --accent-text: #fafafa;
+		  --signal: #a1a1aa;
+		  --text-bright: #fafafa;
+		  --text: #d4d4d8;
+		  --text-dim: #a1a1aa;
+		  --text-muted: #71717a;
+		  --danger: #e06c6c;
+		  --alert: #d9924f;
+		  --warning: #d6b65e;
+		  --success: #5fb98c;
+		  --violet: #a08fd6;
+		  --log-debug: #c4c4cc;
 		  --font-sans: 'Inter', 'Pretendard', 'Segoe UI Variable Text', 'Segoe UI', 'Malgun Gothic', 'Noto Sans KR', sans-serif;
 		  --font-mono: 'JetBrains Mono', 'Geist Mono', 'Cascadia Mono', 'Consolas', monospace;
 		  --radius-card: 10px;
@@ -47,7 +50,7 @@
 		  --track-caps: 0.1em;
 		  --panel-header-h: 36px;
 		  --statusbar-h: 28px;
-		  --header-h: 52px;
+		  --rail-w: 56px;
 		  --left-min: 220px;
 		  --left-w: 280px;
 		  --right-min: 260px;
@@ -72,104 +75,63 @@
 		button, select, input { font-family: inherit; }
 		strong, b { font-weight: 600; color: var(--text-bright); }
 
-		/* ── 상단 바 ─────────────────────────────────────────────── */
-		.logo {
+		/* ── 사이드바 머리 · 화면 전환 ─────────────────────────────────── */
+		.sidebar-head {
 		  display: flex;
 		  align-items: center;
 		  gap: 10px;
 		  flex-shrink: 0;
-		  font-size: 0.7rem;
-		  font-weight: 600;
-		  letter-spacing: 0.16em;
-		  text-transform: uppercase;
-		  color: var(--text-bright);
+		  height: 52px;
+		  padding: 0 12px;
+		  border-bottom: 1px solid var(--border);
 		}
-		.logo svg {
-		  width: 26px;
-		  height: 26px;
-		  padding: 4px;
-		  flex-shrink: 0;
-		  color: var(--accent);
-		  background: var(--bg-panel);
-		  border: 1px solid var(--border-light);
-		  border-radius: var(--radius);
-		}
-
-		.top-bar {
+		.sidebar-head .panel-toggle-btn { position: static; flex-shrink: 0; width: 30px; height: 30px; background: var(--bg-card); border-color: var(--border-light); color: var(--text-dim); border-radius: 8px; }
+		.sidebar-head .panel-toggle-btn:hover { background: var(--bg-active); color: var(--text-bright); }
+		.brand { min-width: 0; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		.menu-group { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; }
+		.menu-btn {
 		  display: flex;
 		  align-items: center;
+		  gap: 12px;
 		  width: 100%;
-		  height: 100%;
-		  gap: 14px;
-		  padding: 0 2px;
-		  overflow-x: auto;
-		  white-space: nowrap;
-		}
-		.top-bar::-webkit-scrollbar {
-		  display: none; /* 가로 스크롤바 숨김 처리 */
-		}
-
-		.menu-group {
-		  display: flex;
-		  gap: 2px;
-		  flex-shrink: 0;
-		  padding: 3px;
-		  background: var(--bg-panel);
-		  border: 1px solid var(--border);
-		  border-radius: 8px;
-		}
-		.menu-btn {
+		  padding: 9px 10px;
 		  background: transparent;
 		  border: none;
+		  border-radius: 8px;
 		  color: var(--text-dim);
-		  padding: 6px 14px;
-		  border-radius: 5px;
-		  cursor: pointer;
-		  font-size: 0.74rem;
+		  font-size: 0.78rem;
 		  font-weight: 500;
-		  flex-shrink: 0;
+		  text-align: left;
+		  white-space: nowrap;
+		  cursor: pointer;
 		  transition: background 0.15s, color 0.15s;
 		}
+		.menu-btn svg { width: 17px; height: 17px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 		.menu-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
-		.menu-btn.active { background: var(--accent-strong); color: #fff; }
+		.menu-btn.active { background: var(--bg-active); color: var(--text-bright); }
+		.group-label { margin: 0 14px; padding: 12px 0 6px; border-top: 1px solid var(--border); font-size: 0.6rem; font-weight: 600; letter-spacing: var(--track-caps); color: var(--text-muted); white-space: nowrap; overflow: hidden; }
 
-		.dro-display {
-		  display: flex;
-		  align-items: center;
-		  gap: 16px;
-		  margin-left: auto;
-		  flex-shrink: 0;
-		  background: var(--bg-panel);
-		  padding: 7px 14px;
-		  border-radius: 8px;
-		  border: 1px solid var(--border);
-		}
-		.dro-item { display: flex; align-items: baseline; gap: 6px; font-family: var(--font-mono); font-size: 0.74rem; }
-		.dro-label { color: var(--text-muted); font-family: var(--font-sans); font-size: 0.6rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }
+		/* ── 뷰포트 HUD: 상태와 좌표를 뷰포트 위에 모은다 ─────────────────── */
+		.vp-hud { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 7; display: flex; align-items: center; justify-content: space-between; gap: 8px; pointer-events: none; }
+		.vp-hud > div { display: flex; align-items: center; background: rgba(17, 17, 19, 0.84); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 8px; }
+		.status-indicators { gap: 8px; padding: 6px 11px; }
+		.status-text { font-family: var(--font-mono); font-size: 0.64rem; letter-spacing: 0.08em; color: var(--text-dim); }
+		.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px rgba(95, 185, 140, 0.16); }
+		.status-dot.idle { background: var(--warning); box-shadow: 0 0 0 3px rgba(214, 182, 94, 0.16); }
+		.status-dot.error { background: var(--danger); box-shadow: 0 0 0 3px rgba(224, 108, 108, 0.18); }
+		.dro-display { gap: 14px; padding: 6px 12px; }
+		.dro-item { display: flex; align-items: baseline; gap: 6px; font-family: var(--font-mono); font-size: 0.72rem; }
+		.dro-label { color: var(--text-muted); font-family: var(--font-sans); font-size: 0.58rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }
 		.dro-value { color: var(--text-bright); font-weight: 500; font-variant-numeric: tabular-nums; }
-		.status-indicators {
-		  display: flex;
-		  align-items: center;
-		  gap: 8px;
-		  flex-shrink: 0;
-		  padding: 7px 12px;
-		  background: var(--bg-panel);
-		  border: 1px solid var(--border);
-		  border-radius: 8px;
-		}
-		.status-text { font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.08em; color: var(--text-dim); }
-		.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px rgba(83, 198, 121, 0.16); }
-		.status-dot.idle { background: var(--warning); box-shadow: 0 0 0 3px rgba(227, 195, 90, 0.16); }
-		.status-dot.error { background: var(--danger); box-shadow: 0 0 0 3px rgba(223, 79, 80, 0.18); }
 
 		/* ── 레이아웃: 바탕 위에 떠 있는 카드 + 간격이 곧 리사이저 ─────────── */
 		.app-layout {
 		  display: grid;
 		  grid-template-columns: var(--left-w) var(--resizer-size) minmax(0, 1fr) var(--resizer-size) var(--right-w);
-		  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--resizer-size) var(--bottom-h);
+		  grid-template-rows: minmax(0, 1fr) var(--resizer-size) var(--bottom-h);
 		  width: 100%;
 		  height: 100%;
-		  padding: 0 var(--resizer-size) var(--resizer-size);
+		  padding: var(--resizer-size);
 		  overflow: hidden;
 		}
 
@@ -183,7 +145,7 @@
 		}
 
 		.app-layout > .panel-left {
-		  grid-row: 2;
+		  grid-row: 1 / -1;
 		  grid-column: 1;
 		  min-width: var(--left-min);
 		  display: flex;
@@ -193,7 +155,7 @@
 		}
 
 		.app-layout > .panel-center {
-		  grid-row: 2;
+		  grid-row: 1;
 		  grid-column: 3;
 		  min-width: 200px;
 		  min-height: 0;
@@ -204,7 +166,7 @@
 		}
 
 		.app-layout > .panel-right {
-		  grid-row: 2;
+		  grid-row: 1;
 		  grid-column: 5;
 		  min-width: var(--right-min);
 		  display: flex;
@@ -214,18 +176,13 @@
 		}
 
 		.app-layout > .panel-bottom {
-		  grid-row: 4;
-		  grid-column: 1 / -1;
+		  grid-row: 3;
+		  grid-column: 3 / -1;
 		  min-height: var(--bottom-min);
 		  overflow: hidden;
 		  display: flex;
 		  flex-direction: column;
 		  transition: height var(--panel-transition), min-height var(--panel-transition), opacity var(--panel-transition);
-		}
-
-		.app-layout > .panel-header {
-		  grid-row: 1;
-		  grid-column: 1 / -1;
 		}
 
 		.resizer {
@@ -242,17 +199,18 @@
 		}
 		.resizer:hover::after,
 		.resizer.active::after {
-		  background: var(--accent-strong);
+		  background: var(--border-hover);
 		}
 
 		.resizer-v {
-		  grid-row: 2;
+		  grid-row: 1;
 		  cursor: col-resize;
 		  width: var(--resizer-size);
 		}
 		.resizer-v::after { top: 14px; bottom: 14px; left: 50%; width: 2px; transform: translateX(-50%); }
 
 		.resizer-v.left {
+		  grid-row: 1 / -1;
 		  grid-column: 2;
 		}
 
@@ -261,8 +219,8 @@
 		}
 
 		.resizer-h {
-		  grid-row: 3;
-		  grid-column: 1 / -1;
+		  grid-row: 2;
+		  grid-column: 3 / -1;
 		  cursor: row-resize;
 		  height: var(--resizer-size);
 		}
@@ -274,7 +232,6 @@
 		  position: relative;
 		}
 
-		.panel-left.collapsed,
 		.panel-right.collapsed {
 		  width: 0 !important;
 		  min-width: 0 !important;
@@ -287,7 +244,6 @@
 		  overflow: visible !important;
 		}
 
-		.app-layout > .panel-left.collapsed,
 		.app-layout > .panel-right.collapsed,
 		.app-layout > .panel-bottom.collapsed {
 		  background: transparent;
@@ -295,7 +251,6 @@
 		}
 
 		/* 접혔을 때 내용물이 억지로 줄어들며 비정상적인 세로 길이를 생성하지 않도록 아예 숨김 처리 */
-		.panel-left.collapsed > *:not(.panel-toggle-btn),
 		.panel-right.collapsed > *:not(.panel-toggle-btn),
 		.panel-bottom.collapsed > *:not(.panel-toggle-btn) {
 		  display: none !important;
@@ -321,7 +276,6 @@
 		}
 
 		/* 접혔을 때 토글 버튼이 중앙 영역 쪽으로 튀어나오도록 위치 변경 */
-		.panel-left.collapsed .panel-toggle-btn { right: -30px; background: var(--bg-panel); border-color: var(--border-light); }
 		.panel-right.collapsed .panel-toggle-btn { right: auto; left: -30px; background: var(--bg-panel); border-color: var(--border-light); }
 		.panel-bottom.collapsed .panel-toggle-btn { top: -30px; right: 6px; background: var(--bg-panel); border-color: var(--border-light); }
 
@@ -346,7 +300,20 @@
 		.panel-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; }
 
 		/* 튀어나온 토글 버튼이 뷰포트 툴바를 가리지 않도록 그쪽 여백을 비운다 */
-		.app-layout:has(.panel-left.collapsed) .viewport-toolbar { padding-left: 34px; }
+		/* 왼쪽을 접으면 아이콘 레일로 남는다 — 화면 아이콘과 단계 번호만, 누르면 다시 펼침 */
+		.panel-left.collapsed { width: var(--rail-w) !important; min-width: 0 !important; }
+		.panel-left.collapsed .brand,
+		.panel-left.collapsed .menu-btn span,
+		.panel-left.collapsed .group-label,
+		.panel-left.collapsed .sec-name,
+		.panel-left.collapsed .step-sum,
+		.panel-left.collapsed .chevron,
+		.panel-left.collapsed .panel-section-body { display: none !important; }
+		.panel-left.collapsed .sidebar-head { justify-content: center; padding: 0; }
+		.panel-left.collapsed .menu-group { padding: 10px 7px; }
+		.panel-left.collapsed .menu-btn { justify-content: center; padding: 10px 0; }
+		.panel-left.collapsed .panel-section-header { justify-content: center; padding: 0; border-top-color: transparent; }
+		.app-layout:has(.panel-left.collapsed) .resizer-v.left { pointer-events: none; }
 		.app-layout:has(.panel-right.collapsed) .viewport-toolbar { padding-right: 34px; }
 
 		/* ── 패널 섹션(아코디언) — 카드 제목 줄 ─────────────────────── */
@@ -388,7 +355,7 @@
 		  color: var(--text-dim);
 		  transition: background 0.15s, border-color 0.15s, color 0.15s;
 		}
-		.panel-section-header:not(.collapsed) .step-no { border-color: var(--accent-strong); background: var(--accent-strong); color: #fff; }
+		.panel-section-header:not(.collapsed) .step-no { border-color: var(--border-hover); background: var(--bg-active); color: var(--text-bright); }
 		.step-sum {
 		  flex: 1;
 		  min-width: 0;
@@ -437,21 +404,6 @@
 		  padding: 0;
 		}
 
-		.panel-header {
-		  display: flex;
-		  align-items: center;
-		  min-width: 0;
-		  user-select: none;
-		}
-		.panel-header .collapse-btn {
-		  margin-left: auto;
-		  background: none;
-		  border: none;
-		  color: var(--text-muted);
-		  cursor: pointer;
-		  font-size: 0.7rem;
-		}
-		.panel-header .collapse-btn:hover { color: var(--accent); }
 
 		.panel-content {
 		  flex: 1;
@@ -506,7 +458,7 @@
 		select:focus,
 		input[type=text]:focus,
 		input[type=number]:focus,
-		input[type=password]:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-glow); }
+		input[type=password]:focus { border-color: var(--border-hover); box-shadow: 0 0 0 3px var(--accent-glow); }
 		input::placeholder { color: var(--text-muted); }
 		input[type=checkbox] {
 		  appearance: none;
@@ -526,13 +478,13 @@
 		  content: '';
 		  width: 7px;
 		  height: 4px;
-		  border: solid #fff;
+		  border: solid var(--bg-darkest);
 		  border-width: 0 0 1.5px 1.5px;
 		  transform: translateY(-1px) rotate(-45deg) scale(0);
 		  transition: transform 0.12s;
 		}
 		input[type=checkbox]:hover { border-color: var(--text-muted); }
-		input[type=checkbox]:checked { background: var(--accent-strong); border-color: var(--accent-strong); }
+		input[type=checkbox]:checked { background: var(--text-bright); border-color: var(--text-bright); }
 		input[type=checkbox]:checked::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
 		input[type=checkbox]:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-glow); }
 		input[type=range] { accent-color: var(--signal); cursor: pointer; }
@@ -577,13 +529,13 @@
 		  transition: background 0.15s, border-color 0.15s, color 0.15s;
 		}
 		.vt-btn:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--text-bright); }
-		.vt-btn.active { background: var(--accent-dim); border-color: rgba(92, 151, 236, 0.45); color: var(--accent-text); }
+		.vt-btn.active { background: var(--bg-active); border-color: var(--border-strong); color: var(--text-bright); }
 		.vt-btn:disabled { opacity: 0.4; cursor: default; background: transparent; border-color: var(--border-light); color: var(--text-dim); }
 		.viewport-toolbar .vt-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--border-light); }
 		.vt-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 28px; }
 		.vt-label { font-size: 0.6rem; font-weight: 600; letter-spacing: var(--track-caps); color: var(--text-muted); }
-		.vt-btn.vt-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; min-width: 76px; }
-		.vt-btn.vt-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+		.vt-btn.vt-primary { background: var(--bg-active); border-color: var(--border-hover); color: var(--text-bright); min-width: 76px; }
+		.vt-btn.vt-primary:hover { background: var(--bg-active-hover); color: var(--text-bright); }
 		.vt-btn.vt-next { margin-left: auto; }
 		.viewport-toolbar .vt-info {
 		  margin-left: auto;
@@ -619,9 +571,9 @@
 		}
 		.viewport-overlay {
 		  position: absolute;
-		  top: 10px;
+		  top: 52px;
 		  right: 10px;
-		  background: rgba(12, 14, 18, 0.82);
+		  background: rgba(17, 17, 19, 0.82);
 		  border: 1px solid var(--border-light);
 		  backdrop-filter: blur(6px);
 		  padding: 6px 10px;
@@ -655,9 +607,9 @@
 		  color: var(--text-dim);
 		}
 		.tree-item:hover { background: var(--bg-hover); color: var(--text-bright); }
-		.tree-item.active { background: var(--accent-dim); color: var(--accent-text); box-shadow: inset 2px 0 0 var(--accent); }
+		.tree-item.active { background: var(--bg-active); color: var(--text-bright); }
 		.tree-item .tree-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 18px; height: 18px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.56rem; font-weight: 600; color: var(--text-dim); }
-		.tree-item.active .tree-icon { color: var(--accent-text); border-color: rgba(92, 151, 236, 0.5); }
+		.tree-item.active .tree-icon { color: var(--text-bright); border-color: var(--border-hover); }
 		.tree-item .tree-badge {
 		  margin-left: auto;
 		  font-family: var(--font-mono);
@@ -668,7 +620,7 @@
 		  padding: 1px 5px;
 		  border-radius: var(--radius-sm);
 		}
-		.tree-item.active .tree-badge { color: var(--accent-text); border-color: rgba(92, 151, 236, 0.45); }
+		.tree-item.active .tree-badge { color: var(--text-bright); border-color: var(--border-hover); }
 
 		.form-group { margin-bottom: 10px; }
 		.form-group label {
@@ -694,14 +646,14 @@
 		  margin: 2px 0;
 		  background: none;
 		  border: none;
-		  color: var(--accent);
+		  color: var(--text-dim);
 		  font-size: 0.66rem;
 		  font-weight: 500;
 		  letter-spacing: 0;
 		  text-transform: none;
 		  cursor: pointer;
 		}
-		.link-btn:hover { color: var(--accent-text); text-decoration: underline; }
+		.link-btn:hover { color: var(--text-bright); text-decoration: underline; }
 		.side-actions .link-btn { margin-left: auto; }
 		.ct-sec-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 		.summary-block { padding: 12px 14px 4px; }
@@ -730,9 +682,9 @@
 		  gap: 6px;
 		  min-height: 30px;
 		  padding: 5px 14px;
-		  background: var(--accent-strong);
-		  color: #fff;
-		  border: 1px solid var(--accent-strong);
+		  background: var(--bg-active);
+		  color: var(--text-bright);
+		  border: 1px solid var(--border-strong);
 		  border-radius: var(--radius);
 		  font-weight: 600;
 		  font-size: 0.74rem;
@@ -740,7 +692,7 @@
 		  cursor: pointer;
 		  transition: background 0.15s, border-color 0.15s, color 0.15s;
 		}
-		.btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+		.btn:hover { background: var(--bg-active-hover); border-color: var(--border-hover); }
 		.btn:active { filter: brightness(0.92); }
 		.btn:disabled { opacity: 0.4; cursor: default; filter: none; }
 		.btn-outline {
@@ -794,6 +746,8 @@
 		  flex-shrink: 0;
 		}
 		.bottom-tab {
+		  flex-shrink: 0;
+		  white-space: nowrap;
 		  padding: 5px 12px;
 		  border-radius: 5px;
 		  font-size: 0.72rem;
@@ -803,7 +757,7 @@
 		  transition: background 0.15s, color 0.15s;
 		}
 		.bottom-tab:hover { background: var(--bg-hover); color: var(--text-bright); }
-		.bottom-tab.active { background: var(--accent-strong); color: #fff; }
+		.bottom-tab.active { background: var(--bg-active); color: var(--text-bright); }
 
 		/* ── 상태 바 (Rerun 타임라인 줄 풍) ─────────────────────────── */
 		.status-bar {
@@ -967,7 +921,7 @@
 		}
 		.pv-tab { padding: 6px 12px; border-radius: 5px; font-size: 0.72rem; font-weight: 500; color: var(--text-dim); cursor: pointer; transition: background 0.15s, color 0.15s; }
 		.pv-tab:hover { background: var(--bg-hover); color: var(--text-bright); }
-		.pv-tab.active { background: var(--accent-strong); color: #fff; }
+		.pv-tab.active { background: var(--bg-active); color: var(--text-bright); }
 		.pv-pane { display: none; }
 		.pv-pane.active { display: block; }
 		.pv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
@@ -999,7 +953,7 @@
 		.pv-kv .k { color: var(--text-dim); }
 		.pv-kv .v { font-family: var(--font-mono); font-size: 0.7rem; font-weight: 500; color: var(--text-bright); text-align: right; }
 		.lib-cand { border: 1px solid var(--border-cell); border-radius: 8px; padding: 10px; margin-bottom: 8px; background: var(--bg-input); }
-		.lib-cand.cur { border-color: rgba(92, 151, 236, 0.55); box-shadow: inset 2px 0 0 var(--accent); }
+		.lib-cand.cur { border-color: var(--border-hover); box-shadow: inset 2px 0 0 var(--text-dim); }
 		.lib-cand-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.76rem; }
 		.lib-rank { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 4px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.66rem; font-weight: 600; color: var(--text-bright); }
 		.lib-score { display: flex; align-items: center; gap: 6px; margin-left: auto; font-family: var(--font-mono); font-size: 0.68rem; }
@@ -1028,14 +982,14 @@
 		.mq-state { min-width: 64px; font-family: var(--font-mono); font-size: 0.66rem; font-weight: 600; }
 
 		/* ── 뷰포트 위 떠 있는 요소 ─────────────────────────────────── */
-		.vp-legend { position: absolute; right: 10px; bottom: 10px; background: rgba(12, 14, 18, 0.86); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 8px; padding: 8px 10px; font-size: 0.64rem; color: var(--text-dim); pointer-events: none; user-select: none; max-width: 300px; max-height: calc(100% - 48px); overflow-y: auto; z-index: 6; line-height: 1.5; }
+		.vp-legend { position: absolute; right: 10px; bottom: 10px; background: rgba(17, 17, 19, 0.86); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 8px; padding: 8px 10px; font-size: 0.64rem; color: var(--text-dim); pointer-events: none; user-select: none; max-width: 300px; max-height: calc(100% - 48px); overflow-y: auto; z-index: 6; line-height: 1.5; }
 		.vp-legend.lg-scroll { pointer-events: auto; }
 		.vp-legend .lg-bar { height: 6px; border-radius: 999px; margin: 4px 0; background: linear-gradient(90deg, rgba(120,0,0,0.2), #c0392b, #ff8c00, #ffd93d, #ffffff); }
 		.vp-legend .lg-scale { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-muted); }
 		.vp-legend .lg-scale.lg-abs { display: block; position: relative; height: 12px; }
 		.vp-legend .lg-scale.lg-abs span { position: absolute; top: 0; white-space: nowrap; }
 		.vp-legend b { color: var(--text-bright); }
-		.viewport-canvas-wrap canvas.vp-wear-inset { position: absolute; left: 10px; top: 10px; width: 168px; height: 196px; border: 1px solid var(--border-light); border-radius: 8px; pointer-events: none; z-index: 5; }
+		.viewport-canvas-wrap canvas.vp-wear-inset { position: absolute; left: 10px; top: 52px; width: 168px; height: 196px; border: 1px solid var(--border-light); border-radius: 8px; pointer-events: none; z-index: 5; }
 		#tool-state-panel { margin-top: 8px; padding: 9px 10px; border: 1px solid var(--border-cell); border-radius: 8px; background: var(--bg-card); }
 		.ts-head { font-size: 0.72rem; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; }
 		.ts-row { font-size: 0.66rem; color: var(--text-dim); line-height: 1.6; }
@@ -1044,8 +998,8 @@
 		.ts-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--success), var(--warning), var(--danger)); }
 		.ts-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
 		.viz-swatch { width: 90px; height: 8px; border-radius: 999px; border: 1px solid var(--border-light); }
-		.vp-busy { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); background: rgba(12, 14, 18, 0.86); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 999px; padding: 4px 12px; font-family: var(--font-mono); font-size: 0.66rem; color: var(--warning); pointer-events: none; }
-		.vp-prep { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); width: min(460px, 86%); background: rgba(12, 14, 18, 0.95); backdrop-filter: blur(8px); border: 1px solid var(--border-light); border-radius: 12px; padding: 16px 18px; z-index: 30; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); }
+		.vp-busy { position: absolute; left: 50%; top: 52px; transform: translateX(-50%); background: rgba(17, 17, 19, 0.86); backdrop-filter: blur(6px); border: 1px solid var(--border-light); border-radius: 999px; padding: 4px 12px; font-family: var(--font-mono); font-size: 0.66rem; color: var(--warning); pointer-events: none; }
+		.vp-prep { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); width: min(460px, 86%); background: rgba(17, 17, 19, 0.95); backdrop-filter: blur(8px); border: 1px solid var(--border-light); border-radius: 12px; padding: 16px 18px; z-index: 30; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); }
 		.vp-prep .prep-title { font-size: 0.74rem; font-weight: 600; letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--text-bright); margin-bottom: 8px; }
 		.vp-prep .prep-stage { font-size: 0.74rem; color: var(--text); margin-bottom: 10px; min-height: 1.2em; }
 		.vp-prep .prep-bar { height: 6px; background: var(--bg-input); border-radius: 999px; overflow: hidden; border: 1px solid var(--border-cell); }
@@ -1074,10 +1028,19 @@
 		.tree-item .tree-src { font-family: var(--font-mono); font-size: 0.56rem; color: var(--text-muted); margin-left: 4px; }
 		.tree-group { font-size: 0.58rem; font-weight: 600; color: var(--text-muted); padding: 10px 2px 4px; text-transform: uppercase; letter-spacing: var(--track-caps); }
 		.side-actions { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px 0; }
-		.modal-back { position: fixed; inset: 0; background: rgba(3, 4, 6, 0.72); backdrop-filter: blur(3px); z-index: 200; display: flex; align-items: center; justify-content: center; }
-		.modal { background: var(--bg-panel); border: 1px solid var(--border-light); border-radius: 12px; padding: 18px 20px; width: min(560px, 94vw); max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6); }
-		.modal h4 { color: var(--text-bright); font-size: 0.78rem; font-weight: 600; line-height: 1.5; margin-bottom: 14px; }
-		.modal .ct-grid { margin-bottom: 6px; }
+		.tree-item-2l { padding: 7px 8px; }
+		.tree-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+		.tree-name, .tree-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		.tree-sub { font-size: 0.62rem; color: var(--text-muted); }
+		.tree-act { flex-shrink: 0; padding: 3px 8px; background: transparent; border: 1px solid var(--border-light); border-radius: var(--radius-sm); color: var(--text-dim); font-size: 0.64rem; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+		.tree-act:hover { background: var(--bg-active-hover); border-color: var(--border-hover); color: var(--text-bright); }
+		.tree-add { display: flex; align-items: center; justify-content: center; width: 100%; margin-top: 6px; padding: 8px; background: transparent; border: 1px dashed var(--border-strong); border-radius: var(--radius); color: var(--text-dim); font-size: 0.72rem; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+		.tree-add:hover { background: var(--bg-hover); border-color: var(--border-hover); color: var(--text-bright); }
+		.list-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 0.62rem; color: var(--text-muted); }
+		.profile-overlay { z-index: 80; }
+		.ov-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+		.ov-head .section-title { margin: 2px 0 6px; }
+		.ov-head .st-note { margin-top: 0; max-width: 680px; }
 
 		@media (max-width: 1100px) {
 		  :root { --left-w: 200px; --right-w: 240px; }
@@ -1086,63 +1049,30 @@
 </head>
 <body>
 	<div class="app-layout" id="appLayout">
-	  <header class="panel-header">
-	    <div class="top-bar">
-	      <div class="logo">
-	        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-	          <circle cx="12" cy="12" r="3"/>
-	          <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
-	          <path d="M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>
-	        </svg>
-	        End Mill Sandbox
-	      </div>
-	      <div class="menu-group">
-	        <button class="menu-btn active" id="menu-machining" onclick="switchView('machining', this)">가공</button>
-	        <button class="menu-btn" id="menu-precision" onclick="switchView('precision', this)">정밀 분석</button>
-	        <button class="menu-btn" id="menu-reference" onclick="switchView('reference', this)">참고 자료</button>
-	        <button class="menu-btn" id="menu-settings" onclick="switchView('settings', this)">환경·모델 설정</button>
-	      </div>
-	      <div class="dro-display">
-	        <div class="dro-item"><span class="dro-label">X</span><span class="dro-value" id="dro-x">0.000</span></div>
-	        <div class="dro-item"><span class="dro-label">Y</span><span class="dro-value" id="dro-y">0.000</span></div>
-	        <div class="dro-item"><span class="dro-label">Z</span><span class="dro-value" id="dro-z">0.000</span></div>
-	        <div class="dro-item"><span class="dro-label">RPM</span><span class="dro-value rpm" id="dro-rpm">0</span></div>
-	        <div class="dro-item"><span class="dro-label">Feed</span><span class="dro-value feed" id="dro-feed">0</span></div>
-	      </div>
-	      <div class="status-indicators">
-	        <div class="status-dot" id="status-dot"></div>
-	        <span class="status-text" id="status-text">READY</span>
-	      </div>
-	    </div>
-	  </header>
-
 	  <aside class="panel-left" id="panelLeft">
-	    <button class="panel-toggle-btn" data-toggle="panelLeft" title="좌측 패널 접기">◀</button>
-	    <div class="panel-title"><b>준비</b><small>무엇으로 깎을지 · 위에서부터 차례로</small></div>
+	    <div class="sidebar-head">
+	      <button class="panel-toggle-btn" data-toggle="panelLeft" title="좌측 패널 접기">◀</button>
+	      <span class="brand">End Mill Sandbox</span>
+	    </div>
 	    <div class="panel-scroll">
+	    <nav class="menu-group" aria-label="화면 전환">
+	      <button class="menu-btn active" id="menu-machining" onclick="switchView('machining', this)" title="가공"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span>가공</span></button>
+	      <button class="menu-btn" id="menu-precision" onclick="switchView('precision', this)" title="정밀 분석"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16"/><path d="M8 15l3.5-4 3 2.5L19 8"/></svg><span>정밀 분석</span></button>
+	      <button class="menu-btn" id="menu-reference" onclick="switchView('reference', this)" title="참고 자료"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h10.5a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10.5"/></svg><span>참고 자료</span></button>
+	      <button class="menu-btn" id="menu-settings" onclick="switchView('settings', this)" title="환경·모델 설정"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>환경·모델 설정</span></button>
+	    </nav>
+	    <div class="group-label">준비 · 무엇으로 깎을지</div>
 
 	    <div class="panel-section-header" data-section="secPreset">
-	      <span class="sec-title"><span class="step-no">1</span>프로필</span><span class="step-sum" id="sum-profile"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">1</span><span class="sec-name">프로필</span></span><span class="step-sum" id="sum-profile"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secPreset">
-	      <div class="tree-group">활성 프로젝트의 프로필</div>
-	      <div id="preset-tree"></div>
-	      <div class="side-actions">
-	        <button class="btn btn-sm btn-outline" onclick="profileDuplicate()">복제</button>
-	        <button class="btn btn-sm btn-outline" onclick="profileDelete(this)">삭제</button>
-	        <button class="link-btn" onclick="openLibrary()" title="프로젝트 전환·생성은 정밀 분석 ⑦ 라이브러리에서 합니다">프로젝트 관리 →</button>
-	      </div>
-	      <div class="ct-sec">프리셋 · 재사용하는 조합</div>
-	      <div class="side-actions">
-	        <button class="btn btn-sm btn-outline" onclick="presetDialogOpen()">＋ 새 프리셋</button>
-	        <button class="btn btn-sm btn-outline" onclick="presetSaveCurrent()">현재 → 프리셋</button>
-	        <button class="btn btn-sm btn-outline" id="preset-lib-btn" onclick="presetLibraryToggle()">프리셋 목록 ▾</button>
-	      </div>
-	      <div id="preset-lib" class="hidden"></div>
+	      <div id="preset-tree"><button class="tree-add" onclick="profileViewOpen('new')">＋ 새로 추가</button></div>
+	      <div class="list-foot"><span>이 프로젝트에서 쓰는 작업 구성</span><button class="link-btn" onclick="openLibrary()" title="프로젝트 전환·생성은 정밀 분석 ⑦ 라이브러리에서 합니다">프로젝트 관리 →</button></div>
 	    </div>
 
 	    <div class="panel-section-header collapsed" data-section="secToolList">
-	      <span class="sec-title"><span class="step-no">2</span>공구</span><span class="step-sum" id="sum-tool"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">2</span><span class="sec-name">공구</span></span><span class="step-sum" id="sum-tool"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body collapsed" id="secToolList">
 	      <div id="tool-tree"></div>
@@ -1245,7 +1175,7 @@
 	    </div>
 
 	    <div class="panel-section-header collapsed" data-section="secMaterial">
-	      <span class="sec-title"><span class="step-no">3</span>원소재</span><span class="step-sum" id="sum-material"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">3</span><span class="sec-name">원소재</span></span><span class="step-sum" id="sum-material"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body collapsed" id="secMaterial">
 	      <div id="workpiece-tree"></div>
@@ -1302,7 +1232,7 @@
 	    </div>
 
 	    <div class="panel-section-header collapsed" data-section="secCoolant">
-	      <span class="sec-title"><span class="step-no">4</span>냉각 · 환경</span><span class="step-sum" id="sum-coolant"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">4</span><span class="sec-name">냉각 · 환경</span></span><span class="step-sum" id="sum-coolant"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body collapsed" id="secCoolant">
 	      <div id="coolant-tree"></div>
@@ -1406,6 +1336,19 @@
 	    </div>
 	    <div class="viewport-canvas-wrap">
 	      <canvas id="tp-canvas"></canvas>
+	      <div class="vp-hud">
+	        <div class="status-indicators">
+	          <div class="status-dot" id="status-dot"></div>
+	          <span class="status-text" id="status-text">READY</span>
+	        </div>
+	        <div class="dro-display">
+	          <div class="dro-item"><span class="dro-label">X</span><span class="dro-value" id="dro-x">0.000</span></div>
+	          <div class="dro-item"><span class="dro-label">Y</span><span class="dro-value" id="dro-y">0.000</span></div>
+	          <div class="dro-item"><span class="dro-label">Z</span><span class="dro-value" id="dro-z">0.000</span></div>
+	          <div class="dro-item"><span class="dro-label">RPM</span><span class="dro-value rpm" id="dro-rpm">0</span></div>
+	          <div class="dro-item"><span class="dro-label">Feed</span><span class="dro-value feed" id="dro-feed">0</span></div>
+	        </div>
+	      </div>
 	      <div class="viewport-overlay" id="vp-overlay" style="display:none;">
 	        <span id="tp-coolant-label"></span>
 	      </div>
@@ -1772,6 +1715,64 @@
 	        <div id="mq-list"></div>
 	      </div>
 	    </div>
+	    <div class="precision-overlay profile-overlay" id="profile-view">
+	      <div class="ov-head">
+	        <div>
+	          <div class="section-title" id="pf-title">새로 추가</div>
+	          <div class="st-note" id="pf-sub"></div>
+	        </div>
+	        <button class="btn btn-sm btn-outline" onclick="profileViewClose()">닫기 (뷰포트로)</button>
+	      </div>
+	      <div id="pf-new">
+	        <div class="pv-grid">
+	          <div class="pv-card">
+	            <h4>프리셋에서 시작 — 저장해 둔 구성으로 바로 프로필 만들기</h4>
+	            <div id="preset-lib"></div>
+	          </div>
+	          <div class="pv-card">
+	            <h4>직접 구성 — 공구·원소재·냉각을 골라 프리셋과 프로필을 함께 만들기</h4>
+	            <div class="form-grid">
+	              <div class="form-group"><label>프리셋 이름</label><input type="text" id="pd-name" placeholder="예: SUS304 포켓 황삭" /></div>
+	              <div class="form-group"><label>가공 목적</label><select id="pd-purpose"><option value="roughing">황삭</option><option value="finishing">정삭</option></select></div>
+	              <div class="form-group span-2"><label>공구 (기본 공구 + 라이브러리)</label><select id="pd-tool"></select></div>
+	              <div class="form-group span-2"><label>원소재 (기본 원소재 + 라이브러리)</label><select id="pd-wp"></select></div>
+	              <div class="form-group"><label>냉각</label><select id="pd-coolant"><option value="flood">플러드</option><option value="air_blast">에어 블로우</option><option value="mist">미스트 (MQL)</option><option value="through_tool">내부 급유</option><option value="dry">건식</option></select></div>
+	              <div class="form-group"><label>프로필 이름 (비우면 프리셋 이름)</label><input type="text" id="pd-profile-name" /></div>
+	              <div class="form-group span-2"><label>설명 (비우면 자동)</label><input type="text" id="pd-desc" /></div>
+	            </div>
+	            <label class="ct-check"><input type="checkbox" id="pd-profile" checked /> 이 프로젝트에 프로필도 만들고 바로 선택</label>
+	            <div class="pv-row">
+	              <button class="btn btn-sm btn-outline" onclick="presetCreate(true)">조건 미리 계산</button>
+	              <button class="btn btn-sm" onclick="presetCreate(false)">만들기</button>
+	            </div>
+	            <div id="pd-result"></div>
+	          </div>
+	        </div>
+	      </div>
+	      <div id="pf-edit" class="hidden">
+	        <div class="pv-grid">
+	          <div class="pv-card">
+	            <h4>구성 바꾸기 — 공구·원소재를 바꾸면 절삭 조건을 다시 추천합니다</h4>
+	            <div class="form-grid">
+	              <div class="form-group span-2"><label>공구</label><select id="pe-tool"></select></div>
+	              <div class="form-group span-2"><label>원소재</label><select id="pe-wp"></select></div>
+	              <div class="form-group span-2"><label>냉각 (기본 압력·유량으로 적용)</label><select id="pe-coolant"><option value="flood">플러드</option><option value="air_blast">에어 블로우</option><option value="mist">미스트 (MQL)</option><option value="through_tool">내부 급유</option><option value="dry">건식</option></select></div>
+	            </div>
+	            <button class="btn btn-sm btn-block" onclick="profileApplyEdits()">변경 적용</button>
+	          </div>
+	          <div class="pv-card">
+	            <h4>관리</h4>
+	            <div class="form-group"><label>복제 — 새 프로필 이름</label><input type="text" id="pe-dup-name" /></div>
+	            <button class="btn btn-sm btn-outline btn-block" onclick="profileDuplicate()">복제해서 새 프로필 만들기</button>
+	            <div class="form-group"><label>프리셋으로 저장 — 프리셋 이름</label><input type="text" id="pe-preset-name" /></div>
+	            <button class="btn btn-sm btn-outline btn-block" onclick="profileSaveAsPreset()">이 구성을 프리셋으로 저장</button>
+	            <div class="ct-sec">삭제</div>
+	            <button class="btn btn-sm btn-danger" onclick="profileDelete(this)">삭제</button>
+	          </div>
+	        </div>
+	        <div id="pe-result"></div>
+	      </div>
+	    </div>
 	    <div class="precision-overlay" id="comp-view">
 	      <div class="pv-row" style="justify-content:space-between;">
 	        <div class="section-title" id="comp-title" style="margin:0;">2차 보정</div>
@@ -1798,7 +1799,7 @@
 	    </div>
 
 	    <div class="panel-section-header" data-section="secCutCalc">
-	      <span class="sec-title"><span class="step-no">5</span>절삭 조건</span><span class="step-sum" id="sum-cond"></span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">5</span><span class="sec-name">절삭 조건</span></span><span class="step-sum" id="sum-cond"></span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secCutCalc">
 	      <div class="ctx-box hidden" id="calc-context"></div>
@@ -1869,7 +1870,7 @@
 	    <button class="panel-toggle-btn" data-toggle="panelBottom" title="하단 패널 접기">▼</button>
 
 	    <div class="panel-section-header" data-section="secOutput">
-	      <span class="sec-title"><span class="step-no">7</span>출력</span><span class="step-sum">G-code · 경고 · 로그 · 프로필</span><span class="chevron">▼</span>
+	      <span class="sec-title"><span class="step-no">7</span><span class="sec-name">출력</span></span><span class="step-sum">G-code · 경고 · 로그 · 프로필</span><span class="chevron">▼</span>
 	    </div>
 	    <div class="panel-section-body" id="secOutput">
 	      <div class="bottom-tabs">
@@ -1899,40 +1900,6 @@
 
 	</div>
 
-	<div class="modal-back hidden" id="preset-dialog">
-	  <div class="modal">
-	    <h4>새 프리셋 만들기 — 공구 · 원소재 · 냉각 · 목적을 고르면 현재 환경에서 물리 모델로 절삭 조건을 산정합니다</h4>
-	    <div class="ct-grid">
-	      <div class="form-group"><label>프리셋 이름</label><input type="text" id="pd-name" placeholder="예: SUS304 포켓 황삭" /></div>
-	      <div class="form-group"><label>가공 목적</label>
-	        <select id="pd-purpose"><option value="roughing">황삭</option><option value="finishing">정삭</option></select>
-	      </div>
-	    </div>
-	    <div class="form-group"><label>설명 (비우면 자동)</label><input type="text" id="pd-desc" /></div>
-	    <div class="form-group"><label>공구 (기본 공구 + 라이브러리)</label><select id="pd-tool"></select></div>
-	    <div class="form-group"><label>원소재 (기본 원소재 + 라이브러리)</label><select id="pd-wp"></select></div>
-	    <div class="ct-grid">
-	      <div class="form-group"><label>냉각</label>
-	        <select id="pd-coolant">
-	          <option value="flood">플러드</option>
-	          <option value="air_blast">에어 블로우</option>
-	          <option value="mist">미스트 (MQL)</option>
-	          <option value="through_tool">내부 급유</option>
-	          <option value="dry">건식</option>
-	        </select>
-	      </div>
-	      <div class="form-group"><label>프로필 이름 (비우면 프리셋 이름)</label><input type="text" id="pd-profile-name" /></div>
-	    </div>
-	    <label class="ct-check"><input type="checkbox" id="pd-profile" checked /> 활성 프로젝트에 이 프리셋으로 프로필도 만들고 선택</label>
-	    <div class="pv-row">
-	      <button class="btn btn-sm btn-outline" onclick="presetCreate(true)">조건 미리 계산</button>
-	      <button class="btn btn-sm" onclick="presetCreate(false)">프리셋 만들기</button>
-	      <button class="btn btn-sm btn-outline" onclick="presetDialogClose()" style="margin-left:auto;">닫기</button>
-	    </div>
-	    <div id="pd-result" style="font-size:0.7rem;"></div>
-	  </div>
-	</div>
-
 	<div class="status-bar">
 	  <div class="sb-item">프로파일: <strong id="sb-profile">-</strong></div>
 	  <div class="sb-sep"></div>
@@ -1958,7 +1925,7 @@
 	  const cs = getComputedStyle(document.documentElement);
 	  const v = n => cs.getPropertyValue(n).trim();
 	  return {
-	    plot: v('--bg-plot'), grid: v('--plot-grid'), gridStrong: v('--plot-grid-strong'),
+	    plot: v('--bg-plot'), grid: v('--plot-grid'), gridStrong: v('--plot-grid-strong'), path: v('--path'),
 	    axis: v('--text-muted'), label: v('--text-dim'), text: v('--text'),
 	    accent: v('--accent'), violet: v('--violet'),
 	    danger: v('--danger'), warning: v('--warning'), success: v('--success'),
@@ -2001,6 +1968,7 @@
 	    precView.classList.remove('visible');
 	  }
 	  document.getElementById('comp-view').classList.remove('visible');
+	  document.getElementById('profile-view').classList.remove('visible');
 	  const setView = document.getElementById('settings-view');
 	  if (view === 'settings') {
 	    setView.classList.add('visible');
@@ -2201,10 +2169,12 @@
 
 	      if (targetId === 'panelLeft') {
 	        btn.textContent = isCollapsed ? '▶' : '◀';
+	        btn.title = isCollapsed ? '좌측 패널 펼치기' : '좌측 패널 접기';
 	        if (isCollapsed) {
 	          const currentW = parseInt(getComputedStyle(root).getPropertyValue('--left-w'));
-	          if (currentW > 0) panelStates.left = currentW; // 닫기 직전의 최신 너비 저장
-	          root.style.setProperty('--left-w', '0px');
+	          const railW = getComputedStyle(root).getPropertyValue('--rail-w').trim();
+	          if (currentW > parseInt(railW)) panelStates.left = currentW; // 닫기 직전의 최신 너비 저장
+	          root.style.setProperty('--left-w', railW); // 완전히 숨기지 않고 아이콘 레일로 남김
 	        } else {
 	          root.style.setProperty('--left-w', panelStates.left + 'px'); // 저장된 최신 너비로 복구
 	        }
@@ -2243,6 +2213,15 @@
 
 	      const body = document.getElementById(sectionId);
 	      if (!body) return;
+
+	      // 접힌 레일에서 단계 번호를 누르면 패널을 펼치고 그 단계를 연다
+	      const left = document.getElementById('panelLeft');
+	      if (left.classList.contains('collapsed') && left.contains(header)) {
+	        document.querySelector('.panel-toggle-btn[data-toggle="panelLeft"]').click();
+	        body.classList.remove('collapsed');
+	        header.classList.remove('collapsed');
+	        return;
+	      }
 
 	      const isCollapsed = body.classList.toggle('collapsed');
 	      header.classList.toggle('collapsed', isCollapsed);
@@ -2590,11 +2569,11 @@
 	      ctx.strokeStyle = style === 'done' ? uiAlpha(UI.violet, 0.95) : uiAlpha(UI.violet, 0.35);
 	      ctx.lineWidth = style === 'done' ? Math.max(2, toolRadiusPx * 0.9) : Math.max(1, toolRadiusPx * 0.5);
 	    } else if (VP.show.depth && VP.sim && VP.sim.depth) {
-	      ctx.strokeStyle = style === 'done' ? uiAlpha(UI.accent, 0.28) : uiAlpha(UI.accent, 0.07);
+	      ctx.strokeStyle = style === 'done' ? uiAlpha(UI.path, 0.28) : uiAlpha(UI.path, 0.07);
 	      ctx.lineWidth = 1;
 	    } else {
 	      const depth = Math.min(Math.max(Math.abs(s.z || 0) / 10, 0.25), 1.0);
-	      ctx.strokeStyle = style === 'done' ? uiAlpha(UI.accent, 0.55 + 0.45 * depth) : uiAlpha(UI.accent, 0.10 + 0.12 * depth);
+	      ctx.strokeStyle = style === 'done' ? uiAlpha(UI.path, 0.55 + 0.45 * depth) : uiAlpha(UI.accent, 0.10 + 0.12 * depth);
 	      ctx.lineWidth = style === 'done' ? toolRadiusPx * 2 : Math.max(1, toolRadiusPx * 0.8);
 	    }
 	    vpLineDash(ctx, rapid);
@@ -2938,31 +2917,32 @@
 	}
 
 	const DEPTH_PALETTES = {
+	  contact: [[230, 232, 236], [196, 205, 222], [72, 96, 150], [52, 122, 135], [70, 145, 112], [150, 170, 80], [232, 214, 96]],
 	  terrain: [[250, 240, 180], [170, 220, 120], [60, 190, 160], [40, 140, 210], [70, 95, 210], [120, 80, 200]],
 	  thermal: [[255, 255, 210], [255, 210, 90], [250, 140, 40], [230, 70, 50], [200, 40, 110], [160, 60, 170]],
 	  ocean: [[220, 245, 255], [150, 210, 240], [90, 170, 230], [50, 125, 220], [55, 90, 210], [80, 70, 190]],
 	  mono: [[245, 245, 245], [205, 205, 205], [170, 170, 170], [140, 140, 140], [115, 115, 115], [90, 90, 90]],
 	};
-	const DEPTH_PALETTE_LABEL = { terrain: '지형 (모래→청록→남색)', thermal: '열 (연노랑→적→자주)', ocean: '해양 (하늘→심청)', mono: '흑백 (밝음→어두움)' };
+	const DEPTH_PALETTE_LABEL = { contact: '접촉 (흰색→남색→청록→노랑)', terrain: '지형 (모래→청록→남색)', thermal: '열 (연노랑→적→자주)', ocean: '해양 (하늘→심청)', mono: '흑백 (밝음→어두움)' };
 	const DEPTH_MARK_LABEL = { dots: '작은 점', boxes: '작은 박스', lines: '짧은 선 (해칭)' };
 	const MATERIAL_FAMILY_LABEL = { aluminum: '알루미늄', carbon_steel: '탄소강', alloy_steel: '합금강·금형강', stainless: '스테인리스', titanium: '티타늄', inconel: '인코넬', superalloy: '내열 초합금', cfrp: 'CFRP' };
 	const DEPTH_BUCKETS = 24;
 
 	function vpPaletteRGB(name, k) {
-	  const stops = DEPTH_PALETTES[name] || DEPTH_PALETTES.terrain;
+	  const stops = DEPTH_PALETTES[name] || DEPTH_PALETTES.contact;
 	  const t = Math.max(0, Math.min(1, k));
 	  const p = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(p)), f = p - i;
 	  return stops[i].map((v, n) => Math.round(v + (stops[i + 1][n] - v) * f));
 	}
 
 	function vpPaletteCss(name, alpha) {
-	  const stops = DEPTH_PALETTES[name] || DEPTH_PALETTES.terrain;
+	  const stops = DEPTH_PALETTES[name] || DEPTH_PALETTES.contact;
 	  return stops.map((s, i) => `rgba(${s[0]},${s[1]},${s[2]},${alpha}) ${Math.round(i / (stops.length - 1) * 100)}%`).join(', ');
 	}
 
 	function vpViz() {
 	  const v = (APP.settings && APP.settings.viz) || {};
-	  return { ramps: v.ramps || {}, mark: v.mark || 'dots', wear_palette: v.wear_palette || 'thermal' };
+	  return { ramps: v.ramps || {}, mark: v.mark || 'dots', wear_palette: v.wear_palette || 'contact' };
 	}
 
 	function vpNiceStep(span, n) {
@@ -2979,13 +2959,13 @@
 	  const dm = VP.sim && VP.sim.depth;
 	  const viz = vpViz();
 	  const key = dm ? dm.material_key : '';
-	  const r = Object.assign({ mode: 'auto', max_mm: 0, palette: 'terrain', contour_mm: 0 }, viz.ramps[key] || {});
+	  const r = Object.assign({ mode: 'auto', max_mm: 0, palette: 'contact', contour_mm: 0 }, viz.ramps[key] || {});
 	  const auto = r.mode !== 'fixed' || !(r.max_mm > 0);
 	  const hi = auto ? Math.max(0.05, dm ? dm.max_depth_mm : 1) : r.max_mm;
 	  const asked = r.contour_mm > 0 ? r.contour_mm : vpNiceStep(hi, 8);
 	  const top = Math.max(hi, dm ? dm.max_depth_mm : 0);
 	  const step = Math.max(asked, top / DEPTH_MAX_LEVELS);
-	  return { key, auto, hi, step, asked, user: r.contour_mm > 0, palette: DEPTH_PALETTES[r.palette] ? r.palette : 'terrain', mark: viz.mark };
+	  return { key, auto, hi, step, asked, user: r.contour_mm > 0, palette: DEPTH_PALETTES[r.palette] ? r.palette : 'contact', mark: viz.mark };
 	}
 
 	function vpDepthTicks(ramp) {
@@ -3326,7 +3306,7 @@
 
 	function vpWearRgb(radialUm, refUm) {
 	  const viz = vpViz();
-	  return vpPaletteRGB(viz.wear_palette === 'mono' ? 'mono' : (DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'thermal'), Math.max(0, Math.min(1, radialUm / Math.max(refUm, 1e-6))));
+	  return vpPaletteRGB(viz.wear_palette === 'mono' ? 'mono' : (DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'contact'), Math.max(0, Math.min(1, radialUm / Math.max(refUm, 1e-6))));
 	}
 
 	function vpDrawToolWear(ctx, pose, toolVisible) {
@@ -3391,36 +3371,54 @@
 	  ctx.clearRect(0, 0, W, H);
 	  ctx.fillStyle = uiAlpha(UI.plot, 0.86);
 	  ctx.fillRect(0, 0, W, H);
-	  ctx.font = `9px ${UI.mono}`;
+	  ctx.font = `600 9px ${UI.sans}`;
 	  ctx.fillStyle = UI.text;
-	  ctx.fillText(w.fresh ? '새 공구 마모 지도 (반경 손실 µm)' : '공구 마모 지도 (반경 손실 µm)', 6, 11);
-	  const L = 24, T = 18, B = 34, R = 8;
+	  ctx.fillText(w.fresh ? '새 공구 · 마모 지도' : '공구 · 마모 지도', 8, 13);
+	  ctx.font = `9px ${UI.mono}`;
+	  const L = 24, T = 22, B = 34, R = 8;
 	  const gw = W - L - R, gh = H - T - B;
 	  const cw = gw / Math.max(1, w.flutes), rh = gh / Math.max(1, w.nz);
 	  const strip = tw.coating_strip_um || 0;
-	  ctx.lineWidth = 1;
+	  // 날마다 밝은 공구 몸체를 그리고 반경 손실이 있는 높이에만 색을 올린다 — 흰색은 마모 없음
 	  for (let f = 0; f < w.flutes; f++) {
-	    const x0 = Math.round(L + f * cw) + 2.5, span = Math.max(4, cw - 8);
-	    ctx.strokeStyle = 'rgba(120,120,140,0.5)';
-	    ctx.beginPath(); ctx.moveTo(x0, T); ctx.lineTo(x0, T + gh); ctx.stroke();
+	    const x0 = L + f * cw + 3, bw = Math.max(6, cw - 6);
+	    const body = ctx.createLinearGradient(x0, 0, x0 + bw, 0);
+	    body.addColorStop(0, '#a3a6ad');
+	    body.addColorStop(0.45, '#eef0f2');
+	    body.addColorStop(1, '#b6b9bf');
+	    ctx.save();
+	    ctx.beginPath();
+	    ctx.roundRect(x0, T, bw, gh, [Math.min(10, bw / 2), Math.min(10, bw / 2), 3, 3]);
+	    ctx.fillStyle = body;
+	    ctx.fill();
+	    ctx.clip();
+	    ctx.filter = 'blur(1.5px)';
 	    for (let k = 0; k < w.nz; k++) {
 	      const vb = w.vb[f * w.nz + k];
 	      if (vb < 0.0005) continue;
 	      const radial = vb * tanC * 1000;
-	      const len = Math.max(1, Math.min(1, radial / refUm) * span);
-	      const y = Math.round(T + gh - (k + 0.5) * rh) + 0.5;
+	      const u = Math.min(1, radial / Math.max(refUm, 1e-6));
 	      const c = vpWearRgb(radial, refUm);
-	      ctx.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
-	      ctx.beginPath(); ctx.moveTo(x0 + 1, y); ctx.lineTo(x0 + 1 + len, y); ctx.stroke();
-	      if (strip > 0 && vb * 1000 > strip) { ctx.fillStyle = 'rgba(240,244,250,0.95)'; ctx.fillRect(x0 + 2 + len, y - 0.5, 1, 1); }
+	      ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${(0.35 + 0.65 * u).toFixed(3)})`;
+	      ctx.fillRect(x0 - 3, T + gh - (k + 1) * rh - 0.5, bw + 6, rh + 1);
+	    }
+	    ctx.filter = 'none';
+	    ctx.restore();
+	    if (strip > 0) {
+	      // 코팅이 벗겨져 모재가 드러난 높이 — 밝은 몸체 위라 어두운 점으로
+	      ctx.fillStyle = 'rgba(24, 24, 27, 0.9)';
+	      for (let k = 0; k < w.nz; k++) {
+	        if (w.vb[f * w.nz + k] * 1000 > strip) ctx.fillRect(x0 + bw - 4, Math.round(T + gh - (k + 0.5) * rh) - 1, 2, 2);
+	      }
 	    }
 	    ctx.fillStyle = UI.label;
-	    ctx.fillText(`날${f + 1}`, L + f * cw + cw / 2 - 8, H - B + 10);
+	    ctx.fillText(`날${f + 1}`, x0 + bw / 2 - 7, H - B + 11);
 	  }
 	  const ap = (APP.detail && APP.detail.conditions) ? APP.detail.conditions.axial_doc_mm : 0;
 	  if (ap > 0 && w.loc > 0) {
-	    const y = T + gh - Math.min(1, ap / w.loc) * gh;
-	    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+	    const y = Math.round(T + gh - Math.min(1, ap / w.loc) * gh) + 0.5;
+	    ctx.strokeStyle = 'rgba(24, 24, 27, 0.7)';
+	    ctx.lineWidth = 1;
 	    ctx.setLineDash([3, 2]);
 	    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
 	    ctx.setLineDash([]);
@@ -3430,11 +3428,10 @@
 	  ctx.fillStyle = UI.label;
 	  ctx.fillText('끝', 6, T + gh);
 	  ctx.fillText(`${fmt(w.loc, 0)}`, 4, T + 8);
-	  for (let i = 0; i <= 20; i++) {
-	    const c = vpWearRgb(refUm * i / 20, refUm);
-	    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
-	    ctx.fillRect(L + gw * i / 21, H - 16, gw / 21 + 0.5, 5);
-	  }
+	  const bar = ctx.createLinearGradient(L, 0, W - R, 0);
+	  for (let i = 0; i <= 10; i++) { const c = vpWearRgb(refUm * i / 10, refUm); bar.addColorStop(i / 10, `rgb(${c[0]},${c[1]},${c[2]})`); }
+	  ctx.fillStyle = bar;
+	  ctx.beginPath(); ctx.roundRect(L, H - 17, gw, 5, 2.5); ctx.fill();
 	  ctx.fillStyle = UI.label;
 	  ctx.fillText('0', L, H - 3);
 	  ctx.fillText(`${fmt(refUm, 0)} µm`, W - R - 38, H - 3);
@@ -3475,7 +3472,7 @@
 	    if (len > 0) band = Math.max(band, s / len);
 	  }
 	  const viz = vpViz();
-	  const pal = DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'thermal';
+	  const pal = DEPTH_PALETTES[viz.wear_palette] ? viz.wear_palette : 'contact';
 	  const inst = w.fresh ? '새 공구 (공구 교체 후 2차)' : (tw.instance_id ? `공구 #${tw.instance_id} (${tw.generation}세대 · 이전 작업 ${tw.jobs}회 · ${fmt(tw.cut_min, 1)}분)` : '새 날');
 	  const exposed = tw.coating_strip_um > 0 && band * 1000 > tw.coating_strip_um;
 	  const tf0 = w.fresh ? 0 : (tw.thermal_damage || 0);
@@ -3633,7 +3630,7 @@
 	  const viz = vpViz();
 	  const opt = (map, cur) => Object.entries(map).map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(v)}</option>`).join('');
 	  const rows = Object.entries(MATERIAL_FAMILY_LABEL).map(([k, label]) => {
-	    const r = Object.assign({ mode: 'auto', max_mm: 0, palette: 'terrain', contour_mm: 0 }, viz.ramps[k] || {});
+	    const r = Object.assign({ mode: 'auto', max_mm: 0, palette: 'contact', contour_mm: 0 }, viz.ramps[k] || {});
 	    return `<tr data-mat="${k}"><td>${esc(label)}</td>
 	      <td><select class="viz-mode"><option value="auto" ${r.mode !== 'fixed' ? 'selected' : ''}>자동 (가공된 최대 깊이)</option><option value="fixed" ${r.mode === 'fixed' ? 'selected' : ''}>고정</option></select></td>
 	      <td><input type="number" class="viz-max" step="0.5" min="0" max="500" value="${r.max_mm > 0 ? r.max_mm : ''}" placeholder="mm" style="width:64px;"/></td>
@@ -3656,7 +3653,7 @@
 	    const max = parseFloat(tr.querySelector('.viz-max').value);
 	    const step = parseFloat(tr.querySelector('.viz-step').value);
 	    const pal = tr.querySelector('.viz-pal').value;
-	    if (mode === 'auto' && !(step > 0) && pal === 'terrain') return;
+	    if (mode === 'auto' && !(step > 0) && pal === 'contact') return;
 	    ramps[tr.dataset.mat] = { mode, max_mm: isFinite(max) && max > 0 ? max : 0, palette: pal, contour_mm: isFinite(step) && step > 0 ? step : 0 };
 	  });
 	  const viz = { ramps, mark: document.getElementById('viz-mark').value, wear_palette: document.getElementById('viz-wear-pal').value };
@@ -4374,7 +4371,7 @@
 	  const c = d.conditions, t = d.tool, w = d.workpiece, e = d.environment;
 	  const set = (id, text) => { const el = document.getElementById(id); el.textContent = text; el.title = text; };
 	  set('sum-profile', d.name);
-	  set('sum-tool', `${t.name} · Ø${fmt(t.diameter_mm, 2).replace(/\.?0+$/, '')} ${t.flute_count}날`);
+	  set('sum-tool', `${t.name} · ${t.coating_name || '무코팅'}`);
 	  set('sum-material', `${w.name} · ${w.material}`);
 	  set('sum-coolant', `${d.coolant.label} · ${fmt(e.ambient_c, 1)} °C ${fmt(e.humidity_pct, 0)} %`);
 	  set('sum-cond', `S${c.spindle_rpm} · F${fmt(c.feed_rate_mm_min, 0)}`);
@@ -4586,10 +4583,12 @@
 	  if (entries) {
 	    const keep = entries.some(p => p.name === activeName);
 	    document.getElementById('preset-tree').innerHTML = entries.map((p, i) => `
-	      <div class="tree-item ${(keep ? p.name === activeName : i === 0) ? 'active' : ''}" data-name="${esc(p.name)}" onclick="selectPreset(this)" title="${esc(p.endmill.model)} / ${esc(p.workpiece)} / ${esc(p.coolant)}">
-	        <span class="tree-icon">P</span>${esc(p.name)}
+	      <div class="tree-item tree-item-2l ${(keep ? p.name === activeName : i === 0) ? 'active' : ''}" data-name="${esc(p.name)}" onclick="selectPreset(this)" title="${esc(p.endmill.model)} / ${esc(p.workpiece)} / ${esc(p.coolant)}">
+	        <span class="tree-icon">P</span>
+	        <span class="tree-text"><span class="tree-name">${esc(p.name)}</span><span class="tree-sub">${esc(p.endmill.name)} · ${esc(p.workpiece)} · ${esc(p.coolant)}</span></span>
+	        <button class="tree-act" title="이 프로필 수정" onclick="event.stopPropagation(); profileEdit(this.closest('.tree-item'))">수정</button>
 	      </div>
-	    `).join('');
+	    `).join('') + `<button class="tree-add" onclick="profileViewOpen('new')">＋ 새로 추가</button>`;
 	  }
 	  const d = APP.detail;
 	  try { APP.tools = await invoke('tool_catalog') || []; } catch (e) { APP.tools = []; }
@@ -4618,7 +4617,7 @@
 	      </div>
 	    `).join('');
 	  }
-	  if (!document.getElementById('preset-lib').classList.contains('hidden')) presetLibraryRender();
+	  if (document.getElementById('profile-view').classList.contains('visible')) presetLibraryRender();
 	  toolPanelRefresh();
 	}
 
@@ -4881,16 +4880,9 @@
 	    <div class="tree-item" title="${esc(p.description)}">
 	      <span class="tree-icon">${p.builtin ? 'S' : 'U'}</span>
 	      <span style="flex:1;min-width:0;">${esc(p.name)}<div style="font-size:0.6rem;color:var(--text-muted);">${esc(p.workpiece)} · ${p.purpose === 'finishing' ? '정삭' : '황삭'} · 프로필 ${p.profiles}</div></span>
-	      <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); presetUse(${i})">사용</button>
+	      <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); presetUse(${i})">이 프리셋으로 만들기</button>
 	      ${p.builtin ? '' : `<button class="tree-del" title="프리셋 삭제" onclick="event.stopPropagation(); presetDelete(${i}, this)">✕</button>`}
 	    </div>`).join('') || '<div style="font-size:0.7rem;color:var(--text-muted);padding:4px 8px;">프리셋 없음</div>';
-	}
-
-	function presetLibraryToggle() {
-	  const el = document.getElementById('preset-lib');
-	  const hidden = el.classList.toggle('hidden');
-	  document.getElementById('preset-lib-btn').textContent = hidden ? '프리셋 목록 ▾' : '프리셋 목록 ▴';
-	  if (!hidden) presetLibraryRender();
 	}
 
 	async function presetUse(i) {
@@ -4899,6 +4891,7 @@
 	  let r;
 	  try { r = await invoke('profile_from_preset', { presetName: p.name, profileName: null }); } catch (e) { appendLog(`프로필 생성 실패: ${e}`); return; }
 	  appendLog(`프리셋 '${p.name}' → 프로필 '${r.name}' 생성`);
+	  profileViewClose();
 	  await selectProfileByName(r.name);
 	}
 
@@ -4916,37 +4909,78 @@
 	  if (el) await selectPreset(el);
 	}
 
-	async function presetSaveCurrent() {
-	  const base = getActiveProfile();
-	  await presetDialogOpen();
-	  document.getElementById('pd-name').value = `${base} 프리셋`;
-	  document.getElementById('pd-result').innerHTML = `<div class="pv-row" style="margin-top:6px;"><button class="btn btn-sm" onclick="presetFromCurrent()">현재 프로필 '${esc(base)}' 그대로 프리셋으로 저장</button></div><div style="color:var(--text-muted);">또는 위 항목을 골라 '프리셋 만들기'로 새로 산정할 수 있습니다.</div>`;
+	// 프로필 만들기·수정은 가운데 영역을 덮는 화면에서 한다 (다른 화면 전환과 같은 방식)
+	async function profileViewOpen(mode) {
+	  if (!APP.tools.length || !APP.workpieces.length) await loadLeftPanel();
+	  const d = APP.detail, edit = mode === 'edit', name = getActiveProfile();
+	  const toolOpts = APP.tools.map(t => `<option value="${esc(t.key)}"${d && t.setting.name === d.tool.name ? ' selected' : ''}>${esc(t.label)} · ${esc(t.coating_family)}${t.source === 'library' ? ' (라이브러리)' : ''}</option>`).join('');
+	  const wpOpts = APP.workpieces.map(w => `<option value="${esc(w.key)}"${d && w.name === d.workpiece.name ? ' selected' : ''}>${esc(w.name)} · ${esc(w.label)}</option>`).join('');
+	  document.getElementById('pf-title').textContent = edit ? `프로필 수정 — ${name}` : '새로 추가';
+	  document.getElementById('pf-sub').textContent = edit
+	    ? '이 프로필의 공구·원소재·냉각을 바꾸거나 복제·프리셋 저장·삭제를 합니다. 이름은 바꿀 수 없으니 새 이름이 필요하면 복제하세요.'
+	    : '프로필은 이 프로젝트에서 쓰는 작업 구성이고, 프리셋은 다른 프로젝트에서도 다시 쓰는 구성 틀입니다. 프리셋에서 시작하거나 직접 구성하세요.';
+	  document.getElementById('pf-new').classList.toggle('hidden', edit);
+	  document.getElementById('pf-edit').classList.toggle('hidden', !edit);
+	  if (edit) {
+	    document.getElementById('pe-tool').innerHTML = toolOpts;
+	    document.getElementById('pe-wp').innerHTML = wpOpts;
+	    if (d) document.getElementById('pe-coolant').value = d.coolant.key;
+	    document.getElementById('pe-dup-name').value = `${name} 복사본`;
+	    document.getElementById('pe-preset-name').value = `${name.replace(/\s*프리셋$/, '')} (내 프리셋)`;
+	    document.getElementById('pe-result').innerHTML = '';
+	  } else {
+	    document.getElementById('pd-tool').innerHTML = toolOpts;
+	    document.getElementById('pd-wp').innerHTML = wpOpts;
+	    if (d) document.getElementById('pd-coolant').value = d.coolant.key;
+	    document.getElementById('pd-result').innerHTML = '';
+	    presetLibraryRender();
+	  }
+	  document.getElementById('profile-view').classList.add('visible');
 	}
 
-	async function presetFromCurrent() {
-	  const name = document.getElementById('pd-name').value.trim();
-	  if (!name) { document.getElementById('pd-result').innerHTML = '<div style="color:var(--danger);">프리셋 이름을 입력하세요</div>'; return; }
+	function profileViewClose() {
+	  document.getElementById('profile-view').classList.remove('visible');
+	}
+
+	// 목록의 '수정' — 그 프로필을 고른 뒤 편집 화면을 연다
+	async function profileEdit(el) {
+	  if (!el.classList.contains('active')) await selectPreset(el);
+	  await profileViewOpen('edit');
+	}
+
+	async function profileApplyEdits() {
+	  const d = APP.detail, box = document.getElementById('pe-result');
+	  if (!d) return;
+	  const name = getActiveProfile();
+	  const tool = document.getElementById('pe-tool').value, wp = document.getElementById('pe-wp').value, cool = document.getElementById('pe-coolant').value;
+	  const curTool = APP.tools.find(t => t.setting.name === d.tool.name), curWp = APP.workpieces.find(w => w.name === d.workpiece.name);
+	  const done = [];
+	  let r = null;
+	  try {
+	    if (!curTool || tool !== curTool.key) { r = await invoke('profile_set_tool', { profileName: name, toolKey: tool, recommend: true }); done.push('공구'); }
+	    if (!curWp || wp !== curWp.key) { r = await invoke('profile_set_workpiece', { profileName: name, workpieceKey: wp, recommend: true }); done.push('원소재'); }
+	    if (cool !== d.coolant.key) {
+	      const def = COOLANT_DEFAULTS[cool] || { pressure: 0, flow: 0 };
+	      r = await invoke('profile_set_coolant', { profileName: name, coolantKey: cool, temperatureC: null, pressureBar: def.pressure, flowRateLMin: def.flow });
+	      done.push('냉각');
+	    }
+	  } catch (e) { box.innerHTML = `<div style="color:var(--danger);">${esc(e)}</div>`; return; }
+	  if (!r) { box.innerHTML = '<div class="st-note">바뀐 항목이 없습니다.</div>'; return; }
+	  appendLog(`프로필 '${name}' 수정: ${done.join('·')}`);
+	  await afterProfileChange(r);
+	  box.innerHTML = `<div style="color:var(--success);">✓ ${done.join('·')} 변경 적용 — 절삭 조건 S${r.conditions.spindle_rpm} · F${fmt(r.conditions.feed_rate_mm_min, 0)}</div>`;
+	}
+
+	async function profileSaveAsPreset() {
+	  const box = document.getElementById('pe-result');
+	  const name = document.getElementById('pe-preset-name').value.trim();
+	  if (!name) { box.innerHTML = '<div style="color:var(--danger);">프리셋 이름을 입력하세요</div>'; return; }
 	  try {
 	    await invoke('ws_select_profile', { profileName: getActiveProfile() });
-	    await invoke('lib_save_preset', { name, description: document.getElementById('pd-desc').value.trim() });
-	  } catch (e) { document.getElementById('pd-result').innerHTML = `<div style="color:var(--danger);">${esc(e)}</div>`; return; }
+	    await invoke('lib_save_preset', { name, description: '' });
+	  } catch (e) { box.innerHTML = `<div style="color:var(--danger);">${esc(e)}</div>`; return; }
 	  appendLog(`현재 프로필을 프리셋 '${name}' 으로 저장`);
-	  document.getElementById('pd-result').innerHTML = `<div style="color:var(--success);">✓ 프리셋 '${esc(name)}' 저장</div>`;
-	  presetLibraryRender();
-	}
-
-	async function presetDialogOpen() {
-	  if (!APP.tools.length || !APP.workpieces.length) await loadLeftPanel();
-	  const d = APP.detail;
-	  document.getElementById('pd-tool').innerHTML = APP.tools.map(t => `<option value="${esc(t.key)}"${d && t.setting.name === d.tool.name ? ' selected' : ''}>${esc(t.label)} · ${esc(t.coating_family)}${t.source === 'library' ? ' (라이브러리)' : ''}</option>`).join('');
-	  document.getElementById('pd-wp').innerHTML = APP.workpieces.map(w => `<option value="${esc(w.key)}"${d && w.name === d.workpiece.name ? ' selected' : ''}>${esc(w.name)} · ${esc(w.label)}</option>`).join('');
-	  if (d) document.getElementById('pd-coolant').value = d.coolant.key;
-	  document.getElementById('pd-result').innerHTML = '';
-	  document.getElementById('preset-dialog').classList.remove('hidden');
-	}
-
-	function presetDialogClose() {
-	  document.getElementById('preset-dialog').classList.add('hidden');
+	  box.innerHTML = `<div style="color:var(--success);">✓ 프리셋 '${esc(name)}' 저장 — '새로 추가'의 프리셋 목록에 나타납니다</div>`;
 	}
 
 	async function presetCreate(preview) {
@@ -4977,14 +5011,16 @@
 	  if (r.saved) {
 	    appendLog(`프리셋 생성: ${r.preset.name}`);
 	    presetLibraryRender();
-	    if (r.profile_name) { presetDialogClose(); await selectProfileByName(r.profile_name); }
+	    if (r.profile_name) { profileViewClose(); await selectProfileByName(r.profile_name); }
 	  }
 	}
 
 	async function profileDuplicate() {
+	  const newName = document.getElementById('pe-dup-name').value.trim() || null;
 	  let r;
-	  try { r = await invoke('profile_duplicate', { sourceName: getActiveProfile(), newName: null }); } catch (e) { appendLog(`복제 실패: ${e}`); return; }
+	  try { r = await invoke('profile_duplicate', { sourceName: getActiveProfile(), newName }); } catch (e) { appendLog(`복제 실패: ${e}`); return; }
 	  appendLog(`프로필 복제 → '${r.name}'`);
+	  profileViewClose();
 	  await selectProfileByName(r.name);
 	}
 
@@ -4994,6 +5030,7 @@
 	  btn.dataset.armed = ''; btn.textContent = '삭제';
 	  try { await invoke('profile_delete', { name }); } catch (e) { appendLog(`삭제 실패: ${e}`); return; }
 	  appendLog(`프로필 '${name}' 삭제`);
+	  profileViewClose();
 	  await loadLeftPanel();
 	  const first = document.querySelector('#preset-tree .tree-item');
 	  if (first) await selectPreset(first);
