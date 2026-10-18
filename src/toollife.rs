@@ -17,7 +17,7 @@
 //! 정책은 실제 제어기·감시 장치의 동작을 따른다 (FANUC 30i 공구 수명 관리 A-79409E, SINUMERIK 840D 공구 감시, Caron TMAC, 감시 특허 —
 //! 리서치 정리는 `docs/tool-life-and-pair-matrix.md`):
 //!  * 정지: 마모 경보(학습 부하 1.2~1.25배 0.5~1 s)에 지금 절삭을 마치고 정지 — 작업자가 교체한다.
-//!  * 교체 후 계속: 지금 절삭(세그먼트)을 마치고 예비 공구로 교체한 뒤 이어서 깎는다 (TMAC: "completes the current cut … indexes to the next tool").
+//!  * 교체 후 계속: 지금 절삭(세그먼트)을 마치고 예비 공구로 교체한 뒤 이어서 깎는다 (Caron TMAC 제품 설명의 동작 — 절삭을 마치고 만료 처리 뒤 예비 공구로).
 //!  * 프로그램 끝까지: 횟수·시간 기반 공구 수명 관리 — 만료돼도 프로그램은 끝까지 가고 다음 부품부터 예비 공구 (FANUC: "Machining … continues
 //!    until the end of the program"). 그 사이 3차 마모·파손 판정은 그대로 적용된다.
 //!  * 감시 없음: 끝까지 깎고 다음 작업도 같은 공구 (파손까지).
@@ -44,9 +44,9 @@ pub const CHIP_WARN_P: f64 = 0.5;
 pub const PLASTIC_SECONDS: f64 = 1.0;
 /// 수명 판정의 이 배수를 넘으면 '지금 절삭을 마치고' 의 유예 없이 바로 처리한다 (마모 경보 대역 위의 강한 경보)
 pub const HARD_LIMIT_FACTOR: f64 = 1.2;
-/// 부하 감시의 마모 경보 배수 (새 날 학습 부하 대비 1.2~1.25배, 감시 특허 US4633424·US4723219)
+/// 부하 감시의 마모 경보 배수 (US 4,633,424: 학습한 피크 부하의 1.2배 · US 4,723,219: 프로그램한 동력 상수의 125 % — 두 특허 모두 만료)
 pub const LOAD_ALARM_RATIO: f64 = 1.2;
-/// 부하 감시의 평균 시간 (s) — 마모 경보는 0.5~1 s 동안 넘어야 낸다 (US4633424 700 ms, US4723219 약 1 s)
+/// 부하 감시의 평균 시간 (s) — 마모 경보는 0.5~1 s 동안 넘어야 낸다 (US 4,633,424 응답 700 ms, US 4,723,219 약 1 s 평균)
 pub const LOAD_MONITOR_TAU_S: f64 = 0.5;
 /// 결정적 파손 판정이 아니라 수치 보호용 VB 상한 = 날끝 붕괴 VB × 이 값
 pub const VB_GUARD_FACTOR: f64 = 1.25;
@@ -71,9 +71,9 @@ pub struct EolParams {
 
 /// 피삭재 그룹별 수명 말기 기준값 (리서치 정리 표 — 확신도: 판정 VB 보통, 가속 시작·배수 낮음, 붕괴 VB 낮음~보통, 강도 비 낮음~보통).
 /// 3차 마모: 강 VB 0.3~0.4 mm, 스테인리스 0.2~0.3, Ti·Ni 0.15~0.25, 고경도 ≈0.1 mm 부근에서 시작해 정상 마모율의 3~10배
-/// (Usui 마모식 B ≈ 5.3e3 → 2.2e4 K 로 바뀌는 880 °C 위에서는 100 K 마다 ×4.6 — 마모 랜드 → 발열 → 마모의 되먹임).
+/// (Usui 외 1984 마모식 B ≈ 5.3e3 → 2.2e4 K 로 바뀌는 880 °C 위에서는 100 K 마다 ×4.6 — 마모 랜드 → 발열 → 마모의 되먹임).
 /// 날끝 붕괴는 ISO 8688-2 의 국부 VB 0.5 mm·치핑 0.5 mm 와 Ti-6Al-4V Ø6 엔드밀이 1분 안에 모든 날이 무너진 시험
-/// (Kuczmaszewski 2017), Ti VB3 0.5 mm 를 250 m/min 에서 1분 (Matuszak 2023) 의 규모. 치핑 기본 위험은 치핑으로 끝나는 그룹
+/// (Kuczmaszewski 외 2017, Mechanik 3/2017), Ti VB3 0.5 mm 를 250 m/min 에서 1분 (Matuszak 외 2023, Materials 16:5361 — Ø20 인서트 커터) 의 규모. 치핑 기본 위험은 치핑으로 끝나는 그룹
 /// (고경도·Ni·Ti)이 수명의 1~1.5배에서 치핑 한계에 닿도록 둔 값
 pub fn eol_params(g: WpGroup) -> EolParams {
     match g {
@@ -131,9 +131,9 @@ impl ToolStrength {
 }
 
 /// 공구 몸체 강도. 솔리드 초경 엔드밀 모재 항절력: 서브마이크론 WC-10Co 3,500~4,000 MPa, 초미립 WC-10~12Co 4,000~4,400 MPa
-/// (평균 4,220, CrystEngComm 2013; 등급표 CTS24Z ≈ 4,000 MPa · K_IC 11.3), HSS M2 ≈ 3,000~3,500, M42 ≈ 2,800~3,200 MPa.
+/// (초미립 WC-10Co 4,260 MPa — Wei 외 2013, CrystEngComm 15:3305; 등급표 CTS24Z ≈ 4,000 MPa · K_IC 11.3), HSS M2 ≈ 3,000~3,500, M42 ≈ 2,800~3,200 MPa.
 /// CBN·PCD 는 날만 소결체이고 몸체는 초경이라 몸체 강도는 초경으로 본다. 정적·피로 비는 피삭재 그룹의 충격을 넣은 `EolParams` 값.
-/// 소성 변형 온도: 초경 날끝은 큰 압축 응력에서 900~1,000 °C 이상이면 처진다 (Trent & Wright) — Co 가 많은 초미립은 낮은 쪽,
+/// 소성 변형 온도: 초경 날끝은 큰 압축 응력에서 900~1,000 °C 이상이면 처진다 (Trent & Wright 2000, Metal Cutting 4판) — Co 가 많은 초미립은 낮은 쪽,
 /// HSS 는 템퍼링 연화 온도
 pub fn strength_of(tool: &ToolGeometry, p: &EolParams) -> ToolStrength {
     let mk = |trs: f64, plastic: f64, label: &str| ToolStrength {
@@ -181,7 +181,7 @@ pub const KT_FLUTE: f64 = 1.3;
 pub const KT_NECK: f64 = 1.2;
 
 /// 공구 끝에서 ap 에 걸쳐 고르게 실린 합력 `force_n` 과 토크 `torque_nm` 이 만드는 몸체 응력.
-/// 외팔보: 단면 x 의 모멘트 = F × (하중 중심 − x). 날 부분은 등가 직경 core_ratio·D (Kops & Vo 의 0.8D 계열, 휨 계산과 같은 값) 에
+/// 외팔보: 단면 x 의 모멘트 = F × (하중 중심 − x). 날 부분은 등가 직경 core_ratio·D (Kops & Vo 1990, CIRP Annals 39:93 의 0.8D 계열, 휨 계산과 같은 값) 에
 /// 플루트 끝 응력 집중을 곱한다 — 코어 직경(0.55~0.65D)만 보는 보수적 단면과 랜드 몫을 더한 단면의 중간으로, Ø6 2날을 2.5D 팔에서
 /// 약 1 kN 에 부러뜨린다 (리서치 추산 26·D² N @ 4 GPa). 넥은 넥 직경, 홀더 면은 샹크 직경.
 /// 초경은 취성이라 최대 주응력 σ₁ = σ_b/2 + √(σ_b²/4 + τ²) 가 가장 큰 단면을 돌려준다.

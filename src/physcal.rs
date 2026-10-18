@@ -44,8 +44,8 @@ pub const SHEAR_DEG_MIN: f64 = 8.0;
 pub const SHEAR_DEG_MAX: f64 = 50.0;
 
 /// 재료별 직교절삭 칩 두께비 실측 범위 (h = 0.06~0.2 mm, 초경, Vc 60~180 m/min).
-/// SUS304: Marcicano 외 COBEM 2005 (Vc 60~67 m/min, r 0.23~0.44, 전단각 13~24°),
-/// Zhan 외 2017 (Vc 60~180 m/min 선삭, r 약 0.47~0.51).
+/// SUS304: Marcicano 외 COBEM 2005 (논문 COBEM2005-1123; Vc 60~67 m/min, 표 3–4 에서 계산한 r 0.23~0.44, 전단각 13~24°),
+/// Zhan 외 2017 (ICMEIM 2017, Adv. Eng. Res. 100:444; Vc 60~180 m/min 선삭, 칩 두께에서 계산한 r 약 0.47~0.51).
 pub fn measured_chip_ratio(material_key: &str) -> Option<(f64, f64, &'static str)> {
     match material_key {
         "stainless" => Some((0.23, 0.51, "SUS304, Marcicano 2005 · Zhan 2017")),

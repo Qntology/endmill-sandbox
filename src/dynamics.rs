@@ -41,8 +41,10 @@ impl C {
 
 /// 공구 끝 동특성. 공구 모드(공구 보 + 홀더, 단단한 바닥 기준)에 스핀들·베어링 1차 굽힘 모드를 직렬 2자유도 사슬로 붙인다:
 /// 바닥 —(k_s, c_s)— m_s —(k_t, c_t)— m_t(공구 끝). 정적 컴플라이언스는 1/k_t + 1/k_s 로 `tool_compliance` 와 같다.
-/// 두 모드가 ±20~30 % 안으로 가까우면 단순 모드 합은 틀리고(공구 길이 튜닝 효과 — Schmitz & Duncan 2005) 사슬은 그 결합을 그대로 담는다.
-/// 스핀들 모드: 500~1500 Hz, 20~60 N/µm, ζ 0.03~0.07, 돌출 길이에 거의 안 변함 (Zhang·Schmitz 2011: 976~1038 Hz). 실측 FRF 를 쓰면 0 (이미 포함)
+/// 두 모드가 ±20~30 % 안으로 가까우면 단순 모드 합은 틀리고(돌출 길이에 따라 공구 모드가 스핀들 모드와 겹치는 효과 — Schmitz & Duncan 2005,
+/// JMSE 127:781; ±20~30 % 범위는 이 논문의 수치가 아닌 가정) 사슬은 그 결합을 그대로 담는다.
+/// 스핀들 모드: 500~1500 Hz, 20~60 N/µm, ζ 0.03~0.07, 돌출 길이에 거의 안 변함 (Zhang 외 2011, Chin. J. Mech. Eng. 24:340 — HSK-63A 세 돌출에서
+/// 976~1038 Hz). 실측 FRF 를 쓰면 0 (이미 포함)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolModal {
     pub k_n_per_um: f64,
@@ -196,7 +198,8 @@ pub struct Stability {
     #[serde(default)]
     pub spindle_k_n_per_um: f64,
     /// 이 회전수의 채터 한계를 스핀들 모드가 정하는가 (채터 주파수가 공구 모드보다 스핀들 모드에 가까움).
-    /// 저속에서는 고주파 공구 모드가 공정감쇠를 더 받아 짧은 공구일수록 스핀들 모드 채터가 먼저 온다 (Schmitz 2012, R8)
+    /// 저속에서는 고주파 공구 모드가 공정감쇠를 더 받아 짧은 공구일수록 스핀들 모드 채터가 먼저 온다 (저속에서 채터가 고주파 모드에서
+    /// 저주파 모드로 옮겨 가는 실험: Tunç·Mohammadi·Budak 2018, MSSP 111. 예전 표기 'Schmitz 2012' 는 이 내용으로 확인 안 됨)
     #[serde(default)]
     pub spindle_dominates: bool,
 }
@@ -207,8 +210,8 @@ fn one() -> f64 {
 
 /// ZOA(평균 방향 계수) 안정 한계의 flip 로브 보정. 반경 절입이 작으면 방향 계수의 고조파가 커져 날 통과/고유진동수 비
 /// r = f_tp/f_n ≈ 2/(2k+1) (2, 0.67, 0.4, …) 근처에 ZOA 가 못 보는 주기 2배 불안정 섬이 생기고, ae/D ≤ 0.05~0.1 이면 ZOA 안정 영역 안까지
-/// 들어온다 (Insperger·Stépán, Gradišek 외 2005; Merdol·Altintas 2004). 그 근처에서는 b_lim 에 0.5~0.7 을 곱하는 것이 권고 (R8).
-/// 헬릭스는 고조파를 줄여 ap 가 축방향 날 간격 πD/(N·tanβ) 의 정수배면 flip 이 사라진다 (Zatarain 외 2006) — 1차 고조파 크기 |sinc(ap/p)| 로 가중.
+/// 들어온다 (Insperger·Stépán 2002·2004, Gradišek 외 2005 IJMTM 45:769; Merdol·Altintas 2004 JMSE 126:459). 그 근처에서는 b_lim 에 0.5~0.7 을 곱하는 것이 권고 (R8).
+/// 헬릭스는 고조파를 줄여 ap 가 축방향 날 간격 πD/(N·tanβ) 의 정수배면 flip 이 사라진다 (Zatarain 외 2006, CIRP Annals 55:365) — 1차 고조파 크기 |sinc(ap/p)| 로 가중.
 /// r ≲ 0.3 (저속, 로브가 빽빽한 영역)이면 ZOA 와 SD 차이는 몇 % 라 보정하지 않는다
 pub fn flip_factor(tool: &ToolGeometry, eng: &Engagement, rpm: f64, ap: f64, modal: &ToolModal, chatter_hz: f64) -> f64 {
     let d = tool.diameter_mm.max(1e-6);

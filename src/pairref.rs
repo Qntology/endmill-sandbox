@@ -109,7 +109,7 @@ impl CoatGroup {
 }
 
 /// 코팅이 절삭 중 겉보기 마찰을 바꾸는 배수 (무코팅 = 1).
-/// 거시 절삭에서 코팅이 바꾸는 절삭력은 작다: C45 선삭 AlTiN·TiAlCrN −0.4~−4 % (Materials 2022),
+/// 거시 절삭에서 코팅이 바꾸는 절삭력은 작다: C45 선삭 AlTiN·TiAlCrN −0.4~−4 % (Kovalčík 외 2022, Materials 15:590),
 /// Al-Si 선삭 DLC −4~−6 % (효과 없다는 보고도 있음), 7075 미세 밀링 DLC −20 %·NCD −40 % 는 날끝이 지배하는 미세 스케일의 상한.
 /// 이 마찰 배수 0.88 은 경사 16~18° 알루미늄 공구에서 kc 를 약 −5 % 바꾼다. Ti·Ni·고경도는 공개 정량 자료가 없어 |Δ| ≤ 5 % 로 둔다
 pub fn coating_mu_factor(wp: WpGroup, coat: CoatGroup) -> f64 {
@@ -175,7 +175,7 @@ pub fn default_damping(l_over_d: f64, holder: HolderType) -> f64 {
     (0.28 * ld.powf(-1.38)).clamp(0.010, 0.045) + holder.damping_bonus()
 }
 
-/// 여유각에 따른 공정감쇠 보정. 계수 C 는 여유각 15° → 11° 에서 +23~42 % (Tyler 외 2014, 세 소재) → C ∝ tan(α)^−0.8,
+/// 여유각에 따른 공정감쇠 보정. 계수 C 는 여유각 15° → 11° 에서 +23~42 % (Tyler·Schmitz 2014, NAMRI/SME 42 — 세 소재) → C ∝ tan(α)^−0.8,
 /// 이 모델의 이득은 계수의 제곱으로 커지므로 계수 배수는 (tan 10° / tan α)^0.4 (0.7~1.5)
 pub fn pd_clearance_factor(clearance_deg: f64) -> f64 {
     let a = clearance_deg.clamp(2.0, 30.0).to_radians().tan();
@@ -199,8 +199,8 @@ pub struct LifeSpread {
 }
 
 /// 공구 간 수명 편차(σ_ln ≈ CoV, Weibull 형상 β ≈ 1.2/CoV)와 보정 전후 모델 오차.
-/// 실측: 강 초경 마모 지배 0.12~0.19 (Karandikar·Abbas·Schmitz 2013, 1018 강 3속도 × 3공구), Ti-6Al-4V 코팅 초경 0.14
-/// (Heliyon 2020 반복 12쌍), 스테인리스·Ni 20~30 % (고전 집계), 치핑·채터가 지배하면 파괴형이라 0.40~0.60 (β 2~3).
+/// 실측: 강 초경 마모 지배 0.12~0.19 (Karandikar·Abbas·Schmitz 2013, Mach. Sci. Technol. 17:410 — 1018 강 3속도 × 3공구), Ti-6Al-4V 코팅 초경 0.14
+/// (Tatar 외 2020, Heliyon 6:e04217 — 반복 12쌍), 스테인리스·Ni 20~30 % (고전 집계), 치핑·채터가 지배하면 파괴형이라 0.40~0.60 (β 2~3).
 /// 알루미늄·CFRP 는 자료가 없어 0.30 (가정). 보정 전 모델 오차는 문헌 Taylor 상수가 한 사례에서 8.4배, 맞춤 외삽 1.3~2.1배 → σ 0.5,
 /// 같은 조합 실측(VB·수명) 또는 원장 보정이 있으면 0.2. 공구 간 편차는 측정으로 없어지지 않는다
 pub fn life_spread(ctx: &CutContext, chatter_fraction: f64, min_margin: f64, measured: bool) -> LifeSpread {
