@@ -256,6 +256,15 @@ cargo test                                   # CPU
 
 On Windows use `test_vulkan.bat` / `test_rocm.bat` (extra arguments are passed to `cargo test`).
 
+`test_cuda.bat` runs every step in sequence and writes `test_logs\<timestamp>\`: one log per step (with its duration),
+`summary.log` (exit codes, test results, failed test names, audit-flag / tool-life-event / matrix-verdict / `[UNKNOWN]`
+counts), `highlights.log` (every `[EOL] [MATRIX] [AUDIT] [UNKNOWN] …` cross-check line in one file), `wear_logs\` (the job
+CSV/JSON of this run, also mirrored to the app's wear_logs folder), `matrix\` (tool × material CSV/JSON) and `manifest.txt`.
+Steps 11–13 run the tool-life/matrix tests, the audit of every built-in preset and every preset's pocket under the four
+tool-life policies. Options: `QUICK=1` (skip the long steps), `ONLY=04,11`, `LEAN_LINK=1` (link this crate's test binaries
+without PDB debug info — far less link memory and disk on small machines), `NOPAUSE=1`. The summary is written by
+`test_cuda_summary.ps1`.
+
 ```bash
 cargo test --test physcal_flow              # MPM cross-check → calibration channel (does not run the solver)
 cargo test --lib physcal                    # record / envelope / reliability unit tests
