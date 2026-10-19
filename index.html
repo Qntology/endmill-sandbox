@@ -983,6 +983,50 @@
 		.sev-1 { color: var(--warning); }
 		.sev-2 { color: var(--alert); }
 		.sev-3 { color: var(--danger); font-weight: 700; }
+		/* 선택 카드 — 안전 게이트가 허용한 선택지만 고를 수 있고(권장이 맨 앞) laya 확률은 고르는 근거로만 붙는다 */
+		.choice-card { background: var(--bg-card); border: 1px solid var(--border-strong); border-radius: var(--radius-card); padding: 12px 14px; margin-bottom: 10px; outline: none; }
+		.choice-card.attention { border-color: var(--alert); }
+		.choice-card:focus-visible { box-shadow: 0 0 0 2px var(--border-hover); }
+		.choice-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+		.choice-tag { font-size: 0.58rem; font-weight: 600; letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--text-muted); border: 1px solid var(--border-light); border-radius: var(--radius-sm); padding: 2px 6px; }
+		.choice-q { font-size: 0.86rem; font-weight: 600; color: var(--text-bright); }
+		.choice-why { font-size: 0.68rem; color: var(--alert); margin: 2px 0 8px; display: flex; flex-direction: column; gap: 2px; }
+		.choice-opts { display: flex; flex-direction: column; gap: 6px; }
+		.choice-opt { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; text-align: left; background: var(--bg-input); border: 1px solid var(--border-light); border-radius: var(--radius); padding: 8px 10px; color: var(--text); font: inherit; cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+		.choice-opt:hover:not(:disabled), .choice-opt:focus-visible { border-color: var(--border-hover); background: var(--bg-hover); outline: none; }
+		.choice-opt.rec { border-color: var(--accent-strong); }
+		.choice-opt.chosen { border-color: var(--success); }
+		.choice-opt.pending { border-color: var(--alert); background: var(--bg-hover); }
+		.choice-opt:disabled { opacity: 0.5; cursor: not-allowed; }
+		.choice-num { font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-muted); border: 1px solid var(--border-light); border-radius: var(--radius-sm); text-align: center; line-height: 18px; }
+		.choice-label { font-size: 0.78rem; font-weight: 600; color: var(--text-bright); }
+		.choice-detail { font-size: 0.66rem; color: var(--text-dim); margin-top: 1px; }
+		.choice-block { font-size: 0.64rem; color: var(--danger); margin-top: 2px; }
+		.choice-badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 210px; }
+		.choice-badge { font-size: 0.58rem; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border-light); color: var(--text-dim); white-space: nowrap; }
+		.choice-badge.rec { color: var(--text-bright); border-color: var(--accent-strong); }
+		.choice-badge.rule { color: var(--warning); }
+		.choice-badge.ai { color: var(--violet); }
+		.choice-badge.block { color: var(--danger); }
+		.choice-badge.done { color: var(--success); border-color: var(--success); }
+		.choice-bar { height: 3px; background: var(--plot-grid-strong); border-radius: 2px; margin-top: 5px; overflow: hidden; max-width: 260px; }
+		.choice-bar span { display: block; height: 100%; background: var(--violet); }
+		.choice-confirm { margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--alert); border-radius: var(--radius); font-size: 0.7rem; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+		.choice-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 0.62rem; color: var(--text-muted); }
+		.choice-foot kbd { font-family: var(--font-mono); border: 1px solid var(--border-light); border-radius: 3px; padding: 0 4px; }
+		@media (max-width: 640px) { .choice-opt { grid-template-columns: 22px minmax(0, 1fr); } .choice-badges { grid-column: 2; justify-content: flex-start; max-width: none; } }
+		/* 알림 (토스트) */
+		.toast-stack { position: fixed; right: 16px; bottom: calc(var(--statusbar-h) + 12px); display: flex; flex-direction: column; gap: 8px; z-index: 9999; width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+		.toast { pointer-events: auto; background: var(--bg-panel); border: 1px solid var(--border-strong); border-left: 3px solid var(--accent-strong); border-radius: var(--radius); padding: 10px 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); font-size: 0.72rem; color: var(--text); animation: toast-in 0.18s ease-out; }
+		.toast.warn { border-left-color: var(--alert); }
+		.toast.ok { border-left-color: var(--success); }
+		.toast.err { border-left-color: var(--danger); }
+		.toast-title { font-weight: 600; color: var(--text-bright); margin-bottom: 2px; }
+		.toast-body { color: var(--text-dim); white-space: pre-line; }
+		.toast-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; }
+		@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+		@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+		.vt-btn.has-attention { box-shadow: inset 0 -2px 0 var(--alert); }
 		.pv-status { font-family: var(--font-mono); font-size: 0.66rem; color: var(--warning); min-height: 1em; margin-bottom: 8px; }
 		.pv-kv { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(80px, auto); gap: 3px 10px; font-size: 0.72rem; }
 		.pv-kv .k { color: var(--text-dim); }
@@ -1657,6 +1701,7 @@
 	          <button class="btn btn-sm" onclick="pvDecide()">판단 실행</button>
 	          <button class="btn btn-sm btn-outline" onclick="pvApplyDecision()">판단을 절삭 조건에 반영</button>
 	        </div>
+	        <div id="pv-choice"></div>
 	        <div id="pv-decision-head" style="margin-bottom:8px;"></div>
 	        <div class="pv-card"><h4>결정적 안전 게이트</h4><div id="pv-gates"></div></div>
 	        <div class="pv-grid" style="margin-top:10px;">
@@ -4025,7 +4070,7 @@
 	    let r = null;
 	    try { r = await invoke('sim_job_result', { id }); } catch (e) { appendLog(`결과 읽기 실패: ${esc(e)}`); }
 	    prepHide();
-	    if (r) jobApply(r, { autoplay: opts.autoplay !== false });
+	    if (r) jobApply(r, { autoplay: opts.autoplay !== false, chosen: !!opts.chosen });
 	    return;
 	  }
 	  JOB.running = false;
@@ -4116,6 +4161,8 @@
 	  jobGcode(r);
 	  compRender(r);
 	  document.getElementById('vt-comp').disabled = false;
+	  compAttentionMark(r);
+	  if (!opts.quiet && !opts.chosen) compNotify(r);
 	  document.getElementById('vp-info').textContent = `세그먼트: ${(r.segments || []).length}${VP.pass2Start >= 0 ? ' + 2차 ' + (r.segments2 || []).length : ''} | 가공 시간 ${fmt(VP.total, 1)} s | X:${tpMaxX.toFixed(0)} Y:${tpMaxY.toFixed(0)} Z:${tpMinZ.toFixed(1)}~${tpMaxZ.toFixed(1)}`;
 	  if (!opts.quiet) {
 	    (r.view.warnings || []).forEach(w => appendLog('⚠ ' + esc(w)));
@@ -4334,7 +4381,7 @@
 	      <button class="btn btn-sm btn-outline" onclick="compRerun()">다시 계산 후 재생</button>
 	    </div>`;
 	  const files = `<div class="pv-log">${[...(r.files || []).map(f => '저장: ' + f), ...(r.sds || []), ...(r.stages || []).map(s => `${s[0]} ${fmt(s[1], 2)} s`)].map(esc).join('\n')}</div><div class="pv-row" style="margin-top:6px;"><button class="btn btn-sm btn-outline" onclick="compSave('csv')">마모 로그 CSV 저장</button></div>`;
-	  document.getElementById('comp-body').innerHTML = head + models + `<div class="pv-grid">
+	  document.getElementById('comp-body').innerHTML = choiceCardHtml('comp', r.choice) + head + models + `<div class="pv-grid">
 	    <div class="pv-card"><h4>결정 근거</h4>${reasons}</div>
 	    <div class="pv-card"><h4>laya-typed-decisions (안전 게이트가 허용한 선택지만 제시 · 보수적 방향만 즉시 채택)</h4>${laya}</div>
 	  </div>
@@ -4358,6 +4405,7 @@
 	    <div class="pv-card"><h4>참조한 과거 절삭 기록 (진입·이탈 각 · ap/D · ae/D · vc · fz 근접)</h4>${compRefsCard(r)}</div>
 	  </div>
 	  <div class="pv-card" style="margin-top:10px;"><h4>보정 설정 · 실측 재계획</h4>${form}</div>`;
+	  choiceBind('comp', r.choice, compChoose);
 	  compLifeChart(lg);
 	  (lg.histograms || []).forEach((h, i) => { const cv = document.getElementById(`comp-h-${i}`); if (cv) compHist(cv, h); });
 	  const cv = document.getElementById('comp-fc');
@@ -4404,6 +4452,158 @@
 	    const s = await invoke('settings_set_comp', { comp });
 	    if (s) { APP.settings = s; if (JOB.result) { JOB.result.settings = s.comp; JOB.stale = true; } appendLog('2차 보정 설정 저장 — 다음 재생(다시 계산) 또는 재계획부터 적용'); }
 	  } catch (e) { appendLog(`설정 저장 실패: ${esc(e)}`); }
+	}
+
+	// ---- 선택 카드 · 알림 ------------------------------------------------------
+	// 결정적 안전 게이트가 허용한 선택지만 버튼으로 보여 준다 (권장이 맨 앞, 숫자 키 1~9 로 선택, Enter = 권장).
+	// laya 확률은 고르는 근거로만 붙고, 작업자가 고른 값은 SDS 원장에 작업자–laya · 작업자–규칙 일치로 남는다
+	function choiceCardHtml(id, c) {
+	  if (!c || !c.options || !c.options.length) return '';
+	  let n = 0;
+	  const opts = c.options.map(o => {
+	    const num = o.enabled ? ++n : null;
+	    const badges = [];
+	    if (o.recommended) badges.push('<span class="choice-badge rec">권장</span>');
+	    if (o.rule) badges.push('<span class="choice-badge rule">안전 게이트</span>');
+	    if (o.advisor_probability !== null && o.advisor_probability !== undefined) badges.push(`<span class="choice-badge ai">laya ${fmt(o.advisor_probability * 100, 0)}%${o.advisor_top ? ' · 1위' : ''}</span>`);
+	    if (o.chosen) badges.push('<span class="choice-badge done">작업자 선택</span>');
+	    if (!o.enabled) badges.push('<span class="choice-badge block">막힘</span>');
+	    const block = !o.enabled && o.blocked_by && o.blocked_by.length ? `<div class="choice-block">막은 이유: ${o.blocked_by.map(esc).join(' · ')}</div>` : '';
+	    const bar = o.advisor_probability !== null && o.advisor_probability !== undefined ? `<div class="choice-bar" aria-hidden="true"><span style="width:${Math.round(o.advisor_probability * 100)}%"></span></div>` : '';
+	    return `<button type="button" class="choice-opt${o.recommended ? ' rec' : ''}${o.chosen ? ' chosen' : ''}" data-key="${esc(o.key)}"${num ? ` data-num="${num}"` : ''} ${o.enabled ? '' : 'disabled aria-disabled="true"'}>
+	      <span class="choice-num">${num || '–'}</span>
+	      <span><div class="choice-label">${esc(o.label)}</div><div class="choice-detail">${esc(o.detail)}</div>${block}${bar}</span>
+	      <span class="choice-badges">${badges.join('')}</span>
+	    </button>`;
+	  }).join('');
+	  const why = (c.attention || []).length ? `<div class="choice-why">${c.attention.map(a => `<span>⚠ ${esc(a)}</span>`).join('')}</div>` : '';
+	  const rates = (c.agreement || []).map(a => `${esc(a[0])} ${fmt(a[1] * 100, 0)}% (${a[2]}건)`).join(' · ');
+	  const by = { rule: '안전 게이트', 'rule+laya': '게이트 + laya', 'laya-escalate': 'laya 보수 상향', 'laya-confident': 'laya 확신', operator: '작업자 선택' }[c.decided_by] || c.decided_by;
+	  return `<div class="choice-card${c.needs_attention ? ' attention' : ''}" id="choice-${id}" tabindex="0" role="group" aria-label="${esc(c.question)}">
+	    <div class="choice-head"><span class="choice-tag">${esc(c.header)}</span><span class="choice-q">${esc(c.question)}</span></div>
+	    ${why}
+	    <div class="choice-opts">${opts}</div>
+	    <div class="choice-confirm" hidden></div>
+	    <div class="choice-foot"><span>현재 판단: ${esc(by)} · ${esc(c.advisor_note || '')}${rates ? ' · ' + rates : ''}</span><span><kbd>1</kbd>~<kbd>${Math.max(1, n)}</kbd> 선택 · <kbd>Enter</kbd> 권장</span></div>
+	  </div>`;
+	}
+
+	// 권장과 다른 선택은 한 번 더 묻는다 (게이트가 허용한 범위 안이지만 시스템 판단과 다르므로)
+	function choiceBind(id, c, onPick) {
+	  const card = document.getElementById('choice-' + id);
+	  if (!card || !c) return;
+	  const confirmBox = card.querySelector('.choice-confirm');
+	  const labelOf = k => (c.options.find(o => o.key === k) || {}).label || k;
+	  const clearPending = () => { card.querySelectorAll('.choice-opt.pending').forEach(b => b.classList.remove('pending')); confirmBox.hidden = true; confirmBox.innerHTML = ''; };
+	  const pick = key => {
+	    const o = c.options.find(x => x.key === key);
+	    if (!o || !o.enabled) return;
+	    if (o.recommended || o.chosen) { clearPending(); onPick(key); return; }
+	    clearPending();
+	    const btn = card.querySelector(`.choice-opt[data-key="${CSS.escape(key)}"]`);
+	    if (btn) btn.classList.add('pending');
+	    confirmBox.hidden = false;
+	    confirmBox.innerHTML = `<span>권장 판단(${esc(labelOf(c.recommended))})과 다른 선택입니다 — <b>${esc(o.label)}</b>. 안전 게이트가 허용한 범위 안입니다. 진행할까요?</span>`;
+	    const go = document.createElement('button'); go.className = 'btn btn-sm'; go.textContent = '진행';
+	    const no = document.createElement('button'); no.className = 'btn btn-sm btn-outline'; no.textContent = '취소';
+	    go.onclick = () => { clearPending(); onPick(key); };
+	    no.onclick = () => { clearPending(); card.focus(); };
+	    confirmBox.append(go, no);
+	    go.focus();
+	  };
+	  card.querySelectorAll('.choice-opt:not(:disabled)').forEach(b => b.addEventListener('click', () => pick(b.dataset.key)));
+	  card.addEventListener('keydown', e => {
+	    if (e.target.closest('.choice-confirm')) return;
+	    if (/^[1-9]$/.test(e.key)) {
+	      const b = card.querySelector(`.choice-opt[data-num="${e.key}"]`);
+	      if (b) { e.preventDefault(); pick(b.dataset.key); }
+	    } else if (e.key === 'Enter' && e.target === card) {
+	      e.preventDefault(); pick(c.recommended);
+	    } else if (e.key === 'Escape') {
+	      clearPending();
+	    }
+	  });
+	}
+
+	function choiceFocus(id) {
+	  const card = document.getElementById('choice-' + id);
+	  if (!card) return;
+	  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+	  card.focus({ preventScroll: true });
+	}
+
+	// 알림 (토스트). key 가 같으면 이전 것을 바꾼다. 닫기 버튼은 항상 붙는다
+	function notify(o) {
+	  let stack = document.getElementById('toast-stack');
+	  if (!stack) {
+	    stack = document.createElement('div');
+	    stack.id = 'toast-stack';
+	    stack.className = 'toast-stack';
+	    stack.setAttribute('role', 'status');
+	    stack.setAttribute('aria-live', 'polite');
+	    document.body.appendChild(stack);
+	  }
+	  if (o.key) stack.querySelectorAll(`.toast[data-key="${CSS.escape(o.key)}"]`).forEach(x => x.remove());
+	  const el = document.createElement('div');
+	  el.className = `toast ${o.level || ''}`;
+	  if (o.key) el.dataset.key = o.key;
+	  el.innerHTML = `<div class="toast-title">${esc(o.title)}</div>${o.body ? `<div class="toast-body">${esc(o.body)}</div>` : ''}<div class="toast-actions"></div>`;
+	  const close = () => el.remove();
+	  const acts = el.querySelector('.toast-actions');
+	  (o.actions || []).concat([{ label: '닫기' }]).forEach(a => {
+	    const b = document.createElement('button');
+	    b.className = 'btn btn-sm' + (a.primary ? '' : ' btn-outline');
+	    b.textContent = a.label;
+	    b.onclick = () => { close(); if (a.run) a.run(); };
+	    acts.appendChild(b);
+	  });
+	  stack.appendChild(el);
+	  if (o.timeout) setTimeout(close, o.timeout);
+	  return close;
+	}
+
+	function compAttentionMark(r) {
+	  const b = document.getElementById('vt-comp');
+	  if (b) b.classList.toggle('has-attention', !!(r && r.choice && r.choice.needs_attention));
+	}
+
+	function compNotify(r) {
+	  const c = r && r.choice;
+	  if (!c || !c.needs_attention) return;
+	  const rec = (c.options.find(o => o.key === c.recommended) || {}).label || c.recommended;
+	  notify({
+	    key: 'comp-choice',
+	    level: 'warn',
+	    title: '2차 보정 — 선택이 필요합니다',
+	    body: `${(c.attention || [])[0] || ''}\n권장: ${rec}`,
+	    actions: [
+	      { label: '선택하기', primary: true, run: () => { compShow(true); setTimeout(() => choiceFocus('comp'), 50); } },
+	      { label: '권장대로 진행', run: () => compChoose(c.recommended) },
+	    ],
+	  });
+	}
+
+	// 작업자 선택 → 직전 1차 시뮬레이션으로 2차만 다시 계획 (게이트가 막은 선택지는 백엔드가 거절)
+	async function compChoose(key) {
+	  animPause();
+	  JOB.running = true;
+	  JOB.stale = false;
+	  prepShow({ pct: 0, label: '작업자 선택 반영', log: [] });
+	  let st;
+	  try { st = await invoke('sim_job_choose', { action: key }); } catch (e) {
+	    JOB.running = false;
+	    prepHide();
+	    appendLog(`선택 반영 실패: ${esc(e)}`);
+	    notify({ key: 'comp-choice', level: 'err', title: '선택을 반영하지 못했습니다', body: String(e), timeout: 8000 });
+	    return;
+	  }
+	  if (!st) { JOB.running = false; prepHide(); return; }
+	  JOB.id = st.id;
+	  JOB.key = st.key;
+	  appendLog(`2차 보정 작업자 선택: ${esc(COMP_LABEL[COMP_KEY[key]] || key)} · 작업 #${st.id}`);
+	  await jobPoll(st.id, { autoplay: false, chosen: true });
+	  const fa = JOB.result && JOB.result.comp ? JOB.result.comp.decision.final_action : null;
+	  if (fa) notify({ key: 'comp-choice', level: 'ok', title: '2차 보정 선택 반영', body: `${COMP_LABEL[fa] || fa} — 2차 G-code 를 다시 만들었습니다`, timeout: 5000 });
 	}
 
 	async function compReplan() {
@@ -6524,11 +6724,43 @@
 	  pvRenderDecision();
 	  pvSdsStatus();
 	  pvRefresh();
+	  const c = rep.choice;
+	  if (c && c.needs_attention) {
+	    const rec = (c.options.find(o => o.key === c.recommended) || {}).label || c.recommended;
+	    notify({
+	      key: 'process-choice',
+	      level: 'warn',
+	      title: '공정 판단 — 선택이 필요합니다',
+	      body: `${(c.attention || [])[0] || ''}\n권장: ${rec}`,
+	      actions: [
+	        { label: '선택하기', primary: true, run: () => choiceFocus('process') },
+	        { label: '권장대로 진행', run: () => pvChoose(c.recommended) },
+	      ],
+	    });
+	  }
+	}
+
+	// 작업자가 고른 공정 조치 반영 — 게이트보다 덜 보수적인 조치는 백엔드가 거절, 고른 조치의 조건(이송·회전수·냉각)만 바뀜
+	async function pvChoose(key) {
+	  const res = await pvCall('ws_choose_decision', { action: key });
+	  if (!res) { notify({ key: 'process-choice', level: 'err', title: '선택을 반영하지 못했습니다', body: '로그를 확인하세요', timeout: 6000 }); return; }
+	  PV.decision = res.report;
+	  pvRenderDecision();
+	  pvLogLines('pv-decision-notes', ['작업자 선택 반영:', ...res.changes.map(c => '  ' + c), '조건이 바뀌었으면 ④ 탭에서 공정 해석과 판단을 다시 실행하세요']);
+	  pvSdsStatus();
+	  pvRefresh();
+	  renderToolpath2D();
+	  notify({ key: 'process-choice', level: 'ok', title: '조치 반영', body: res.changes.join('\n'), timeout: 6000 });
 	}
 
 	function pvRenderDecision() {
 	  const r = PV.decision;
 	  if (!r) return;
+	  const box = document.getElementById('pv-choice');
+	  if (box) {
+	    box.innerHTML = choiceCardHtml('process', r.choice);
+	    choiceBind('process', r.choice, pvChoose);
+	  }
 	  const sevOf = a => ({ Continue: 0, ReduceFeed: 1, ReduceSpeed: 1, ChangeCoolant: 1, InspectTool: 2, ReplaceTool: 3, Stop: 3 }[a] ?? 0);
 	  document.getElementById('pv-decision-head').innerHTML = `<div class="pv-row">
 	    <span class="pv-chip"><span class="k">규칙 판단</span><span class="v sev-${sevOf(r.rule_action)}">${esc(r.rule_action_label)}</span></span>

@@ -18,6 +18,7 @@ pub mod toolimage;
 pub mod mold;
 pub mod wear;
 pub mod sds;
+pub mod choice;
 pub mod decision;
 pub mod ingest;
 pub mod pipeline;

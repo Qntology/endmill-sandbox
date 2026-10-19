@@ -677,6 +677,54 @@ fn runout_is_averaged_over_a_revolution_in_down_and_up_milling() {
 /// `runout_um` 은 날끝 총 흔들림(TIR) 이다 — 편심 e = TIR/2, 2날 공구에서 날 사이 칩 두께 차이는 2e = TIR (Kline & DeVor 1983).
 /// 슬롯(전체 맞물림)의 최대 칩 두께는 fz + TIR 이어야 한다. 이전에는 같은 값을 편심으로 읽어 fz + 2·TIR 이 됐다
 /// (프리셋 TIR 10 µm → 20 µm 과대, 피크/평균 힘 4.3).
+/// 선택 카드: 안전 게이트가 허용한 선택지만 고를 수 있고(권장이 맨 앞), 막힌 선택지는 막은 게이트 이름을 보여 준다.
+/// 작업자가 고른 값은 판단에 반영되고(decided_by operator) SDS 원장에 작업자–규칙 일치로 남는다 — laya 의 사람 판단 이력
+#[test]
+fn the_choice_card_offers_only_what_the_gates_allow_and_records_the_operator() {
+    let mut p = titanium_finishing();
+    p.conditions.feed_per_tooth_mm *= 0.70;
+    p.conditions.feed_rate_mm_min *= 0.70;
+    p.machine.damping_ratio = 0.006;
+    let dir = temp_dir("choice");
+    let mut sds = SdsStore::open(&dir.join("sds"));
+    let r = wearcomp::run_pipeline(&p, "pocket_zigzag", &mut sds, None, None, &CompOptions::default(), None, None, &mut |_, _| true).unwrap();
+    let o = &r.outcome;
+    let c = wearcomp::choice_prompt(&o.decision, &o.draft, None);
+    println!(
+        "[CHOICE] {} · 권장 {} · 알림 {} {:?} · {}",
+        c.question,
+        c.recommended,
+        c.needs_attention,
+        c.attention,
+        c.options.iter().map(|x| format!("{}{}{}", x.key, if x.recommended { "*" } else { "" }, if x.enabled { "" } else { "(막힘)" })).collect::<Vec<_>>().join(" ")
+    );
+    assert!(c.options[0].recommended && c.options[0].key == o.decision.final_action.key());
+    for x in c.options.iter() {
+        let a = CompAction::from_key(&x.key).unwrap();
+        assert_eq!(x.enabled, o.draft.allowed.contains(&a), "{}", x.key);
+        if !x.enabled {
+            assert!(!x.blocked_by.is_empty(), "{} names the gate that blocks it", x.key);
+        }
+    }
+    let exe = c.options.iter().find(|x| x.key == "execute").unwrap();
+    assert!(exe.blocked_by.iter().any(|b| b.contains("1차 결과의 물리적 유효성")), "{:?}", exe.blocked_by);
+    assert!(c.attention.iter().any(|a| a.contains("보류")), "{:?}", c.attention);
+    assert_eq!(c.needs_attention, c.enabled_count() >= 2);
+    let mut d = o.decision.clone();
+    assert!(wearcomp::apply_operator_choice(&mut d, &o.draft, CompAction::Execute).is_err(), "a gate-blocked choice is refused");
+    if let Some(a) = o.draft.allowed.iter().copied().find(|a| *a != o.decision.final_action) {
+        wearcomp::apply_operator_choice(&mut d, &o.draft, a).unwrap();
+        assert_eq!((d.final_action, d.decided_by.as_str(), d.system_action), (a, "operator", Some(o.decision.final_action)));
+        let c2 = wearcomp::choice_prompt(&d, &o.draft, None);
+        assert!(!c2.needs_attention && c2.options[0].key == o.decision.final_action.key() && c2.options.iter().any(|x| x.chosen && x.key == a.key()));
+        let mut out = o.clone();
+        out.decision = d.clone();
+        let lines = wearcomp::record(&mut sds, &p, &r.log, &out, None);
+        // 원장 일치율은 스코프별 최소 관측 수가 쌓여야 읽히므로 (한 번의 선택이 통계를 흔들지 않게) 여기서는 기록 줄을 본다
+        assert!(lines.iter().any(|l| l.contains("작업자 선택") && l.contains("규칙 다름")), "the operator overrode the gate's hold: {:?}", lines);
+    }
+}
+
 #[test]
 fn runout_um_is_total_indicated_runout_not_eccentricity() {
     let p = preset("알루미늄 황삭");

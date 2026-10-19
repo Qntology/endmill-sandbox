@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// 작업자가 선택 카드에서 고른 공정 조치와 laya 조언 · 규칙 판단의 일치 (SDS 축)
+pub const OPERATOR_ADVISOR_AXIS: &str = "operator_vs_advisor";
+pub const OPERATOR_RULE_AXIS: &str = "operator_vs_rule";
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2204,38 +2208,118 @@ impl Workspace {
             sds.record_transition(&scope, &prev, &state);
         }
         rep.transition_to_replace = sds.transition_prior(&scope, &state, Action::ReplaceTool.key());
+        rep.choice = Some(decision::choice_prompt(&rep, sds.agreement_rate(&scope, OPERATOR_ADVISOR_AXIS), sds.agreement_rate(&scope, "rule_vs_advisor")));
         self.last_state = Some(state);
         self.decision = Some(rep.clone());
         Ok(rep)
     }
 
+    /// 작업자가 선택 카드에서 고른 조치를 반영한다. 게이트 판단보다 덜 보수적인 조치는 거절하고, 고른 조치에 해당하는 절삭 조건만
+    /// 바꾼다 (이송·회전수·냉각). 작업자–규칙 · 작업자–조언 일치는 SDS 원장에 남아 laya 의 사람 판단 이력이 된다
+    pub fn choose_decision(&mut self, sds: &mut SdsStore, key: &str) -> Result<(Vec<String>, DecisionReport), String> {
+        let mut rep = self.decision.clone().ok_or_else(|| "먼저 '판단 실행' 을 하세요".to_string())?;
+        let a = Action::from_key(key).ok_or_else(|| format!("알 수 없는 조치: {}", key))?;
+        decision::apply_operator_choice(&mut rep, a)?;
+        let scope = decision_scope(&self.profile);
+        sds.record_agreement(&scope, OPERATOR_RULE_AXIS, a == rep.rule_action);
+        if let Some(aa) = rep.advisor_action {
+            sds.record_agreement(&scope, OPERATOR_ADVISOR_AXIS, a == aa);
+        }
+        if let Some(prev) = rep.system_action.filter(|s| *s != a) {
+            sds.record_transition(&scope, prev.key(), a.key());
+        }
+        self.last_state = Some(a.key().to_string());
+        rep.choice = Some(decision::choice_prompt(&rep, sds.agreement_rate(&scope, OPERATOR_ADVISOR_AXIS), sds.agreement_rate(&scope, "rule_vs_advisor")));
+        self.decision = Some(rep.clone());
+        let mut changes = vec![format!(
+            "작업자 선택: {} (규칙 {}{})",
+            a.label(),
+            rep.rule_action.label(),
+            rep.advisor_action.map(|x| format!(" · laya {}", x.label())).unwrap_or_default()
+        )];
+        let changed = match a {
+            Action::ReduceFeed => self.scale_feed(rep.feed_scale.unwrap_or(decision::DEFAULT_OPERATOR_SCALE)),
+            Action::ReduceSpeed => self.scale_speed(rep.speed_scale.unwrap_or(decision::DEFAULT_OPERATOR_SCALE)),
+            Action::ChangeCoolant => match rep.coolant_suggestion.clone() {
+                Some(k) => self.switch_coolant(&k),
+                None => {
+                    changes.push("제안된 냉각 방식이 없어 조건은 바꾸지 않았습니다 — 우측 패널에서 직접 바꾸세요".into());
+                    None
+                }
+            },
+            Action::Continue => {
+                changes.push("절삭 조건 변경 없음".into());
+                None
+            }
+            Action::InspectTool => {
+                changes.push("조건 변경 없음 — 날 마모·치핑을 확인한 뒤 판단을 다시 실행하세요".into());
+                None
+            }
+            Action::ReplaceTool => {
+                changes.push("조건 변경 없음 — 공구 패널에서 공구를 교체(리셋)하세요".into());
+                None
+            }
+            Action::Stop => {
+                changes.push("조건 변경 없음 — 한계를 넘은 게이트를 먼저 해결하세요".into());
+                None
+            }
+        };
+        if let Some(c) = changed {
+            changes.push(c);
+            self.profile.modified_at = format!("{}", now_ms() / 1000);
+            // 조건이 바뀌었으니 이전 해석·판단은 무효 (선택 결과는 반환값으로 남음)
+            self.invalidate_process();
+        }
+        Ok((changes, rep))
+    }
+
+    fn scale_feed(&mut self, s: f64) -> Option<String> {
+        if !(s < 0.999) {
+            return None;
+        }
+        let z = self.profile.endmill_setting.flute_count.max(1) as f64;
+        let c = &mut self.profile.conditions;
+        c.feed_per_tooth_mm *= s;
+        c.feed_rate_mm_min = c.spindle_rpm as f64 * z * c.feed_per_tooth_mm;
+        Some(format!("이송 ×{:.2} → fz {:.4} mm, F {:.0} mm/min", s, c.feed_per_tooth_mm, c.feed_rate_mm_min))
+    }
+
+    fn scale_speed(&mut self, s: f64) -> Option<String> {
+        if !(s < 0.999) {
+            return None;
+        }
+        let z = self.profile.endmill_setting.flute_count.max(1) as f64;
+        let d = self.profile.endmill_setting.diameter_mm;
+        let c = &mut self.profile.conditions;
+        let rpm = ((c.spindle_rpm as f64) * s).round().max(1.0) as u32;
+        c.spindle_rpm = rpm;
+        c.cutting_speed_m_min = std::f64::consts::PI * d * rpm as f64 / 1000.0;
+        c.feed_rate_mm_min = rpm as f64 * z * c.feed_per_tooth_mm;
+        Some(format!("회전수 ×{:.2} → S{} (Vc {:.0} m/min, fz 유지)", s, rpm, c.cutting_speed_m_min))
+    }
+
+    fn switch_coolant(&mut self, key: &str) -> Option<String> {
+        let cfg = CoolantConfig::from_key(key)?;
+        if cfg.method == self.profile.coolant_config.method {
+            return None;
+        }
+        let line = format!("냉각 {} → {}", self.profile.coolant_config.method.label(), cfg.method.label());
+        self.profile.conditions.coolant = coolant_type_of(&cfg.method);
+        self.profile.coolant_config = cfg;
+        Some(line)
+    }
+
     pub fn apply_decision(&mut self) -> Result<Vec<String>, String> {
         let rep = self.decision.clone().ok_or_else(|| "먼저 '판단 실행' 을 하세요".to_string())?;
         let mut changes = Vec::new();
-        let z = self.profile.endmill_setting.flute_count.max(1) as f64;
-        if let Some(s) = rep.feed_scale.filter(|s| *s < 0.999) {
-            let c = &mut self.profile.conditions;
-            c.feed_per_tooth_mm *= s;
-            c.feed_rate_mm_min = c.spindle_rpm as f64 * z * c.feed_per_tooth_mm;
-            changes.push(format!("이송 ×{:.2} → fz {:.4} mm, F {:.0} mm/min", s, c.feed_per_tooth_mm, c.feed_rate_mm_min));
+        if let Some(c) = rep.feed_scale.and_then(|s| self.scale_feed(s)) {
+            changes.push(c);
         }
-        if let Some(s) = rep.speed_scale.filter(|s| *s < 0.999) {
-            let d = self.profile.endmill_setting.diameter_mm;
-            let c = &mut self.profile.conditions;
-            let rpm = ((c.spindle_rpm as f64) * s).round().max(1.0) as u32;
-            c.spindle_rpm = rpm;
-            c.cutting_speed_m_min = std::f64::consts::PI * d * rpm as f64 / 1000.0;
-            c.feed_rate_mm_min = rpm as f64 * z * c.feed_per_tooth_mm;
-            changes.push(format!("회전수 ×{:.2} → S{} (Vc {:.0} m/min, fz 유지)", s, rpm, c.cutting_speed_m_min));
+        if let Some(c) = rep.speed_scale.and_then(|s| self.scale_speed(s)) {
+            changes.push(c);
         }
-        if let Some(key) = &rep.coolant_suggestion {
-            if let Some(cfg) = CoolantConfig::from_key(key) {
-                if cfg.method != self.profile.coolant_config.method {
-                    changes.push(format!("냉각 {} → {}", self.profile.coolant_config.method.label(), cfg.method.label()));
-                    self.profile.conditions.coolant = coolant_type_of(&cfg.method);
-                    self.profile.coolant_config = cfg;
-                }
-            }
+        if let Some(c) = rep.coolant_suggestion.clone().and_then(|k| self.switch_coolant(&k)) {
+            changes.push(c);
         }
         if changes.is_empty() {
             changes.push("반영할 절삭 조건 변경이 없습니다".into());

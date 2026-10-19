@@ -1362,6 +1362,32 @@ pub async fn ws_apply_decision(state: tauri::State<'_, AppState>) -> Result<Vec<
     .await
 }
 
+#[derive(Serialize)]
+pub struct ChooseDecisionResponse {
+    pub changes: Vec<String>,
+    pub report: DecisionReport,
+}
+
+/// 공정 판단 선택 카드에서 작업자가 고른 조치를 반영 (게이트보다 덜 보수적인 조치는 거절, 고른 조치의 조건만 변경)
+#[tauri::command]
+pub async fn ws_choose_decision(state: tauri::State<'_, AppState>, action: String) -> Result<ChooseDecisionResponse, String> {
+    blocking(&state, move |sh| {
+        let (changes, report, profile, changed) = {
+            let mut ws = lock(&sh.ws);
+            let mut sds = lock(&sh.sds);
+            let before = ws.profile.modified_at.clone();
+            let (changes, report) = ws.choose_decision(&mut sds, &action)?;
+            let changed = ws.profile.modified_at != before;
+            (changes, report, ws.profile.clone(), changed)
+        };
+        if changed {
+            sync_profile_to_store(sh, &profile);
+        }
+        Ok(ChooseDecisionResponse { changes, report })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn ws_adaptive_program(state: tauri::State<'_, AppState>) -> Result<AdaptiveProgram, String> {
     blocking(&state, |sh| lock(&sh.ws).adaptive_program()).await
@@ -2948,6 +2974,8 @@ pub struct JobResult {
     pub tool: Option<ToolBrief>,
     pub refs: Option<RefSummary>,
     pub records: Vec<String>,
+    /// 2차 보정 선택 카드 (권장 · 허용 · 막힌 선택지, 알림 이유)
+    pub choice: endmill_model::choice::ChoicePrompt,
 }
 
 fn job_status(slot: &JobSlot) -> JobStatus {
@@ -3005,6 +3033,8 @@ enum JobMode {
     },
     Replan {
         measured_radial_um: Option<f64>,
+        /// 작업자가 선택 카드에서 고른 2차 보정 (없으면 시스템 판단)
+        chosen: Option<endmill_model::wearcomp::CompAction>,
     },
 }
 
@@ -3076,6 +3106,10 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
     let mut t0 = std::time::Instant::now();
     let mut opts = lock(&sh.settings).comp.clone();
     let replan = matches!(mode, JobMode::Replan { .. });
+    let chosen = match &mode {
+        JobMode::Replan { chosen, .. } => *chosen,
+        JobMode::Full { .. } => None,
+    };
     let dry_run = lock(&sh.settings).dry_run;
     let (p, pattern, ctx, report, segments, view, calc, calc_error, segs1, program1, prev_action, tracked, parent_job) = match mode {
         JobMode::Full { profile_name, pattern, overrides } => {
@@ -3141,8 +3175,8 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
                 .and_then(|c| c.last_action.clone());
             (p, pattern, ctx, report, segments, view, calc, calc_error, segs1, program1, prev, tracked, None)
         }
-        JobMode::Replan { measured_radial_um } => {
-            if !job_set(sh, id, 2.0, "cache", "재계획 — 직전 1차 시뮬레이션 재사용") {
+        JobMode::Replan { measured_radial_um, .. } => {
+            if !job_set(sh, id, 2.0, "cache", if chosen.is_some() { "작업자 선택 반영 — 직전 1차 시뮬레이션 재사용" } else { "재계획 — 직전 1차 시뮬레이션 재사용" }) {
                 return Err(cancelled());
             }
             opts.measured_radial_um = measured_radial_um;
@@ -3242,11 +3276,15 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
     if !job_set(sh, id, 74.0, "decide", "4. laya-typed-decisions 판단 중") {
         return Err(cancelled());
     }
-    let decision = {
+    let mut decision = {
         let rate = lock(&sh.sds).agreement_rate(&endmill_model::wearcomp::wear_scope(&p), endmill_model::wearcomp::COMP_AGREEMENT_AXIS);
         let models = lock(&sh.models);
         endmill_model::wearcomp::consult(&draft, if laya_ready { models.laya.as_ref() } else { None }, rate, opts.use_laya)
     };
+    if let Some(a) = chosen {
+        endmill_model::wearcomp::apply_operator_choice(&mut decision, &draft, a)?;
+        lock(&sh.job).log.push(format!("작업자 선택 반영: {}", a.label()));
+    }
     models_info.laya_used = decision.laya.is_some();
     if let Some(e) = decision.laya_error.as_ref() {
         if laya_ready {
@@ -3264,10 +3302,11 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         return Err(cancelled());
     }
     let scope = endmill_model::wearcomp::wear_scope(&p);
-    let (sds_lines, sds_axes, gate_rates) = {
+    let (sds_lines, sds_axes, gate_rates, choice) = {
         let mut sds = lock(&sh.sds);
         let lines = endmill_model::wearcomp::record(&mut sds, &p, &log, &comp, prev_action.as_deref());
-        (lines, sds.axes_of(&scope, ""), sds.gate_rates(&scope))
+        let choice = endmill_model::wearcomp::choice_prompt(&comp.decision, &comp.draft, sds.agreement_rate(&scope, endmill_model::wearcomp::COMP_OPERATOR_LAYA_AXIS));
+        (lines, sds.axes_of(&scope, ""), sds.gate_rates(&scope), choice)
     };
     let csv = endmill_model::wearlog::bins_csv(&report.wear_log);
     let stamp = endmill_model::wearcomp::utc_stamp(endmill_model::wearcomp::now_ms());
@@ -3417,6 +3456,7 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         tool,
         refs,
         records: record_lines,
+        choice,
     });
     let mut tracked_next = tracked;
     if let Some(row) = tool_after {
@@ -3507,7 +3547,28 @@ pub fn sim_job_replan(state: tauri::State<'_, AppState>, measured_radial_um: Opt
             return Err("실측 반경 마모는 0 ~ 2000 µm 범위로 입력하세요".into());
         }
     }
-    Ok(start_job(&sh, key, JobMode::Replan { measured_radial_um }))
+    Ok(start_job(&sh, key, JobMode::Replan { measured_radial_um, chosen: None }))
+}
+
+/// 선택 카드에서 작업자가 고른 2차 보정으로 다시 계획한다 (직전 1차 시뮬레이션·실측 입력 재사용, 게이트가 막은 선택지는 거절)
+#[tauri::command]
+pub fn sim_job_choose(state: tauri::State<'_, AppState>, action: String) -> Result<JobStatus, String> {
+    let sh = state.shared.clone();
+    let dry_run = lock(&sh.settings).dry_run;
+    let a = endmill_model::wearcomp::CompAction::from_key(&action).ok_or_else(|| format!("알 수 없는 2차 보정 선택: {}", action))?;
+    let (key, measured) = match lock(&sh.job_cache).as_ref() {
+        Some(c) => {
+            if let Some(why) = replan_refusal(c, dry_run) {
+                return Err(why);
+            }
+            if !c.result.comp.decision.allowed.contains(&a) {
+                return Err(format!("'{}' 은 안전 게이트가 막은 선택지입니다", a.label()));
+            }
+            (c.result.key.clone(), c.result.settings.measured_radial_um)
+        }
+        None => return Err("먼저 재생(계산 실행)으로 1차 시뮬레이션을 만드세요".into()),
+    };
+    Ok(start_job(&sh, key, JobMode::Replan { measured_radial_um: measured, chosen: Some(a) }))
 }
 
 #[tauri::command]

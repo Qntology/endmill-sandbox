@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const COMP_AGREEMENT_AXIS: &str = "comp_rule_vs_laya";
+/// 작업자가 선택 카드에서 고른 2차 보정과 laya 1위 · 규칙 판단의 일치 (사람 판단 이력)
+pub const COMP_OPERATOR_LAYA_AXIS: &str = "comp_operator_vs_laya";
+pub const COMP_OPERATOR_RULE_AXIS: &str = "comp_operator_vs_rule";
 pub const SPLIT_FIRST: f64 = 0.7;
 pub const REDUCED_FEED: f64 = 0.6;
 pub const MAX_FEED_BOOST: f64 = 1.5;
@@ -419,6 +422,12 @@ pub struct CompDecision {
     pub agreement_rate: Option<(f64, u64)>,
     pub state_text: String,
     pub reasons: Vec<String>,
+    /// 작업자가 선택 카드에서 고른 행동 (없으면 시스템 판단 그대로)
+    #[serde(default)]
+    pub operator_choice: Option<CompAction>,
+    /// 작업자가 고르기 전 시스템 판단 (게이트 + laya)
+    #[serde(default)]
+    pub system_action: Option<CompAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1840,6 +1849,8 @@ pub fn consult(draft: &CompDraft, laya: Option<&LayaAdvisor>, agreement_rate: Op
         agreement_rate,
         state_text: draft.state_text.clone(),
         reasons: draft.reasons.clone(),
+        operator_choice: None,
+        system_action: None,
     };
     if !draft.need {
         d.reasons.push(if draft.rule_action == CompAction::Hold { "2차로 깎을 구간이 없어 laya 를 호출하지 않음 (보류 유지)" } else { "보정이 필요 없어 laya 를 호출하지 않음" }.into());
@@ -1927,6 +1938,134 @@ pub fn apply_laya(d: &mut CompDecision, draft: &CompDraft, ans: AdvisorAnswer) {
         }
     }
     d.laya = Some(ans);
+}
+
+impl CompAction {
+    /// 선택 카드에 보이는 한 줄 설명 — 이 선택이 실제로 하는 일
+    pub fn detail(&self) -> &'static str {
+        match self {
+            CompAction::Execute => "남은 벽 잔여량을 한 패스로 깎음 — 가장 빠름",
+            CompAction::ExecuteReduced => "이송을 낮춰 한 패스로 깎음 — 휨·채터 여유가 커지고 시간은 늘어남",
+            CompAction::Split => "보정 패스 뒤 같은 경로 스프링 패스 — 치수 안정, 시간 약 2배",
+            CompAction::Skip => "2차 없이 끝냄 — 잔여량이 공차 안일 때",
+            CompAction::ToolChange => "새 공구로 바꾼 뒤 보정 — 마모·치핑 위험을 없앰, 공구 1자루",
+            CompAction::Hold => "멈추고 공구·벽을 실측한 뒤 다시 계획 — 가장 보수적",
+        }
+    }
+
+    /// 게이트가 막지 않았는데 선택지에서 빠진 이유 (평가 규칙에 따른 제외)
+    pub fn excluded_reason(&self) -> &'static str {
+        match self {
+            CompAction::ToolChange => "교체할 만큼 마모되지 않았거나, 새 공구 1회 패스도 휨·채터·최소 칩 조건을 넘음",
+            CompAction::Hold => "넘은 게이트가 없어 보류할 이유가 없음",
+            CompAction::Skip => "평가 규칙에서 제외",
+            _ => "1차가 끝나지 않았거나 공구가 리셋되어 옛 공구 기준 보정은 제외",
+        }
+    }
+}
+
+/// 작업자가 선택 카드에서 고른 행동을 적용한다. 안전 게이트가 막은 선택지는 받지 않는다 (게이트가 결정권자).
+/// 게이트가 요구한 M00 작업자 확인은 그대로 둔다
+pub fn apply_operator_choice(d: &mut CompDecision, draft: &CompDraft, a: CompAction) -> Result<(), String> {
+    if !draft.allowed.contains(&a) {
+        let by: Vec<String> = draft.gates.iter().filter(|g| g.blocks.contains(&a)).map(|g| g.label.clone()).collect();
+        return Err(format!(
+            "'{}' 은 안전 게이트가 막은 선택지입니다{}",
+            a.label(),
+            if by.is_empty() { String::new() } else { format!(" ({})", by.join(", ")) }
+        ));
+    }
+    let system = d.system_action.unwrap_or(d.final_action);
+    d.system_action = Some(system);
+    d.operator_choice = Some(a);
+    d.final_action = a;
+    d.decided_by = "operator".into();
+    d.reasons.push(format!(
+        "작업자가 {} 선택 (시스템 권장 {} · 규칙 {}{})",
+        a.label(),
+        system.label(),
+        d.rule_action.label(),
+        d.laya_action.map(|l| format!(" · laya {}", l.label())).unwrap_or_default()
+    ));
+    Ok(())
+}
+
+/// 2차 보정 선택 카드. `operator_rate` 는 이 스코프의 작업자–laya 일치율 (SDS)
+pub fn choice_prompt(d: &CompDecision, draft: &CompDraft, operator_rate: Option<(f64, u64)>) -> crate::choice::ChoicePrompt {
+    use crate::choice::{push_rate, ChoiceOption, ChoicePrompt};
+    let recommended = d.system_action.unwrap_or(d.final_action);
+    let prob = |a: CompAction| {
+        d.laya.as_ref().and_then(|ans| ans.labels.iter().position(|k| k == a.key()).and_then(|i| ans.probabilities.get(i).copied()))
+    };
+    let options: Vec<ChoiceOption> = CompAction::all()
+        .into_iter()
+        .map(|a| ChoiceOption {
+            key: a.key().into(),
+            label: a.label().into(),
+            detail: a.detail().into(),
+            recommended: a == recommended,
+            rule: a == d.rule_action,
+            advisor_probability: prob(a),
+            advisor_top: d.laya_action == Some(a),
+            enabled: draft.allowed.contains(&a),
+            blocked_by: if draft.allowed.contains(&a) {
+                Vec::new()
+            } else {
+                let by: Vec<String> = draft
+                    .gates
+                    .iter()
+                    .filter(|g| g.blocks.contains(&a))
+                    .map(|g| format!("{} ({})", g.label, ["통과", "관찰", "초과", "위험"][g.severity.min(3) as usize]))
+                    .collect();
+                if by.is_empty() {
+                    vec![a.excluded_reason().to_string()]
+                } else {
+                    by
+                }
+            },
+            chosen: d.operator_choice == Some(a),
+        })
+        .collect();
+    let mut attention = Vec::new();
+    if draft.need {
+        if d.operator_confirm {
+            attention.push("작업자 확인(M00)이 필요한 게이트가 있습니다".to_string());
+        }
+        if draft.rule_action == CompAction::Hold {
+            attention.push("안전 게이트가 보류를 골랐습니다 — 실측한 뒤 다시 계획하거나 허용된 다른 선택지를 고르세요".to_string());
+        }
+        if let (Some(false), Some(la)) = (d.agreement, d.laya_action) {
+            attention.push(format!("laya 1위({})와 규칙 판단({})이 다릅니다", la.label(), d.rule_action.label()));
+        }
+        if let Some(ans) = d.laya.as_ref() {
+            if ans.top_probability < 0.5 {
+                attention.push(format!("laya 확신이 낮습니다 (1위 {:.0}%)", ans.top_probability * 100.0));
+            }
+        }
+    }
+    let mut agreement = Vec::new();
+    push_rate(&mut agreement, "규칙–laya", d.agreement_rate);
+    push_rate(&mut agreement, "작업자–laya", operator_rate);
+    let mut c = ChoicePrompt {
+        kind: "comp".into(),
+        header: "2차 보정".into(),
+        question: if draft.need { "2차 보정을 어떻게 진행할까요?".into() } else { "2차 보정이 필요 없습니다 — 그래도 다른 선택을 할까요?".into() },
+        options,
+        recommended: recommended.key().into(),
+        decided_by: d.decided_by.clone(),
+        needs_attention: false,
+        attention,
+        operator_choice: d.operator_choice.map(|a| a.key().to_string()),
+        advisor_note: match (d.laya.as_ref(), d.laya_error.as_ref()) {
+            (Some(ans), _) => format!("laya 1위 {} {:.0}% · 행동 확률 {:.2}", CompAction::from_key(&ans.top).map(|a| a.label()).unwrap_or(ans.top.as_str()), ans.top_probability * 100.0, ans.act_probability),
+            (None, Some(e)) => e.clone(),
+            (None, None) => "laya 를 부르지 않음 (선택지가 하나뿐이거나 보정이 필요 없음)".into(),
+        },
+        agreement,
+    };
+    c.sort_options(|k| CompAction::from_key(k).map(|a| a.rank()).unwrap_or(9));
+    c.settle_attention();
+    c
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2896,7 +3035,24 @@ pub fn record(sds: &mut SdsStore, profile: &MachiningProfile, log: &WearLog, out
     sds.record_gates(&scope, &gates);
     lines.push(format!("wear 원장: 잔여량·마모·융합 오차 축과 게이트 {}개 기록 ({})", gates.len(), scope.key_secondary()));
     let dec = &out.decision;
-    if let (Some(agree), Some(la)) = (dec.agreement, dec.laya_action) {
+    if let Some(op) = dec.operator_choice {
+        sds.record_agreement(&scope, COMP_OPERATOR_RULE_AXIS, op == dec.rule_action);
+        if let Some(la) = dec.laya_action {
+            sds.record_agreement(&scope, COMP_OPERATOR_LAYA_AXIS, op == la);
+        }
+        lines.push(format!(
+            "작업자 선택 {} 기록 (규칙 {} · laya {})",
+            op.label(),
+            if op == dec.rule_action { "일치" } else { "다름" },
+            match dec.laya_action {
+                Some(la) if la == op => "일치",
+                Some(_) => "다름",
+                None => "없음",
+            }
+        ));
+    }
+    // 작업자 재선택은 같은 1차 결과를 다시 판단한 것이라 규칙–laya 일치를 두 번 세지 않는다
+    if let (Some(agree), Some(la), None) = (dec.agreement, dec.laya_action, dec.operator_choice) {
         sds.record_agreement(&scope, COMP_AGREEMENT_AXIS, agree);
         if !agree {
             let margin = dec.laya.as_ref().map(|a| a.top_probability as f64).unwrap_or(0.0);
