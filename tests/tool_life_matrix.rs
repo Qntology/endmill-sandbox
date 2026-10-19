@@ -5,6 +5,8 @@
 //! 리서치 정리(문헌·제조사 자료)와 같은 방향인지를 본다. 행렬 결과는 `[MATRIX]` 줄과 CSV/JSON 으로 남긴다
 //! (`ENDMILL_MATRIX_DIR` 가 있으면 그 폴더, 없으면 임시 폴더).
 use endmill_model::appfit;
+use endmill_model::gcode::ToolPathSegment;
+use endmill_model::loadsim::WallErrorSample;
 use endmill_model::pairmatrix::{self, MatrixCell};
 use endmill_model::physics::{self, CutContext};
 use endmill_model::profile::{EndMillMockupSetting, MachiningPreset, MachiningProfile, ToolLifePolicy};
@@ -193,6 +195,163 @@ fn unfinished_first_pass_holds_the_compensation() {
     assert_eq!(g.severity, 3);
     assert_eq!(draft.rule_action, endmill_model::wearcomp::CompAction::Hold);
     assert!(!draft.allowed.iter().any(|a| a.cuts()), "no compensation pass on an unfinished first pass: {:?}", draft.allowed);
+}
+
+/// 멈춘 점 뒤의 남은 경로(이송 이동)에서 공구 축이 벽 점 높이(z_mid) 아래로 지나며 그 점에 가장 가까이 오는 수평 거리.
+/// 시험용 독립 계산이라 모든 이송 이동을 0.05 mm 현으로 나눠 잰다 (직선은 현도 같은 직선 위)
+fn rest_reach(segs: &[ToolPathSegment], start: (f64, f64, f64), stop: &toollife::ToolLifeEvent, x: f64, y: f64, z_mid: f64) -> f64 {
+    let reach = |a: (f64, f64, f64), b: (f64, f64, f64)| -> f64 {
+        let dz = b.2 - a.2;
+        let (s0, s1) = if dz.abs() < 1e-12 {
+            if a.2 < z_mid {
+                (0.0, 1.0)
+            } else {
+                return f64::INFINITY;
+            }
+        } else if dz > 0.0 {
+            (0.0, ((z_mid - a.2) / dz).min(1.0))
+        } else {
+            (((z_mid - a.2) / dz).max(0.0), 1.0)
+        };
+        if s0 >= s1 {
+            return f64::INFINITY;
+        }
+        let (ux, uy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = ux * ux + uy * uy;
+        let s = if l2 > 1e-18 { (((x - a.0) * ux + (y - a.1) * uy) / l2).clamp(s0, s1) } else { s0 };
+        (x - a.0 - s * ux).hypot(y - a.1 - s * uy)
+    };
+    let stop_pt = (stop.x, stop.y, stop.z);
+    let gap = |p: &(f64, f64, f64)| (p.0 - stop_pt.0).hypot(p.1 - stop_pt.1).hypot(p.2 - stop_pt.2);
+    let mut best = f64::INFINITY;
+    let mut prev = start;
+    for (k, seg) in segs.iter().enumerate() {
+        let s = prev;
+        prev = seg.end_point();
+        if k < stop.seg || !seg.feed().map(|f| f > 0.0).unwrap_or(false) {
+            continue;
+        }
+        let mut pts = vec![s];
+        pts.extend(seg.polyline_from(s, 0.05));
+        if k == stop.seg {
+            let i = (0..pts.len()).min_by(|a, b| gap(&pts[*a]).partial_cmp(&gap(&pts[*b])).unwrap()).unwrap();
+            pts = pts.split_off(i);
+            pts[0] = stop_pt;
+        }
+        for w in pts.windows(2) {
+            best = best.min(reach(w[0], w[1]));
+        }
+    }
+    best
+}
+
+/// 1차가 멈추면 마지막에 깎인 벽 중 남은 경로가 다시 깎을 곳은 미절삭 소재의 경계다 — 부품 벽이 아니라 최종 벽에서 빠진다.
+/// 인코넬 포켓(정지 정책, 61 % 에서 멈춤)에서 마지막 줄 너머의 벽은 다음 줄이 깎아 내고, 스톡 가장자리 스킨(줄 끝 피치 이동이 만든
+/// ±X 벽)은 남는다. 최종 벽 통계·세그먼트별 벽·품질 저하 보고·감사 줄이 모두 같은 최종 벽을 쓰고, 끝까지 간 작업은 그대로다
+#[test]
+fn a_stopped_pocket_counts_only_part_walls_as_final() {
+    let p = with_policy("인코넬", ToolLifePolicy::Stop);
+    let ctx = CutContext::from_profile(&p);
+    let (_, r, segs) = endmill_model::viewport::build_report_prog(&p, "pocket_zigzag", &ctx, &mut |_| true).unwrap();
+    let tl = &r.tool_life;
+    assert!(tl.unfinished && !tl.failed);
+    let stop = tl.events.iter().rev().find(|e| e.kind == "stop").expect("stop event");
+    let start = (0.0, 0.0, p.endmill_setting.loc_mm + 10.0);
+    let rad = 0.5 * ctx.tool.diameter_mm;
+    // 남은 경로의 공구가 벽 점을 셀 1/4 넘게 덮으면 깎여 나가는 벽 — 경계 띠(셀 5 %)는 원호 현 근사의 차이
+    let (reach, band) = (rad - 0.25 * r.cell_mm, 0.05 * r.cell_mm);
+    let d = |x: f64, y: f64, z: f64| rest_reach(&segs, start, stop, x, y, z);
+    let finals: Vec<&WallErrorSample> = r.wall_errors.iter().filter(|w| w.final_wall).collect();
+    let uncut: Vec<&WallErrorSample> = r.wall_errors.iter().filter(|w| w.uncut_boundary).collect();
+    let worst = |v: &[&WallErrorSample]| v.iter().map(|w| w.total_um.abs()).fold(0.0, f64::max);
+    println!(
+        "[EOL] 인코넬 포켓 · 정지 seg {} t {:.1} s ({:.1}, {:.1}) · 완료 {:.0}% · 최종 벽 {} 점 · 미절삭 경계 {} 점 (보고서 표본 {}) · 최종 벽 오차 최대 {:.1} µm · 미절삭 경계 최대 {:.1} µm (표본)",
+        stop.seg,
+        stop.t_s,
+        stop.x,
+        stop.y,
+        tl.completed_fraction() * 100.0,
+        r.final_wall_count,
+        r.uncut_boundary_count,
+        uncut.len(),
+        r.max_wall_error_um,
+        worst(&uncut)
+    );
+    for w in r.warnings.iter().filter(|w| w.contains("미절삭 경계")) {
+        println!("[EOL]    {}", w);
+    }
+    let mut by_seg: std::collections::BTreeMap<usize, (usize, f64, f64, f64, f64)> = std::collections::BTreeMap::new();
+    for w in uncut.iter() {
+        let e = by_seg.entry(w.seg).or_insert((0, f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY));
+        *e = (e.0 + 1, e.1.min(w.x), e.2.max(w.x), e.3.min(w.y), e.4.max(w.y));
+    }
+    for (seg, (n, x0, x1, y0, y1)) in by_seg.iter() {
+        println!("[EOL]    미절삭 경계 표본 seg {} · {} 점 · X {:.1}~{:.1} Y {:.1}~{:.1}", seg, n, x0, x1, y0, y1);
+    }
+    assert!(r.uncut_boundary_count > 0 && !uncut.is_empty(), "the last row leaves a boundary that the rest of the pocket cuts away");
+    for w in uncut.iter() {
+        let dd = d(w.x, w.y, w.z_mid);
+        assert!(!w.final_wall && dd < reach + band, "uncut-boundary wall at ({:.2}, {:.2}, {:.2}) is {:.3} mm from the rest of the path (reach {:.3})", w.x, w.y, w.z_mid, dd, reach);
+    }
+    for w in finals.iter() {
+        let dd = d(w.x, w.y, w.z_mid);
+        assert!(dd > reach - band, "final wall at ({:.2}, {:.2}, {:.2}) seg {} lies {:.3} mm from the rest of the path — the rest would cut it away", w.x, w.y, w.z_mid, w.seg, dd);
+    }
+    // 스톡 가장자리 스킨은 부품 벽: 가장자리에서 1.5 mm 안, 벽 법선이 그 가장자리 쪽. 지그재그는 줄 끝 피치 이동이 줄의 둥근 앞이 남긴
+    // 모서리로 들어가며 ±X 스킨을 만든다 (첫 줄은 슬롯이라 벽 표본이 없고, +Y 스킨은 남은 경로의 마지막 줄이 만든다)
+    let (sw, sh) = (p.workpiece_setup.width_mm, p.workpiece_setup.height_mm);
+    let side_of = |w: &WallErrorSample| -> Option<&'static str> {
+        if w.nx > 0.7 && sw - w.x < 1.5 {
+            Some("+X")
+        } else if w.nx < -0.7 && w.x < 1.5 {
+            Some("−X")
+        } else if w.ny > 0.7 && sh - w.y < 1.5 {
+            Some("+Y")
+        } else if w.ny < -0.7 && w.y < 1.5 {
+            Some("−Y")
+        } else {
+            None
+        }
+    };
+    let skins = |s: &str| finals.iter().filter(|w| side_of(w) == Some(s)).count();
+    let (n_px, n_mx, n_py, n_my) = (skins("+X"), skins("−X"), skins("+Y"), skins("−Y"));
+    println!("[EOL]    스톡 가장자리 스킨 최종 벽: +X {} · −X {} · +Y {} · −Y {} 점 · 그 밖의 최종 벽 {} 점", n_px, n_mx, n_py, n_my, finals.len() - n_px - n_mx - n_py - n_my);
+    assert!(n_px > 0 && n_mx > 0, "the stepover skins at both X edges stay final: +X {} −X {}", n_px, n_mx);
+    assert!(!uncut.iter().any(|w| side_of(w).is_some()), "no stock-edge skin is taken for uncut stock");
+    // 소비처가 모두 같은 최종 벽을 쓴다 (미절삭 경계는 다시 깎일 벽으로 센다)
+    assert!(r.uncut_boundary_count <= r.transient_wall_count);
+    assert_eq!(r.quality_loss.final_points, r.final_wall_count, "the quality-loss report counts the same final walls");
+    assert_eq!(r.seg_walls.iter().map(|s| s.n).sum::<usize>(), r.final_wall_count, "per-segment wall stats use the same final walls");
+    for q in r.quality_loss.points.iter() {
+        assert!(d(q.x, q.y, q.z) > reach - band, "a degraded wall point the rest would cut away: ({:.2}, {:.2})", q.x, q.y);
+    }
+    if r.final_wall_count < 4800 {
+        // 보고서에 최종 벽이 빠짐없이 들어 있는 크기 — 경로 벽 오차 최대·평균이 바로 그 최종 벽에서 나온다
+        assert_eq!(finals.len(), r.final_wall_count);
+        assert!((worst(&finals) - r.max_wall_error_um).abs() < 1e-9);
+        let mean = finals.iter().map(|w| w.total_um).sum::<f64>() / finals.len() as f64;
+        assert!((mean - r.mean_wall_error_um).abs() < 1e-6);
+    }
+    assert!(r.warnings.iter().any(|w| w.contains("미절삭 경계")), "the exclusion is reported");
+    // 감사 줄: 수명 줄과 경로 미완료 플래그가 뺀 점 수를 밝힌다
+    let sds = endmill_model::sds::SdsStore::open(&std::env::temp_dir().join(format!("endmill-uncut-sds-{}", std::process::id())));
+    let log = endmill_model::wearcomp::analyze_job(&p, &ctx, &r, None, &sds);
+    let audit = endmill_model::simaudit::build(&p, &ctx, &r, &log, None, "pocket_zigzag");
+    assert_eq!(audit.tool_life.uncut_boundary_points, r.uncut_boundary_count);
+    let lines = endmill_model::simaudit::lines(&audit);
+    for l in lines.iter().filter(|l| l.contains("미절삭 경계")) {
+        println!("{}", l);
+    }
+    assert!(lines.iter().any(|l| l.starts_with("[AUDIT] 수명") && l.contains("미절삭 경계")));
+    assert!(lines.iter().any(|l| l.contains("path_unfinished") && l.contains("미절삭 경계")));
+
+    // 끝까지 간 작업은 남은 경로가 없어 그대로다
+    let done = simulate(&preset("인코넬"), "rect_profile");
+    assert!(!done.tool_life.unfinished);
+    assert_eq!(done.uncut_boundary_count, 0);
+    assert!(done.final_wall_count > 0 && done.wall_errors.iter().all(|w| !w.uncut_boundary));
+    assert!(!done.warnings.iter().any(|w| w.contains("미절삭 경계")));
+    assert_eq!(done.quality_loss.final_points, done.final_wall_count);
 }
 
 #[test]

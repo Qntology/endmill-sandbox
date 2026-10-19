@@ -125,12 +125,24 @@ Ti 여유각 8° 가 10° 보다 나쁨, HSS 로 58 HRC 는 부적합, 알루미
   파손·수명 관리 만료 공구는 작업 기록 뒤 은퇴, 정지 정책이면 다음 작업 전에 교체(리셋) 안내.
 * **2차 보정 게이트** `pass1_complete`: 1차가 정지·파손으로 끝까지 가지 못했으면 등급 3 으로 모든 절삭 선택지(새 공구 교체 후 보정 포함)를 막고 보류 —
   깎지 않은 벽은 잔여량 표본이 없어 보정 대상에서 빠지기 때문.
+* **멈춘 작업의 최종 벽** (`loadsim::exclude_uncut_boundary`, 2026-10-19): 최종 벽은 '그 셀에서 가장 나중에 깎였고 벽 너머에 소재가 남은 벽'이라,
+  정지·파손으로 끝난 작업에서는 남은 경로가 깎아 낼 **미절삭 소재의 경계**(지그재그 포켓이면 마지막 줄 너머의 벽)까지 최종 벽에 들어갔다 —
+  인코넬 포켓 정지(61 %, seg 25 를 마치고 정지)에서 마지막 줄의 +Y 벽 276점(최대 527 µm)이 그것이고, 얇은 벽 수정
+  (`docs/pocket-wall-error.md`) 뒤에는 이것이 그 작업의 최악 '최종 벽'이 된다. 빼고 나면 남는 최종 벽 117점은 모두 ±X 스톡 가장자리 스킨(+X 64 · −X 53)이다.
+  이제 멈춘 점 뒤의 남은 경로(직선·플런지는 정확한 선분, 원호는 현의 처짐 ≤ 셀 2.5 % 로 나눔, 급이송·이송 0 은 깎지 않으니 뺌)를 반경 r 원통으로 쓸어,
+  공구 끝이 벽 점 높이(z_mid) 아래인 구간에서 벽 점을 셀 1/4 넘게 덮으면 그 벽은 최종 벽에서 빼고 `uncut_boundary` 로 표시한다
+  (`uncut_boundary_count`, 경고 `[공구 수명] 남은 경로가 다시 깎을 미절삭 경계 벽 …`, 감사 `[AUDIT] 수명:` 줄과 `path_unfinished`·`tool_failure` 플래그).
+  같은 윤곽을 더 깊게 다시 지나는 패스(층 내림·헬릭스 다음 바퀴)는 벽 점까지 거리가 정확히 r 이라 남는다 — 그 아래에 새 벽을 만들 뿐이다.
+  최종 벽을 쓰는 벽 오차 평균·최대, 측벽 Ra, 얇은 벽 경고, 세그먼트별 벽 통계(`seg_walls`), 2차 보정 잔여량, 품질 저하 보고(`quality_loss`)가 모두 따라간다.
+  끝까지 간 작업은 남은 경로가 없어 그대로다.
 
 ## 5. 새 로그
 
 * 마모 로그 CSV 열: `tool_no, life_used, stress_mpa, stress_ratio, fatigue, chip_p` (기존 열 뒤에 추가).
 * JSON (`wear_logs/*.json` 의 `audit`, 버전 4): `tool_life` · `fit` · `unknowns`.
 * 콘솔·테스트 로그: `[AUDIT] 수명:` · `[AUDIT] 적합도:` · `[EOL]` 사건 · `[UNKNOWN]` · `[MATRIX]`/`[MATRIX-GRID]`.
+* 경로 시뮬레이션 보고서: `uncut_boundary_count` (멈춘 작업에서 최종 벽에서 뺀 미절삭 경계 벽 점 수), 벽 표본의 `uncut_boundary` 표시,
+  감사 `tool_life.uncut_boundary_points`.
 * 새 감사 플래그: `tool_failure` · `path_unfinished` · `tool_changed_mid_path` · `tool_life_expired_finish_part` · `body_stress_high` · `body_fatigue_high` ·
   `chipping_detected` · `chipping_risk` · `load_monitor_blind` · `surface_integrity_risk` · `tool_application_fit` · `tool_geometry_assumed`.
 * 공구 수명 사건(`[EOL]`): `warn` · `chip_risk` · `chip_detected` · `load_alarm` · `accelerated` · `life_end` · `stop` · `tool_change` · `failure` · `start_worn`.

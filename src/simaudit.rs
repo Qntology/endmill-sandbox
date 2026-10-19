@@ -392,6 +392,9 @@ pub struct AuditToolLife {
     pub unfinished: bool,
     pub completed_fraction: f64,
     pub uncut_feed_mm: f64,
+    /// 멈춘 작업에서 남은 경로가 다시 깎을 미절삭 경계 벽 점 수 (최종 벽·품질 보고에서 뺌, `loadsim::LoadSimReport::uncut_boundary_count`)
+    #[serde(default)]
+    pub uncut_boundary_points: usize,
     pub expired: bool,
     /// 몸체 강도의 기준 모재 (`toollife::strength_of` — 코팅이 아니라 초경 등급·HSS)
     #[serde(default)]
@@ -1436,6 +1439,7 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         unfinished: tlr.unfinished,
         completed_fraction: f(tlr.completed_fraction()),
         uncut_feed_mm: f(tlr.uncut_feed_mm),
+        uncut_boundary_points: rep.uncut_boundary_count,
         expired: tlr.expired,
         body_label: tlr.strength.label.clone(),
         trs_mpa: f(tlr.strength.trs_mpa),
@@ -1514,8 +1518,14 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             ),
         );
     }
+    // 멈춘 작업의 마지막 벽 중 남은 경로가 다시 깎을 곳 — 부품 벽이 아니라 최종 벽 통계·품질 보고에서 뺐다
+    let uncut_note = if rep.uncut_boundary_count > 0 {
+        format!(" · 남은 경로가 다시 깎을 미절삭 경계 벽 {}점은 최종 벽·품질 보고에서 뺌", rep.uncut_boundary_count)
+    } else {
+        String::new()
+    };
     if tlr.failed {
-        flag(&mut flags, "tool_failure", 2, tlr.completed_fraction(), "파손 없음", format!("{} — 경로의 {:.0}% 에서 정지, 부품 검사 필요", tlr.stop_reason().unwrap_or_default(), tlr.completed_fraction() * 100.0));
+        flag(&mut flags, "tool_failure", 2, tlr.completed_fraction(), "파손 없음", format!("{} — 경로의 {:.0}% 에서 정지, 부품 검사 필요{}", tlr.stop_reason().unwrap_or_default(), tlr.completed_fraction() * 100.0, uncut_note));
     } else if tlr.unfinished {
         let chipped = tlr.events.iter().rev().find(|e| e.kind == "stop").map(|e| e.cause == "chipping").unwrap_or(false);
         flag(
@@ -1525,12 +1535,13 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             tlr.completed_fraction(),
             "1.0",
             format!(
-                "{} 이송 경로 {:.0} / {:.0} mm 에서 정지 ({}) — 이 조건으로 이 경로를 끝내려면 공구 {}개 이상 또는 조건 완화 필요",
+                "{} 이송 경로 {:.0} / {:.0} mm 에서 정지 ({}) — 이 조건으로 이 경로를 끝내려면 공구 {}개 이상 또는 조건 완화 필요{}",
                 if chipped { "치핑 감지로" } else { "공구 수명 판정으로" },
                 tlr.total_feed_mm - tlr.uncut_feed_mm,
                 tlr.total_feed_mm,
                 tool_life.policy_label,
-                (1.0 / tlr.completed_fraction().max(1e-3)).ceil()
+                (1.0 / tlr.completed_fraction().max(1e-3)).ceil(),
+                uncut_note
             ),
         );
     }
@@ -2156,7 +2167,7 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
     ));
     let tl = &a.tool_life;
     v.push(format!(
-        "[AUDIT] 수명: 정책 {} · 상태 {} · 공구 {}개 (교체 {}) · 경로 완료 {:.0}%{} | VB 한계 {:.2} · 3차 시작 {:.2} · 붕괴 {:.2} mm (배수 ×{:.1}, 최대 ×{:.2}) · 수명 사용 최대 {:.0}% 끝 {:.0}% | 몸체 {} 항절력 {:.0} → 정적 {:.0} · 피로 {:.0} MPa · 최대 주응력 {:.0} MPa (×{:.2}, {}) · 피로 누적 {:.3} | 치핑 P {:.0}% (채터 ×{:.1} 응력 ×{:.1} 경도 ×{:.1} 열 ×{:.1} 초과 ×{:.1} 적합 ×{:.1}) | 부하(새 날 대비 동력) 최대 ×{:.2} · 판정 시점 {} · 1.2배 경보 {}",
+        "[AUDIT] 수명: 정책 {} · 상태 {} · 공구 {}개 (교체 {}) · 경로 완료 {:.0}%{}{} | VB 한계 {:.2} · 3차 시작 {:.2} · 붕괴 {:.2} mm (배수 ×{:.1}, 최대 ×{:.2}) · 수명 사용 최대 {:.0}% 끝 {:.0}% | 몸체 {} 항절력 {:.0} → 정적 {:.0} · 피로 {:.0} MPa · 최대 주응력 {:.0} MPa (×{:.2}, {}) · 피로 누적 {:.3} | 치핑 P {:.0}% (채터 ×{:.1} 응력 ×{:.1} 경도 ×{:.1} 열 ×{:.1} 초과 ×{:.1} 적합 ×{:.1}) | 부하(새 날 대비 동력) 최대 ×{:.2} · 판정 시점 {} · 1.2배 경보 {}",
         tl.policy,
         tl.state,
         tl.tools_used,
@@ -2171,6 +2182,7 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
         } else {
             String::new()
         },
+        if tl.uncut_boundary_points > 0 { format!(" · 미절삭 경계 벽 {}점은 최종 벽에서 뺌", tl.uncut_boundary_points) } else { String::new() },
         tl.vb_limit_mm,
         tl.vb_accel_mm,
         tl.vb_collapse_mm,
