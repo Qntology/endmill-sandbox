@@ -802,12 +802,24 @@ pub fn mechanism_raw(ctx: &CutContext, t_c: f64, stress: f64, slide: f64, duty_r
     mechanism_raw_coat(ctx, &ctx.tool.coating, t_c, stress, slide, duty_ratio, bue, access)
 }
 
+/// 응착(attrition) 마모의 열 활성화. Usui 외 1984 (Wear 100:129) 의 특성 마모식 dW/dt = C·σn·Vs·exp(−λ/θ) 는 응착 이론에서 유도해 초경–강
+/// 절삭으로 검증한 식이다 — 접촉면의 결합(용착)이 온도로 활성화되므로 응착 몫도 확산 몫과 같은 활성화 상수(`arrhenius`, 강 7,500 K · 877 °C 위
+/// 21,000 K — Usui 의 λ 5,302 K · 1,150 K 위 21,950 K 와 같은 구조)를 따른다. 예전에는 확산 몫(강 45 %)만 온도를 따라 Taylor 기울기
+/// d ln T / d ln Vc 가 −1.8~−2.5 였다 (AISI 1018 무코팅 초경 실측 −2.15~−2.8, Karandikar 외 2013·2021). 알루미늄·CFRP 의 응착은 구성인선·윤활이 정하고
+/// (`bue_risk`, `lubricant_access`) 온도와 함께 늘지 않아 1
+pub fn adhesion_activation(wp: &WorkpieceProps, t_c: f64) -> f64 {
+    match wp.chem {
+        WpChem::Iron | WpChem::Titanium | WpChem::Nickel => arrhenius(wp, t_c),
+        _ => 1.0,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn mechanism_raw_coat(ctx: &CutContext, coat: &CoatingTribology, t_c: f64, stress: f64, slide: f64, duty_ratio: f64, bue: f64, access: f64) -> [f64; 4] {
     let p = pair_coat(coat, &ctx.wp, t_c);
     [
         stress * slide * p.abrasion,
-        stress * slide * p.adhesion * (1.0 + bue) * (1.0 - 0.6 * access.clamp(0.0, 1.0)),
+        stress * slide * p.adhesion * (1.0 + bue) * (1.0 - 0.6 * access.clamp(0.0, 1.0)) * adhesion_activation(&ctx.wp, t_c),
         stress * slide * p.diffusion * arrhenius(&ctx.wp, t_c),
         (0.15 + p.oxidation * oxidation_environment_coat(ctx, coat)) * duty_ratio.max(0.0).sqrt(),
     ]

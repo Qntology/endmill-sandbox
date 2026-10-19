@@ -1466,8 +1466,14 @@ fn coeffs_from_friction(ctx: &CutContext, fr: &tribology::Friction, t_c: f64) ->
     let x = (beta - alpha).clamp((-5f64).to_radians(), 50f64.to_radians());
     let g = |v: f64| 2.0 * v.cos() / (1.0 - v.sin());
     let x0 = 0.55f64.atan() - 6f64.to_radians();
-    // 마찰이 피삭재 기준값(`cut_mu`)에서 코팅으로 조금만 바뀌므로 배수 범위도 좁다 (코팅의 절삭력 효과 0~6 %)
-    let factor = (g(x) / g(x0)).clamp(0.7, 1.3);
+    // 마찰이 피삭재 기준값(`cut_mu`)에서 코팅으로 조금만 바뀌므로 배수 범위도 좁다 (코팅의 절삭력 효과 0~6 %).
+    // 경사각 효과는 따로 둔다: Merchant 전단각 관계 g(β − α) 는 경사 1° 에 kc 를 약 1.9 % 바꿔, 제조사 밀링 식 kc = kc1·hm^−mc·(1 − γ0/100)
+    // (Sandvik Coromant — 1 %/°) 의 두 배다. 그래서 마찰(코팅)의 몫은 소재 기본 경사에서 Merchant 로 보고, 공구 경사가 기본에서 벗어난 몫은
+    // (1 − γ/100) 비로 곱한다 — 기본 경사의 공구(내장 프리셋)는 예전과 같다. 예전에는 경사 0° 인서트가 경사 10° 엔드밀보다 kc +21 %,
+    // 계면 +93 K 로 나와 AISI 1018 수명이 실측보다 더 짧았다
+    let x_ref = (beta - ctx.wp.rake_deg.to_radians()).clamp((-5f64).to_radians(), 50f64.to_radians());
+    let rake_rule = (1.0 - ctx.tool.rake_deg.clamp(-30.0, 30.0) / 100.0) / (1.0 - ctx.wp.rake_deg.clamp(-30.0, 30.0) / 100.0);
+    let factor = (g(x_ref) / g(x0) * rake_rule).clamp(0.7, 1.3);
     let phi = PI / 4.0 - x / 2.0;
     let share = (beta.sin() * phi.sin() / ((beta - alpha).cos() * (phi - alpha).cos())).clamp(0.05, 0.8);
     let kc11 = ctx.wp.kc11 * factor * ctx.calib.power;
@@ -1517,22 +1523,58 @@ pub fn boothroyd_partition(x: f64) -> f64 {
     b.clamp(0.03, 0.6)
 }
 
+/// 1차 전단 영역의 평균 온도 상승과 그 열의 공작물 쪽 몫 β (Boothroyd 분배).
+///
+/// 전단면 에너지는 전단 유동 응력 × 전단 변형률 τ·γ (γ = cos α / (sin φ · cos(φ − α)), Merchant·Oxley) 이고, 유동 응력은 Johnson-Cook 식을
+/// 전단면 온도·변형률 속도에서 읽는다 — 온도가 응력을 낮추고 응력이 온도를 정하므로 고정점(이분법)으로 푼다 (Oxley 1989 의 평균 전단면 온도).
+/// 예전에는 Kienzle 비절삭에너지 kc1.1·h^−mc 에서 2차 영역 몫만 빼서 썼다. 이 값에는 칩이 얇을수록 커지는 날끝 밀림 몫(크기효과)이 들어 있어
+/// 58 HRC 볼 정삭(평균 칩 7 µm)의 전단면이 녹는점 가까이(1,400 °C)로 계산되었고, JC 열 연화가 그 근처에서 가팔라 Vc ±15 % 에 kc 가 +12 %/−9 % 로
+/// 흔들렸다 — 그 결과 계면 온도가 속도와 함께 내려갔다 (Dewes 외 1999 의 H13 52 HRC 실측은 속도와 함께 오름). 계면 온도식이 같은 이유로 크기효과를
+/// 자르는 것(`SIZE_EFFECT_MIN_H_MM`)과 같은 물리다: 밀림 에너지는 날끝·플랭크에서 소산되고 전단면을 데우지 않는다. JC 계수가 없는 CFRP 는 예전 식
 pub fn shear_zone(ctx: &CutContext, co: &CuttingCoeffs, vc: f64, h_mm: f64) -> (f64, f64) {
     let h = h_mm.max(1e-4);
     let v = (vc / 60.0).max(1e-3);
-    let u = co.kc11 * h.powf(-co.mc) * 1.0e6;
     let tan_phi = co.shear_angle_deg.to_radians().tan().max(0.05);
-    let eval = |tm: f64| {
+    let t_in = ctx.bulk_c();
+    let partition = |tm: f64| {
         let rho_c = ctx.wp.rho_c_at(tm);
         let rt = (rho_c * v * h * 1e-3 / ctx.wp.k_at(tm)).max(1e-6);
-        let beta = boothroyd_partition(rt * tan_phi);
-        ((1.0 - beta) * (1.0 - co.friction_power_share) * u / rho_c, beta)
+        (rho_c, boothroyd_partition(rt * tan_phi))
     };
-    let t_in = ctx.bulk_c();
-    let (first, _) = eval(t_in);
-    eval(t_in + 0.5 * first)
+    let Some(jc) = ctx.wp.jc else {
+        let u = co.kc11 * h.powf(-co.mc) * 1.0e6;
+        let eval = |tm: f64| {
+            let (rho_c, beta) = partition(tm);
+            ((1.0 - beta) * (1.0 - co.friction_power_share) * u / rho_c, beta)
+        };
+        let (first, _) = eval(t_in);
+        return eval(t_in + 0.5 * first);
+    };
+    let phi = co.shear_angle_deg.to_radians().clamp(0.1, 1.3);
+    let alpha = ctx.tool.rake_deg.to_radians();
+    let gamma = (alpha.cos() / (phi.sin() * (phi - alpha).cos()).max(0.05)).clamp(0.5, 8.0);
+    let eps = gamma / 3f64.sqrt();
+    let rate = shear_strain_rate(co, ctx.tool.rake_deg, vc, h);
+    let rise_at = |ts: f64| {
+        let (rho_c, beta) = partition(ts);
+        let tau = jc.flow_stress(eps, rate, ts).max(0.0) / 3f64.sqrt() * 1.0e6;
+        ((1.0 - beta) * tau * gamma / rho_c, beta)
+    };
+    // T = t_in + 상승(T) 의 해: 상승은 T 에 대해 줄어들므로 [t_in, 녹는점] 에서 이분법
+    let (mut lo, mut hi) = (t_in, jc.t_melt_c.max(t_in + 1.0));
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if t_in + rise_at(mid).0 > mid {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let ts = 0.5 * (lo + hi);
+    (ts - t_in, rise_at(ts).1)
 }
 
+/// 기준 상태(소재 기준 속도·칩) 대비 전단 유동 응력의 비 — 전단면 온도의 열 연화 × 변형률 속도 경화 (`shear_zone`)
 pub fn softening_factor(ctx: &CutContext, co: &CuttingCoeffs, vc: f64, h_mm: f64) -> f64 {
     let state = |v: f64, h: f64| {
         let (rise, _) = shear_zone(ctx, co, v, h);
@@ -2078,6 +2120,16 @@ pub fn substrate_softening(ctx: &CutContext, t_c: f64) -> f64 {
     }
 }
 
+/// 플랭크 마모 랜드의 기하 배수. 마모 랜드는 절삭 방향과 나란한 면이라 마모식(Usui 형 dW/dt = C·σn·Vs·exp(−λ/θ))이 주는 것은 그 면에 수직인
+/// 마모 깊이, 곧 날끝의 반경 후퇴 KE 의 속도다. VB 는 그 투영 VB = KE / radial_per_vb (Kronenberg) 이므로 같은 마찰 조건에서 VB 성장 속도는
+/// radial_per_vb 에 반비례한다 — 여유각 15° 공구는 8° 공구보다 VB 가 약 절반 속도로 자라고, 치수 손실(반경 후퇴) 속도는 같다.
+/// 마모율의 앵커는 소재 기본 여유·경사의 기준 공구(`reference_setup`)라 그 비로 곱한다. 예전에는 여유각이 VB 속도에 들어가지 않고,
+/// 용도 적합도 창 밖일 때만 마모 배수로 들어갔다 (`appfit` — 큰 여유각은 쐐기각으로 판정하도록 같이 바꿈)
+pub fn flank_geometry_factor(ctx: &CutContext) -> f64 {
+    let reference = radial_per_vb(ctx.wp.clearance_deg, ctx.wp.rake_deg);
+    (reference / ctx.tool.radial_per_vb().max(1e-6)).clamp(0.3, 3.0)
+}
+
 fn bare_coating() -> &'static CoatingTribology {
     static BARE: std::sync::OnceLock<CoatingTribology> = std::sync::OnceLock::new();
     BARE.get_or_init(|| tribology_from_name(Some("uncoated")))
@@ -2122,7 +2174,7 @@ pub fn wear_at(ctx: &CutContext, f: &ForceResult, th: &ThermalResult, vc: f64, f
     let rf = (1.0 + 2.0 * ctx.tool.runout_ecc_mm() / fz.max(1e-4)).powf(1.0 - ctx.wp.mc).min(2.0);
     let evac = 1.0 + 0.3 * (1.0 - ctx.coolant.chip_evacuation()) * (0.3 + 0.7 * chip_confinement(eng));
     let base_rate = 0.2 / ctx.wp.ref_life_min.max(1.0);
-    let rate = base_rate * mech * rf * ctx.tool.base_wear_factor * ctx.tool.fit_wear.max(1.0) * evac * ctx.calib.wear * (1.0 + 1.5 * th.thermal_crack_risk) * substrate_softening(ctx, th.interface_c);
+    let rate = base_rate * mech * rf * ctx.tool.base_wear_factor * ctx.tool.fit_wear.max(1.0) * evac * ctx.calib.wear * (1.0 + 1.5 * th.thermal_crack_risk) * substrate_softening(ctx, th.interface_c) * flank_geometry_factor(ctx);
     let limit = ctx.vb_limit_mm();
     let (mechanisms, dominant) = tribology::mechanism_report(&reference.shares, &parts);
     WearResult {

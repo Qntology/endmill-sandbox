@@ -7,13 +7,13 @@ rem  The wrapper sets up the toolchain, BACKEND (cuda/rocm/vulkan/cpu), FEAT (ca
 rem  ENDMILL_DEVICE, then calls this file. Do not run this file directly.
 rem
 rem  The cutting simulation (forces, heat, wear, tool life, tool x material N:N matrix) runs on the CPU for
-rem  every backend, so steps 02-14 must give the same results everywhere. The backend changes only the ML
+rem  every backend, so steps 02-14 and 17 must give the same results everywhere. The backend changes only the ML
 rem  parts (SigLIP2 wear images, ModernBERT/laya, TTM forecasts); steps 15-16 compare those with the CPU.
 rem
 rem  Every step writes its own log:  test_logs\<timestamp>_<backend>\NN_name.log
 rem  Failures do not stop the run. At the end:
 rem    summary.log     exit code and duration of every step, test results, cross-check counts
-rem    highlights.log  every cross-check line ([EOL] [MATRIX] [MATRIX-CHECK] [AUDIT] [UNKNOWN] [GPU] ...)
+rem    highlights.log  every cross-check line ([EOL] [MATRIX] [MATRIX-CHECK] [AUDIT] [UNKNOWN] [GPU] [BENCH] ...)
 rem    wear_logs\      CSV/JSON job logs written by this run (also mirrored to the app's wear_logs folder)
 rem    matrix\         tool x material N:N matrix CSV/JSON per path and the physical check results
 rem    manifest.txt    every file this run produced
@@ -159,6 +159,11 @@ if /i "%BACKEND%"=="vulkan" (
 ) else (
     >>"%SUMMARY%" echo 16_vulkan_backend: skipped - vulkan only
 )
+
+rem ---- 17: literature benchmark - the tools, materials and cutting conditions of the cited papers moved into the sandbox ----
+rem      data (13 paper tools + 8 built-in tools x 16 paper conditions) and compared with what the papers measured
+rem      ([BENCH] comparison lines, [BENCH-SUM] per quantity, [BENCH-GRID] life grid; see docs\literature-benchmark.md)
+call :run 17 literature_bench    "%CT% --test literature_benchmark --no-fail-fast -- --nocapture --test-threads=1"
 
 rem ---- mirror this run's wear logs into the app folder (the app lists them there) ----
 if exist "%LOGDIR%\wear_logs\*" (
