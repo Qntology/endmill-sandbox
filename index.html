@@ -767,6 +767,7 @@
 		}
 		.gcode-console .gc-line { white-space: pre; padding: 0 6px; margin: 0 -6px; border-radius: 3px; }
 		.gcode-console .gc-line:hover { background: var(--bg-hover); }
+		.gcode-console .gc-line.gc-q { background: var(--bg-hover); box-shadow: inset 3px 0 0 var(--warning); }
 		.gcode-console .gc-comment { color: var(--text-muted); }
 		.gcode-console .gc-warning { color: var(--warning); }
 
@@ -1012,6 +1013,7 @@
 		.choice-bar { height: 3px; background: var(--plot-grid-strong); border-radius: 2px; margin-top: 5px; overflow: hidden; max-width: 260px; }
 		.choice-bar span { display: block; height: 100%; background: var(--violet); }
 		.choice-confirm { margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--alert); border-radius: var(--radius); font-size: 0.7rem; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+		.choice-confirm[hidden] { display: none; }
 		.choice-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 0.62rem; color: var(--text-muted); }
 		.choice-foot kbd { font-family: var(--font-mono); border: 1px solid var(--border-light); border-radius: 3px; padding: 0 4px; }
 		@media (max-width: 640px) { .choice-opt { grid-template-columns: 22px minmax(0, 1fr); } .choice-badges { grid-column: 2; justify-content: flex-start; max-width: none; } }
@@ -1027,6 +1029,11 @@
 		@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 		@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 		.vt-btn.has-attention { box-shadow: inset 0 -2px 0 var(--alert); }
+		/* 공구 손상 선택 카드 · 품질 저하 (손상 공구로 깎은 최종 벽) — 뷰포트 표시와 보고서 구간표 */
+		.choice-card.damage { border-color: var(--danger); }
+		.q-sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 2px; vertical-align: -1px; }
+		.q-zone-btn { font: inherit; font-size: 0.64rem; padding: 1px 6px; background: var(--bg-input); border: 1px solid var(--border-light); border-radius: var(--radius-sm); color: var(--text); cursor: pointer; white-space: nowrap; }
+		.q-zone-btn:hover, .q-zone-btn:focus-visible { border-color: var(--border-hover); outline: none; }
 		.pv-status { font-family: var(--font-mono); font-size: 0.66rem; color: var(--warning); min-height: 1em; margin-bottom: 8px; }
 		.pv-kv { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(80px, auto); gap: 3px 10px; font-size: 0.72rem; }
 		.pv-kv .k { color: var(--text-dim); }
@@ -1422,6 +1429,7 @@
 	        <button class="vt-btn active" id="tg-heat" onclick="vpToggle('heat')">열·응력</button>
 	        <button class="vt-btn active" id="tg-depth" onclick="vpToggle('depth')" title="가공 깊이를 피삭재별 색상 깊이·등고선·작은 점으로 표시">깊이</button>
 	        <button class="vt-btn active" id="tg-wear" onclick="vpToggle('wear')" title="공구 날·높이별 마모 깊이(반경 손실)를 표시">마모</button>
+	        <button class="vt-btn active" id="tg-quality" onclick="vpToggle('quality')" title="손상 공구(수명 한계 넘김 · 치핑 위험 · 3차 마모)로 깎은 최종 벽을 색으로 표시 — 노랑 · 주황 · 빨강">품질</button>
 	        <div class="vt-sep"></div>
 	        <span class="vt-label">시점</span>
 	        <button class="vt-btn" onclick="fitViewport()">⊞ 피트</button>
@@ -2470,7 +2478,8 @@
 	  t: 0, playing: false, speed: 0, lastTs: 0, raf: null,
 	  segStart: [], segEnd: [], segFrom: [], total: 0, timelineFromSim: false,
 	  sim: null, simKey: '', simSeq: 0, combinedKey: '', pass2Start: -1, dwellIndex: -1, pass1End: 0, pass2T0: 0,
-	  show: { tool: true, coolant: true, heat: true, depth: true, wear: true },
+	  show: { tool: true, coolant: true, heat: true, depth: true, wear: true, quality: true },
+	  qualityFocus: -1,
 	  particles: [], spin: 0, partTs: 0, depthPrep: null, wearRef: null, reach: null,
 	};
 	const VP_RAPID_MM_MIN = 15000;
@@ -3008,6 +3017,8 @@
 	  if (lgDepth) lines.push(lgDepth);
 	  const lgWear = vpLegendWear();
 	  if (lgWear) lines.push(lgWear);
+	  const lgQuality = vpLegendQuality(VP.t);
+	  if (lgQuality) lines.push(lgQuality);
 	  if (cutting) {
 	    lines.push(`접촉 중 · 절삭력 <b>${fmt(sample.force_n, 0)}</b> N (피크 ${fmt(sample.force_peak_n, 0)}) · 맞물림 ${fmt(sample.engage_deg, 0)}°`);
 	    lines.push(`날끝 <b>${fmt(sample.temp_c, 0)}</b> °C · 절삭 지점 소재 <b>${fmt(sample.wp_local_c, 0)}</b> °C (예열 ${fmt(sample.preheat_c, 1)} K) · 입열 ${fmt(sample.wp_heat_w, 0)} W`);
@@ -3808,12 +3819,14 @@
 	    { t: '실측/예측', f: r => r.measured_ratio === null || r.measured_ratio === undefined ? '-' : '×' + fmt(r.measured_ratio, 2) },
 	  ], d.records.slice(0, 48));
 	  const ev = pvTable([
-	    { t: '종류', f: e => esc({ pass1: '1차 누적', pass2: '2차 누적', measure: '실측 고정', reset: '리셋', geometry_change: '사양 변경 은퇴', change_pending: '교체 대기' }[e.kind] || e.kind) },
+	    { t: '종류', f: e => esc({ pass1: '1차 누적', pass2: '2차 누적', measure: '실측 고정', reset: '리셋', geometry_change: '사양 변경 은퇴', change_pending: '교체 대기', superseded: '대체 (1차 되돌림)', failure: '파손 은퇴', chipping: '치핑 은퇴', tlm_expired: '수명 관리 만료', life_end: '수명 판정 교체' }[e.kind] || e.kind) },
 	    { t: 'VB 전→후', f: e => `${fmt(e.vb_before_mm, 4)} → ${fmt(e.vb_after_mm, 4)}` },
 	    { t: '누적 절삭 분', f: e => fmt(e.cut_min_after, 2) }, { t: '출처', f: e => esc(e.source) }, { t: '메모', f: e => esc(e.note) },
 	  ], d.events);
+	  const ql = d.summary && d.summary.quality_loss;
+	  const qsec = ql && ql.degraded_points ? `<div class="ct-sec">품질 저하 — 손상 공구로 깎은 최종 벽</div><div class="pv-log">${(ql.notes || []).map(esc).join('\n')}</div>${qualityZoneTable(ql, false)}` : '';
 	  el.innerHTML = `<div class="ts-head"><b>가공 기록 프로젝트 #${j.id}</b> · ${esc(j.name)}</div><div class="pv-log">${esc(j.report_line)}</div>
-	    <div class="ct-sec">1차 · 2차 기록</div>${passes}<div class="ct-sec">절삭 영역 기록 (이후 비슷한 절삭의 참조값)</div>${recs}<div class="ct-sec">공구 누적 이벤트</div>${ev}`;
+	    <div class="ct-sec">1차 · 2차 기록</div>${passes}${qsec}<div class="ct-sec">절삭 영역 기록 (이후 비슷한 절삭의 참조값)</div>${recs}<div class="ct-sec">공구 누적 이벤트</div>${ev}`;
 	}
 
 	let VIZ_DIRTY = false;
@@ -3865,6 +3878,178 @@
 	  if (!VP.playing) renderViewport();
 	}
 
+	// ---- 품질 저하 — 손상 공구(수명 한계 넘김 · 치핑 위험 · 3차 마모)로 깎은 최종 벽 ----------------------
+	// 점은 깎인 시간순이라 재생 시점까지만 그린다. 구간 이름표(Q1, Q2 …)는 보고서 구간표와 같은 번호 — 구간 하나는 같은 벽면에서 이어진 곳
+	const QUALITY_SEV = {
+	  1: { color: UI.warning, label: '수명 한계(VB)를 넘긴 공구', short: '수명 한계 넘김' },
+	  2: { color: '#ff7a33', label: '치핑 위험 공구', short: '치핑 위험' },
+	  3: { color: UI.danger, label: '3차(가속) 마모 공구', short: '3차 마모' },
+	};
+
+	function vpQuality() {
+	  const q = VP.sim && VP.sim.quality;
+	  return q && q.points && q.points.length ? q : null;
+	}
+
+	function vpQualityAnchors(q) {
+	  if (q._anchors) return q._anchors;
+	  q._anchors = (q.zones || []).map((z, i) => {
+	    const p = q.points.find(x => x.zone === i);
+	    if (p) return { x: p.x, y: p.y, z: p.z, t: p.t_s };
+	    return { x: (z.x_min + z.x_max) / 2, y: (z.y_min + z.y_max) / 2, z: (z.z_min + z.z_max) / 2, t: z.t_from_s };
+	  });
+	  return q._anchors;
+	}
+
+	function vpDrawQuality(ctx, t) {
+	  const q = vpQuality();
+	  if (!VP.show.quality || !q) return;
+	  const lim = VP.pass1End > 0 ? Math.min(t, VP.pass1End) : t;
+	  const focus = VP.qualityFocus >= 0 && VP.qualityFocus < (q.zones || []).length ? VP.qualityFocus : -1;
+	  const fills = {}, dims = {};
+	  Object.keys(QUALITY_SEV).forEach(k => { fills[k] = uiAlpha(QUALITY_SEV[k].color, 0.9); dims[k] = uiAlpha(QUALITY_SEV[k].color, 0.3); });
+	  ctx.save();
+	  for (const p of q.points) {
+	    if (p.t_s > lim) break;
+	    const o = tpProject(p.x, p.y, p.z);
+	    const on = focus < 0 || p.zone === focus;
+	    const s = (p.severity >= 3 ? 5 : p.severity >= 2 ? 4.4 : 3.8) * (focus >= 0 && on ? 1.4 : 1);
+	    ctx.fillStyle = (on ? fills : dims)[p.severity] || fills[1];
+	    ctx.fillRect(o.px - s / 2, o.py - s / 2, s, s);
+	  }
+	  ctx.font = `600 10px ${UI.mono}`;
+	  ctx.textBaseline = 'middle';
+	  ctx.lineWidth = 1;
+	  const placed = [];
+	  vpQualityAnchors(q).forEach((a, i) => {
+	    if (a.t > lim || (focus >= 0 && i !== focus) || placed.length >= 24) return;
+	    const o = tpProject(a.x, a.y, a.z);
+	    if (placed.some(b => Math.abs(b[0] - o.px) < 26 && Math.abs(b[1] - o.py) < 14)) return;
+	    placed.push([o.px, o.py]);
+	    const z = q.zones[i];
+	    const txt = `Q${i + 1}`;
+	    const w = ctx.measureText(txt).width + 8;
+	    ctx.fillStyle = uiAlpha(UI.plot, 0.88);
+	    ctx.fillRect(o.px + 6, o.py - 17, w, 14);
+	    ctx.strokeStyle = (QUALITY_SEV[z.severity] || QUALITY_SEV[1]).color;
+	    ctx.strokeRect(o.px + 6, o.py - 17, w, 14);
+	    ctx.fillStyle = UI.text;
+	    ctx.fillText(txt, o.px + 10, o.py - 10);
+	  });
+	  ctx.restore();
+	}
+
+	function qualityRaText(z) {
+	  const fresh = z.ra_fresh_mean_um > 0 ? ` (새 날 ${fmt(z.ra_fresh_mean_um, 2)} · ×${fmt(z.ra_ratio, 2)})` : '';
+	  return `Ra ${fmt(z.ra_mean_um, 2)} µm${fresh}`;
+	}
+
+	function vpLegendQuality(t) {
+	  const q = vpQuality();
+	  if (!VP.show.quality || !q) return '';
+	  const used = [1, 2, 3].filter(k => (q.zones || []).some(z => z.severity === k));
+	  const sw = k => `<span class="q-sw" style="background:${QUALITY_SEV[k].color}"></span>${esc(QUALITY_SEV[k].label)}`;
+	  let s = `<b>품질 저하</b> — 손상 공구로 깎은 최종 벽 ${q.degraded_points}점 (${fmt(q.degraded_fraction * 100, 0)}%) · 벽 ${(q.zones || []).length}곳<br>${used.map(sw).join(' ')}`;
+	  const zi = VP.qualityFocus >= 0 ? VP.qualityFocus : (q.zones || []).findIndex(z => t >= z.t_from_s && t <= z.t_to_s);
+	  const z = (q.zones || [])[zi];
+	  if (z) {
+	    s += `<br>${VP.qualityFocus >= 0 ? '선택한 벽' : '지금 깎는 벽'} <b>Q${zi + 1}</b> · ${esc(z.wall_dir)} 쪽 벽 · 한계 넘어 덜 깎임 +${fmt(z.extra_wear_um, 1)} µm · ${qualityRaText(z)}`;
+	  }
+	  return s;
+	}
+
+	// 보고서 구간표의 '보기' — 뷰포트에서 그 벽을 다 깎은 시점으로 이동하고 그 구간만 강조 (다시 누르면 강조 해제)
+	function vpShowQualityZone(i) {
+	  if (JOB.result && VP.combinedKey !== JOB.result.key) jobApply(JOB.result, { autoplay: false, quiet: true });
+	  const q = vpQuality();
+	  const z = q && q.zones[i];
+	  if (!z) return;
+	  compShow(false);
+	  animPause();
+	  if (!VP.show.quality) vpToggle('quality');
+	  VP.qualityFocus = VP.qualityFocus === i ? -1 : i;
+	  VP.t = Math.min(z.t_to_s, VP.total);
+	  renderViewport();
+	  gcodeMarkQuality(VP.qualityFocus >= 0 ? z : null);
+	  const g = gcodeRange(gcodeSegN(JOB.result), z);
+	  appendLog(`품질 저하 Q${i + 1} — ${esc(z.label)} · ${esc(z.wall_dir)} 쪽 벽 · X ${fmt(z.x_min, 1)}~${fmt(z.x_max, 1)} Y ${fmt(z.y_min, 1)}~${fmt(z.y_max, 1)} Z ${fmt(z.z_min, 2)}~${fmt(z.z_max, 2)} mm${g ? ' · G-code ' + g.text : ''}${VP.qualityFocus >= 0 ? ' — 깎은 시점으로 이동 (뷰포트·G-code 강조)' : ' — 강조 해제'}`);
+	}
+
+	// 1차 G-code 의 이동 줄(G00~G03)은 경로 세그먼트와 1:1 (같은 세그먼트 생성기) — 세그먼트 k 의 N 번호
+	function gcodeSegN(r) {
+	  if (!r || !r.program1 || !r.program1.text) return null;
+	  if (!r._segN) {
+	    r._segN = [];
+	    r.program1.text.split('\n').forEach(l => { const m = /^N(\d+)\s+G0[0-3]\b/.exec(l); if (m) r._segN.push(+m[1]); });
+	  }
+	  return r._segN;
+	}
+
+	function gcodeRange(segN, z) {
+	  if (!segN || !segN.length) return null;
+	  const a = segN[Math.min(z.seg_from, segN.length - 1)], b = segN[Math.min(z.seg_to, segN.length - 1)];
+	  return { a, b, text: `N${String(a).padStart(4, '0')}${b !== a ? '–N' + String(b).padStart(4, '0') : ''}` };
+	}
+
+	// 품질 저하 구간을 깎은 1차 G-code 줄을 G-code 창에서 강조하고 그 자리로 스크롤
+	function gcodeMarkQuality(z) {
+	  const out = document.getElementById('gcode-output');
+	  if (!out) return;
+	  out.querySelectorAll('.gc-line.gc-q').forEach(el => el.classList.remove('gc-q'));
+	  const g = z && gcodeRange(gcodeSegN(JOB.result), z);
+	  if (!g) return;
+	  let first = null;
+	  out.querySelectorAll('[data-n1]').forEach(el => {
+	    const n = +el.dataset.n1;
+	    if (n >= g.a && n <= g.b) { el.classList.add('gc-q'); if (!first) first = el; }
+	  });
+	  if (first) first.scrollIntoView({ block: 'nearest' });
+	}
+
+	// 범위가 한 값이면 그 값만 (벽 방향의 좌표는 보통 하나)
+	function qualityRange(a, b, d) {
+	  return Math.abs(b - a) < 0.5 * Math.pow(10, -d) ? fmt(a, d) : `${fmt(a, d)}~${fmt(b, d)}`;
+	}
+
+	function qualityZoneTable(q, nav, segN) {
+	  return pvTable([
+	    { t: '구간', f: z => nav ? `<button type="button" class="q-zone-btn" onclick="vpShowQualityZone(${z.i})" title="뷰포트에서 이 벽을 깎은 시점으로 이동하고 강조">Q${z.i + 1} 보기</button>` : `Q${z.i + 1}` },
+	    { t: '원인', f: z => { const s = QUALITY_SEV[z.severity] || QUALITY_SEV[1]; return `<span title="${esc(z.label)}"><span class="q-sw" style="background:${s.color}"></span>${esc(s.short)}</span>`; }, nw: true },
+	    { t: '벽', f: z => `${esc(z.wall_dir || '-')} 쪽`, nw: true },
+	    { t: '위치 mm', f: z => `X ${qualityRange(z.x_min, z.x_max, 1)} · Y ${qualityRange(z.y_min, z.y_max, 1)} · Z ${qualityRange(z.z_min, z.z_max, 2)}`, nw: true },
+	    { t: '벽 길이', f: z => `${fmt(z.len_mm, 1)} mm`, nw: true },
+	    { t: 'G-code (1차)', f: z => { const g = gcodeRange(segN, z); return g ? g.text : `seg ${z.seg_from}–${z.seg_to}`; }, nw: true },
+	    { t: '공구 · 시간', f: z => `#${z.tool_no} · ${fmt(z.t_from_s, 1)}–${fmt(z.t_to_s, 1)} s`, nw: true },
+	    { t: '수명 · 치핑 P', f: z => `${fmt(z.life_used_max * 100, 0)}% · ${fmt(z.chip_p_max * 100, 0)}%`, nw: true },
+	    { t: '치수 — 한계 넘어 덜 깎임', f: z => `<span class="${z.extra_wear_um > 0 ? 'sev-2' : ''}">+${fmt(z.extra_wear_um, 1)} µm</span> (반경 마모 ${fmt(z.wear_um_max, 1)})`, nw: true },
+	    { t: '조도 — 깎인 그대로 / 새 날', f: z => `<span class="${z.ra_ratio > 1.15 ? 'sev-2' : ''}">${fmt(z.ra_mean_um, 2)} / ${fmt(z.ra_fresh_mean_um, 2)} µm (×${fmt(z.ra_ratio, 2)})</span>`, nw: true },
+	    { t: '벽 위치 오차 (전체·참고)', f: z => `${fmt(z.wall_err_max_um, 1)} µm`, nw: true },
+	  ], (q.zones || []).slice(0, 80).map((z, i) => Object.assign({ i }, z)));
+	}
+
+	function compQualityCard(r) {
+	  const q = r.view && r.view.quality;
+	  const dmg = r.damage_choice;
+	  if (!q || (!q.degraded_points && !dmg)) return '';
+	  const title = '<h4>품질 저하 — 손상 공구로 깎은 최종 벽 (어느 벽 · 치수 · 조도)</h4>';
+	  if (!q.degraded_points) {
+	    return `<div class="pv-card" style="margin-bottom:10px;">${title}<div class="ts-note">멈춘 지점까지는 수명 한계 안의 공구로 깎아 손상 공구로 깎은 최종 벽이 없습니다. '손상 공구로 끝까지'를 고르면 남은 경로를 그 공구로 깎고, 품질이 떨어진 벽을 여기와 뷰포트 '품질' 표시에 보여 줍니다.</div></div>`;
+	  }
+	  const chip = (k, v, cls) => `<span class="pv-chip"><span class="k">${esc(k)}</span><span class="v${cls ? ' ' + cls : ''}">${v}</span></span>`;
+	  const worst = Math.max(...(q.zones || []).map(z => z.severity), 1);
+	  const ratio = Math.max(...(q.zones || []).map(z => z.ra_ratio || 1), 1);
+	  const head = `<div class="pv-row">${[
+	    chip('최종 벽', `${q.final_points}점`),
+	    chip('손상 공구로 깎음', `${q.degraded_points}점 · ${fmt(q.degraded_fraction * 100, 0)}%`, worst >= 2 ? 'sev-2' : 'sev-1'),
+	    chip('벽', `${(q.zones || []).length}곳`),
+	    chip('한계 넘어 덜 깎임 최대', `+${fmt(q.worst_extra_wear_um, 1)} µm`, q.worst_extra_wear_um > 0 ? 'sev-2' : ''),
+	    chip('Ra 최대 (새 날 대비)', `${fmt(q.worst_ra_um, 2)} µm · ×${fmt(ratio, 2)}`, ratio > 1.15 ? 'sev-2' : ''),
+	    chip('정상 공구로 깎은 벽', q.good_points ? `${q.good_points}점 · Ra ${fmt(q.good_ra_mean_um, 2)} µm` : '없음'),
+	  ].join('')}</div>`;
+	  const notes = (q.notes || []).map(n => `<div class="ts-note">${esc(n)}</div>`).join('');
+	  return `<div class="pv-card" style="margin-bottom:10px;">${title}${head}${qualityZoneTable(q, true, gcodeSegN(r))}${notes}<div class="ts-note">뷰포트의 '품질' 표시를 켜면 이 벽들이 재생 시점에 맞춰 색으로 보입니다 (노랑 수명 한계 넘김 · 주황 치핑 위험 · 빨강 3차 마모). 'Q 보기'를 누르면 그 벽만 강조합니다.</div></div>`;
+	}
+
 	function renderViewport(dtReal) {
 	  const canvas = document.getElementById('tp-canvas');
 	  const ctx = canvas.getContext('2d');
@@ -3896,6 +4081,7 @@
 	    scaleMax = Math.max(30, Math.min(600, 1.2 * Math.max(VP.sim.max_preheat_c || 0, field ? Math.min(field.peak, 600) : 0)));
 	    vpDrawHeat(ctx, field, scaleMax);
 	  }
+	  if (VP.sim) vpDrawQuality(ctx, t);
 	  const pose = vpPose(t);
 	  const sample = vpSampleAt(t);
 	  if (VP.show.tool) vpDrawTool(ctx, pose);
@@ -3999,7 +4185,7 @@
 	}
 
 	function vpSaveUi() {
-	  invoke('settings_set_ui', { ui: { anim_speed: VP.speed, show_tool: VP.show.tool, show_coolant: VP.show.coolant, show_heat: VP.show.heat, show_depth: VP.show.depth, show_wear: VP.show.wear } }).catch(() => {});
+	  invoke('settings_set_ui', { ui: { anim_speed: VP.speed, show_tool: VP.show.tool, show_coolant: VP.show.coolant, show_heat: VP.show.heat, show_depth: VP.show.depth, show_wear: VP.show.wear, show_quality: VP.show.quality } }).catch(() => {});
 	}
 
 	const JOB = { id: 0, key: '', result: null, running: false, stale: false };
@@ -4129,7 +4315,8 @@
 	  const gcOut = document.getElementById('gcode-output');
 	  const line = l => `<div class="gc-line${l.includes('(') ? ' gc-comment' : ''}">${esc(l)}</div>`;
 	  const label = COMP_LABEL[r.comp.decision.final_action] || '';
-	  let html = `<div class="gc-comment">; ===== 1차 가공 — 생성된 G-code 그대로 실행 (${esc(r.program1.program_name)}) =====</div>` + r.program1.text.split('\n').map(line).join('');
+	  const line1 = l => { const m = /^N(\d+)\s/.exec(l); return `<div class="gc-line${l.includes('(') ? ' gc-comment' : ''}"${m ? ` data-n1="${+m[1]}"` : ''}>${esc(l)}</div>`; };
+	  let html = `<div class="gc-comment">; ===== 1차 가공 — 생성된 G-code 그대로 실행 (${esc(r.program1.program_name)}) =====</div>` + r.program1.text.split('\n').map(line1).join('');
 	  if (r.comp.program_text) {
 	    html += `<div class="gc-comment">; ===== 2차 보정 — ${esc(label)} · 1차 종료 후 별도 실행 (${esc(r.comp.program_name)}) =====</div>` + r.comp.program_text.split('\n').map(line).join('');
 	  } else {
@@ -4146,6 +4333,7 @@
 	function jobApply(r, opts) {
 	  opts = opts || {};
 	  JOB.result = r;
+	  VP.qualityFocus = -1;
 	  if (r.calc) {
 	    APP.calc = r.calc;
 	    document.getElementById('calc-result').classList.remove('hidden');
@@ -4162,7 +4350,8 @@
 	  compRender(r);
 	  document.getElementById('vt-comp').disabled = false;
 	  compAttentionMark(r);
-	  if (!opts.quiet && !opts.chosen) compNotify(r);
+	  if (!opts.quiet && !opts.chosen && !r.damage_choice) compNotify(r);
+	  if (!opts.quiet && !r.replan) damageNotify(r);
 	  document.getElementById('vp-info').textContent = `세그먼트: ${(r.segments || []).length}${VP.pass2Start >= 0 ? ' + 2차 ' + (r.segments2 || []).length : ''} | 가공 시간 ${fmt(VP.total, 1)} s | X:${tpMaxX.toFixed(0)} Y:${tpMaxY.toFixed(0)} Z:${tpMinZ.toFixed(1)}~${tpMaxZ.toFixed(1)}`;
 	  if (!opts.quiet) {
 	    (r.view.warnings || []).forEach(w => appendLog('⚠ ' + esc(w)));
@@ -4173,6 +4362,9 @@
 	    (r.comp.notes || []).forEach(n => appendLog('2차: ' + esc(n)));
 	    if (r.files && r.files.length) appendLog(`마모 로그·분포 저장: ${r.files.map(esc).join(', ')}`);
 	    (r.records || []).forEach(l => appendLog(esc(l)));
+	    if (r.damage_choice) appendLog(`⚠ 공구 손상: ${esc(r.damage_choice.question)}`);
+	    const ql = r.view && r.view.quality;
+	    if (ql && ql.degraded_points) (ql.notes || []).forEach(n => appendLog('품질: ' + esc(n)));
 	  }
 	  toolPanelRefresh();
 	  if (document.getElementById('comp-view').classList.contains('visible')) jobListRefresh();
@@ -4381,7 +4573,7 @@
 	      <button class="btn btn-sm btn-outline" onclick="compRerun()">다시 계산 후 재생</button>
 	    </div>`;
 	  const files = `<div class="pv-log">${[...(r.files || []).map(f => '저장: ' + f), ...(r.sds || []), ...(r.stages || []).map(s => `${s[0]} ${fmt(s[1], 2)} s`)].map(esc).join('\n')}</div><div class="pv-row" style="margin-top:6px;"><button class="btn btn-sm btn-outline" onclick="compSave('csv')">마모 로그 CSV 저장</button></div>`;
-	  document.getElementById('comp-body').innerHTML = choiceCardHtml('comp', r.choice) + head + models + `<div class="pv-grid">
+	  document.getElementById('comp-body').innerHTML = choiceCardHtml('damage', r.damage_choice) + choiceCardHtml('comp', r.choice) + head + models + compQualityCard(r) + `<div class="pv-grid">
 	    <div class="pv-card"><h4>결정 근거</h4>${reasons}</div>
 	    <div class="pv-card"><h4>laya-typed-decisions (안전 게이트가 허용한 선택지만 제시 · 보수적 방향만 즉시 채택)</h4>${laya}</div>
 	  </div>
@@ -4406,6 +4598,9 @@
 	  </div>
 	  <div class="pv-card" style="margin-top:10px;"><h4>보정 설정 · 실측 재계획</h4>${form}</div>`;
 	  choiceBind('comp', r.choice, compChoose);
+	  choiceBind('damage', r.damage_choice, damageChoose);
+	  const dmgCard = document.getElementById('choice-damage');
+	  if (dmgCard) dmgCard.classList.add('damage');
 	  compLifeChart(lg);
 	  (lg.histograms || []).forEach((h, i) => { const cv = document.getElementById(`comp-h-${i}`); if (cv) compHist(cv, h); });
 	  const cv = document.getElementById('comp-fc');
@@ -4564,7 +4759,7 @@
 
 	function compAttentionMark(r) {
 	  const b = document.getElementById('vt-comp');
-	  if (b) b.classList.toggle('has-attention', !!(r && r.choice && r.choice.needs_attention));
+	  if (b) b.classList.toggle('has-attention', !!(r && ((r.choice && r.choice.needs_attention) || (r.damage_choice && r.damage_choice.needs_attention))));
 	}
 
 	function compNotify(r) {
@@ -4583,6 +4778,73 @@
 	  });
 	}
 
+	// 공구 손상으로 1차가 멈추면 알림 — 선택 카드로 이어 가기(예비 공구 · 손상 공구로 끝까지) 또는 정지
+	function damageNotify(r) {
+	  const c = r && r.damage_choice;
+	  if (!c || !c.needs_attention) return;
+	  const rec = c.options.find(o => o.key === c.recommended) || {};
+	  notify({
+	    key: 'damage-choice',
+	    level: 'err',
+	    title: '공구 손상 — 선택이 필요합니다',
+	    body: `${c.question}\n권장: ${rec.label || c.recommended}`,
+	    actions: [
+	      { label: '선택하기', primary: true, run: () => { compShow(true); setTimeout(() => choiceFocus('damage'), 50); } },
+	      ...(rec.enabled && c.recommended !== 'stop' ? [{ label: '권장대로 진행', run: () => damageChoose(c.recommended) }] : []),
+	    ],
+	  });
+	}
+
+	// 공구 손상 선택 → 같은 부품을 고른 정책으로 다시 계산 (멈춘 지점까지는 같고 그 뒤만 달라짐, 직전 1차 기록은 대체).
+	// '여기서 정지'는 지금 결과를 그대로 두고 선택만 표시
+	async function damageChoose(key) {
+	  const r = JOB.result;
+	  const c = r && r.damage_choice;
+	  if (!c) return;
+	  const o = c.options.find(x => x.key === key);
+	  if (!o || !o.enabled) return;
+	  if (key === 'stop') {
+	    c.options.forEach(x => { x.chosen = x.key === 'stop'; });
+	    c.needs_attention = false;
+	    c.decided_by = 'operator';
+	    compRender(r);
+	    compAttentionMark(r);
+	    appendLog('공구 손상 선택: 여기서 정지 — 지금 결과를 유지합니다. 공구를 교체(공구 패널의 리셋)한 뒤 다시 계산하세요');
+	    notify({ key: 'damage-choice', level: 'ok', title: '정지 유지', body: '공구를 교체(공구 리셋)한 뒤 다시 계산하세요', timeout: 5000 });
+	    return;
+	  }
+	  animPause();
+	  JOB.running = true;
+	  JOB.stale = false;
+	  prepShow({ pct: 0, label: '공구 손상 선택 반영', log: [] });
+	  let st;
+	  try { st = await invoke('sim_job_continue', { policy: key, overrides: calcOverrides(), key: r.key }); } catch (e) {
+	    JOB.running = false;
+	    prepHide();
+	    appendLog(`공구 손상 선택 반영 실패: ${esc(e)}`);
+	    notify({ key: 'damage-choice', level: 'err', title: '선택을 반영하지 못했습니다', body: String(e), timeout: 8000 });
+	    return;
+	  }
+	  if (!st) { JOB.running = false; prepHide(); return; }
+	  JOB.id = st.id;
+	  JOB.key = st.key;
+	  appendLog(`공구 손상 작업자 선택: ${esc(o.label)} · 작업 #${st.id} — 같은 부품을 고른 정책으로 다시 계산`);
+	  await jobPoll(st.id, { autoplay: true, chosen: true });
+	  const nr = JOB.result;
+	  if (!nr || nr === r || nr.damage_choice) return;
+	  const q = nr.view && nr.view.quality;
+	  if (q && q.degraded_points && !VP.show.quality) vpToggle('quality');
+	  notify({
+	    key: 'damage-choice',
+	    level: q && q.degraded_points ? 'warn' : 'ok',
+	    title: `공구 손상 선택 반영 — ${o.label}`,
+	    body: q && q.degraded_points
+	      ? `손상 공구로 깎은 최종 벽 ${q.degraded_points}점 (${fmt(q.degraded_fraction * 100, 0)}%) · 구간 ${(q.zones || []).length}곳 · 벽 오차 최대 ${fmt(q.worst_wall_um, 1)} µm — 뷰포트 '품질' 표시와 보고서에서 확인`
+	      : '경로를 끝까지 깎았고 손상 공구로 깎은 최종 벽은 없습니다',
+	    actions: q && q.degraded_points ? [{ label: '보고서 보기', primary: true, run: () => compShow(true) }] : [],
+	    timeout: 12000,
+	  });
+	}
 	// 작업자 선택 → 직전 1차 시뮬레이션으로 2차만 다시 계획 (게이트가 막은 선택지는 백엔드가 거절)
 	async function compChoose(key) {
 	  animPause();
@@ -5423,7 +5685,7 @@
 	  document.getElementById('mdl-token').placeholder = s.models.token_set ? '설정됨 (바꾸려면 새 토큰 입력)' : 'hf_... (선택)';
 	  VP.speed = s.ui.anim_speed || 0;
 	  document.getElementById('vt-speed').value = String(VP.speed);
-	  ['tool', 'coolant', 'heat', 'depth', 'wear'].forEach(k => { VP.show[k] = s.ui['show_' + k] !== false; document.getElementById('tg-' + k).classList.toggle('active', VP.show[k]); });
+	  ['tool', 'coolant', 'heat', 'depth', 'wear', 'quality'].forEach(k => { VP.show[k] = s.ui['show_' + k] !== false; document.getElementById('tg-' + k).classList.toggle('active', VP.show[k]); });
 	  document.getElementById('sb-env').textContent = `${fmt(e.ambient_c, 1)} °C · ${fmt(e.humidity_pct, 0)} %`;
 	  if (!VIZ_DIRTY) vizRender();
 	}

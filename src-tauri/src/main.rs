@@ -113,6 +113,7 @@ fn main() {
             commands::sim_job_start,
             commands::sim_job_replan,
             commands::sim_job_choose,
+            commands::sim_job_continue,
             commands::sim_job_status,
             commands::sim_job_result,
             commands::sim_job_cancel,

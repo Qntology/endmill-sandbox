@@ -226,6 +226,8 @@ pub fn trim_sim(r: &LoadSimReport) -> LoadSimReport {
         .collect();
     let wstride = ((out.wall_errors.len() + 199) / 200).max(1);
     out.wall_errors = out.wall_errors.iter().step_by(wstride).cloned().collect();
+    let qstride = ((out.quality_loss.points.len() + 299) / 300).max(1);
+    out.quality_loss.points = out.quality_loss.points.iter().step_by(qstride).cloned().collect();
     out.heightmap = shrink_heightmap(&out.heightmap, 160);
     out.floor_error = shrink_heightmap(&out.floor_error, 96);
     out.first_cut = None;

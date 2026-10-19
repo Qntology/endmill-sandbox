@@ -186,7 +186,7 @@ use endmill_model::pipeline::{
     AdaptiveProgram, IngestOptions, IngestOutcome, ModelStatus, Models, ProcessOutcome, Workspace, WorkspaceSummary,
 };
 use endmill_model::profile::{
-    CoolantConfig, EndMillMockupSetting, MachiningProfile, ProfileStore,
+    CoolantConfig, EndMillMockupSetting, MachiningProfile, ProfileStore, ToolLifePolicy,
 };
 use endmill_model::sds::{SdsStatus, SdsStore};
 use endmill_model::timeseries::ForecastResult;
@@ -272,6 +272,9 @@ pub struct UiSettings {
     pub show_depth: bool,
     #[serde(default = "yes")]
     pub show_wear: bool,
+    /// 뷰포트 '품질' — 손상 공구로 깎은 최종 벽 표시
+    #[serde(default = "yes")]
+    pub show_quality: bool,
 }
 
 impl Default for UiSettings {
@@ -283,6 +286,7 @@ impl Default for UiSettings {
             show_heat: true,
             show_depth: true,
             show_wear: true,
+            show_quality: true,
         }
     }
 }
@@ -2976,6 +2980,8 @@ pub struct JobResult {
     pub records: Vec<String>,
     /// 2차 보정 선택 카드 (권장 · 허용 · 막힌 선택지, 알림 이유)
     pub choice: endmill_model::choice::ChoicePrompt,
+    /// 공구 손상으로 1차가 멈췄을 때의 선택 카드 (예비 공구로 이어서 · 손상 공구로 끝까지 · 여기서 정지)
+    pub damage_choice: Option<endmill_model::choice::ChoicePrompt>,
 }
 
 fn job_status(slot: &JobSlot) -> JobStatus {
@@ -3030,6 +3036,10 @@ enum JobMode {
         profile_name: Option<String>,
         pattern: String,
         overrides: CalcOverrides,
+        /// 이번 실행만 쓰는 공구 수명 감시 정책 (공구 손상 선택 카드에서 고른 값 — 프로필은 그대로)
+        policy: Option<ToolLifePolicy>,
+        /// 이 계산이 대체하는 직전 작업 (공구 손상으로 멈춘 같은 부품) — 그 1차 기록을 공구에서 되돌린 뒤 새로 기록
+        supersede: Option<i64>,
     },
     Replan {
         measured_radial_um: Option<f64>,
@@ -3106,17 +3116,22 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
     let mut t0 = std::time::Instant::now();
     let mut opts = lock(&sh.settings).comp.clone();
     let replan = matches!(mode, JobMode::Replan { .. });
+    let mut pre_lines: Vec<String> = Vec::new();
     let chosen = match &mode {
         JobMode::Replan { chosen, .. } => *chosen,
         JobMode::Full { .. } => None,
     };
     let dry_run = lock(&sh.settings).dry_run;
     let (p, pattern, ctx, report, segments, view, calc, calc_error, segs1, program1, prev_action, tracked, parent_job) = match mode {
-        JobMode::Full { profile_name, pattern, overrides } => {
-            if !job_set(sh, id, 1.0, "profile", "프로필·환경 확인") {
+        JobMode::Full { profile_name, pattern, overrides, policy, supersede } => {
+            if !job_set(sh, id, 1.0, "profile", if policy.is_some() { "공구 손상 선택 반영 — 같은 부품을 고른 정책으로 다시 계산" } else { "프로필·환경 확인" }) {
                 return Err(cancelled());
             }
-            let p = profile_by_name(sh, profile_name.as_deref())?;
+            let mut p = profile_by_name(sh, profile_name.as_deref())?;
+            if let Some(pol) = policy {
+                p.machine.tool_life_policy = pol;
+                lock(&sh.job).log.push(format!("이번 계산만 공구 수명 정책: {}", endmill_model::toollife::policy_label(pol)));
+            }
             p.endmill_setting.validate()?;
             if !job_set(sh, id, 3.0, "calc", "1. 계산 실행 — 절삭 조건 계산") {
                 return Err(cancelled());
@@ -3137,6 +3152,13 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
                 let line = format!("물리(MPM·비검증) 보정 적용 — {} ×{:.3} ({})", a.axis, a.factor, a.scope);
                 eprintln!("[JOB {}] {}", id, line);
                 lock(&sh.job).log.push(line);
+            }
+            if let (Some(old), false) = (supersede, dry_run) {
+                let lines = lock(&sh.library).rdb.supersede_job(old, &ctx.tool, ctx.vb_limit_mm())?;
+                for l in lines {
+                    lock(&sh.job).log.push(l.clone());
+                    pre_lines.push(l);
+                }
             }
             let tracked = if dry_run {
                 let mut t = peek_tracked_tool(sh, &p, &mut ctx);
@@ -3173,7 +3195,7 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
                 .as_ref()
                 .filter(|c| endmill_model::wearcomp::wear_scope(&c.profile).key_secondary() == endmill_model::wearcomp::wear_scope(&p).key_secondary())
                 .and_then(|c| c.last_action.clone());
-            (p, pattern, ctx, report, segments, view, calc, calc_error, segs1, program1, prev, tracked, None)
+            (p, pattern, ctx, report, segments, view, calc, calc_error, segs1, program1, prev, tracked, supersede)
         }
         JobMode::Replan { measured_radial_um, .. } => {
             if !job_set(sh, id, 2.0, "cache", if chosen.is_some() { "작업자 선택 반영 — 직전 1차 시뮬레이션 재사용" } else { "재계획 — 직전 1차 시뮬레이션 재사용" }) {
@@ -3310,6 +3332,14 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
     };
     let csv = endmill_model::wearlog::bins_csv(&report.wear_log);
     let stamp = endmill_model::wearcomp::utc_stamp(endmill_model::wearcomp::now_ms());
+    // 손상 공구로 깎은 최종 벽 (벽 구간 · 치수 · 조도) — 뷰포트용 점은 빼고 가공 기록에 남긴다
+    let quality_json = {
+        let mut q = serde_json::to_value(&report.quality_loss).unwrap_or_default();
+        if let Some(o) = q.as_object_mut() {
+            o.remove("points");
+        }
+        q
+    };
     let compact = serde_json::json!({
         "stamp": stamp,
         "profile": p.name,
@@ -3324,8 +3354,12 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         "refs": refs.as_ref().map(|r| r.lines.clone()).unwrap_or_default(),
         "life": log.life,
         "parts_left": { "p50": comp.parts_left_p50, "p90": comp.parts_left_p90, "source": comp.parts_source },
+        "tool_policy": p.machine.tool_life_policy.key(),
+        "supersedes": if replan { None } else { parent_job },
+        "quality_loss": quality_json.clone(),
     });
-    let mut record_lines: Vec<String> = tracked.note.iter().cloned().collect();
+    let mut record_lines: Vec<String> = pre_lines.clone();
+    record_lines.extend(tracked.note.iter().cloned());
     if !job_set(sh, id, 97.0, "record", "6. 가공 기록·공구 상태 저장") {
         return Err(cancelled());
     }
@@ -3393,6 +3427,8 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         "models": { "ttm": models_info.ttm, "laya": models_info.laya },
         "refs": refs,
         "program2": comp.program_text,
+        "tool_policy": p.machine.tool_life_policy.key(),
+        "quality_loss": quality_json,
     });
     let files = endmill_model::wearcomp::save_job_files(&sh.data_dir.join("wear_logs"), &stamp, &p.name, &csv, &summary);
     let mut view = view;
@@ -3457,6 +3493,7 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         refs,
         records: record_lines,
         choice,
+        damage_choice: endmill_model::toollife::damage_choice(&report.tool_life),
     });
     let mut tracked_next = tracked;
     if let Some(row) = tool_after {
@@ -3470,7 +3507,8 @@ fn run_job_inner(sh: &Arc<Shared>, id: u64, mode: JobMode, t_start: std::time::I
         segments,
         result: result.clone(),
         last_action: Some(comp.decision.final_action.key().to_string()),
-        job_id: job_id.or(parent_job),
+        // 재계획만 원 작업을 이어 받는다 — 공구 손상 뒤 다시 계산한 1차는 기록이 없으면(시뮬레이션만) 대체한 작업을 잇지 않음
+        job_id: job_id.or(if replan { parent_job } else { None }),
         tracked: tracked_next,
     });
     Ok(result)
@@ -3518,6 +3556,41 @@ pub fn sim_job_start(
             profile_name,
             pattern: pattern_key,
             overrides: overrides.unwrap_or_default(),
+            policy: None,
+            supersede: None,
+        },
+    ))
+}
+
+/// 공구 손상으로 멈춘 직전 작업을 작업자가 고른 정책(예비 공구로 이어서 · 손상 공구로 끝까지)으로 같은 부품부터 다시 계산한다.
+/// 시뮬레이션은 결정적이라 멈춘 지점까지는 같고 그 뒤만 달라진다. 직전 작업의 1차 기록은 공구 개체에서 되돌린 뒤(대체됨) 새로
+/// 기록한다 (시뮬레이션만 모드에서는 기록이 없어 되돌릴 것도 없음). 선택 카드에서 막힌 선택지(파손 공구로 이어 가기)는 거절
+#[tauri::command]
+pub fn sim_job_continue(state: tauri::State<'_, AppState>, policy: String, overrides: Option<CalcOverrides>, key: Option<String>) -> Result<JobStatus, String> {
+    let sh = state.shared.clone();
+    let pol = ToolLifePolicy::from_key(&policy)
+        .filter(|p| matches!(p, ToolLifePolicy::ChangeTool | ToolLifePolicy::FinishPart))
+        .ok_or_else(|| format!("이어 가기 정책이 아닙니다: {}", policy))?;
+    let (profile_name, pattern, supersede) = {
+        let cache = lock(&sh.job_cache);
+        let c = cache.as_ref().ok_or_else(|| "먼저 재생(계산 실행)으로 1차 시뮬레이션을 만드세요".to_string())?;
+        let choice = endmill_model::toollife::damage_choice(&c.report.tool_life).ok_or_else(|| "직전 1차는 공구 손상으로 멈추지 않았습니다".to_string())?;
+        match choice.options.iter().find(|o| o.key == policy) {
+            Some(o) if o.enabled => {}
+            Some(o) => return Err(format!("'{}' 은 고를 수 없습니다: {}", o.label, o.blocked_by.join(" · "))),
+            None => return Err(format!("알 수 없는 선택: {}", policy)),
+        }
+        (c.profile.name.clone(), c.pattern.clone(), c.job_id)
+    };
+    Ok(start_job(
+        &sh,
+        key.unwrap_or_default(),
+        JobMode::Full {
+            profile_name: Some(profile_name),
+            pattern,
+            overrides: overrides.unwrap_or_default(),
+            policy: Some(pol),
+            supersede,
         },
     ))
 }

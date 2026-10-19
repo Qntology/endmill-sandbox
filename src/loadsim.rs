@@ -371,6 +371,266 @@ pub struct WallErrorSample {
     /// 채터 파상도 산-골 (µm) × 채터 확률 — 치수 공차 밖으로 튀는 국부 자국의 기대 크기
     #[serde(default)]
     pub waviness_um: f64,
+    /// 이 벽을 깎은 공구 (이 작업에서 몇 번째, 1부터)
+    #[serde(default)]
+    pub tool_no: u32,
+    /// 깎을 때의 수명 사용률 (1 = VB 한계)
+    #[serde(default)]
+    pub life_used: f64,
+    /// 깎을 때의 공구 상태: 0 정상 · 1 경고 · 2 수명 한계를 넘김 · 3 3차(가속) 마모
+    #[serde(default)]
+    pub tool_state: u8,
+    /// 깎을 때까지 쌓인 이 공구의 치핑 확률
+    #[serde(default)]
+    pub chip_p: f64,
+    /// 같은 절삭을 새 날(플랭크 마모 없음)로 깎았을 때의 Ra — 마모 배수만 뺀 값
+    #[serde(default)]
+    pub ra_fresh_um: f64,
+}
+
+/// 손상 공구로 깎은 최종 벽의 한 점 (뷰포트 표시용, 내려 표본)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QualityPoint {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub t_s: f64,
+    pub seg: usize,
+    /// 1 수명 한계 넘김 · 2 치핑 위험 · 3 3차(가속) 마모
+    pub severity: u8,
+    /// 이 점이 속한 벽 구간 (`QualityLoss::zones` 의 번호)
+    pub zone: usize,
+    pub wall_um: f64,
+    pub ra_um: f64,
+}
+
+/// 손상 공구로 깎은 최종 벽 한 곳 — 같은 벽면(공구에서 벽 쪽 방향 45° 단위 · 벽 위치)에서 벽을 따라 이어진 구간. 원인 · 위치 · 품질 저하량
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QualityZone {
+    /// past_limit (수명 한계를 넘긴 공구) · chip_risk (치핑 위험) · accelerated (3차 가속 마모)
+    pub cause: String,
+    pub label: String,
+    pub severity: u8,
+    pub tool_no: u32,
+    /// 벽이 공구의 어느 쪽에 있는지 (+X · +X+Y · +Y … 45° 단위)
+    pub wall_dir: String,
+    pub seg_from: usize,
+    pub seg_to: usize,
+    pub t_from_s: f64,
+    pub t_to_s: f64,
+    pub x_min: f64,
+    pub x_max: f64,
+    pub y_min: f64,
+    pub y_max: f64,
+    pub z_min: f64,
+    pub z_max: f64,
+    pub points: usize,
+    /// 벽을 따라 잰 길이 (mm)
+    pub len_mm: f64,
+    pub life_used_max: f64,
+    pub chip_p_max: f64,
+    /// 반경 마모로 덜 깎인 양 최대 (µm) · 그중 수명 한계(VB) 수준을 넘는 몫 — 손상 공구 탓의 치수 손실
+    pub wear_um_max: f64,
+    pub extra_wear_um: f64,
+    /// 벽 위치 오차 최대 (µm, 절댓값 — 휨 · 열 · 런아웃 · 마모를 모두 담은 값, 참고용)
+    pub wall_err_max_um: f64,
+    /// 측벽 Ra (깎인 그대로) 평균·최대 · 같은 절삭을 새 날로 깎았을 때의 평균 · 그 배수
+    pub ra_mean_um: f64,
+    pub ra_max_um: f64,
+    pub ra_fresh_mean_um: f64,
+    pub ra_ratio: f64,
+}
+
+/// 손상 공구로 깎은 곳의 품질 저하 요약 — 최종 벽만 본다 (나중 경로가 다시 깎은 벽은 빼고)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QualityLoss {
+    pub final_points: usize,
+    pub degraded_points: usize,
+    pub degraded_fraction: f64,
+    /// 정상 공구로 깎은 최종 벽 점 수와 그 기준 (없으면 0 — 비교하지 않음)
+    pub good_points: usize,
+    pub good_ra_mean_um: f64,
+    pub good_wall_p90_um: f64,
+    pub zones: Vec<QualityZone>,
+    pub points: Vec<QualityPoint>,
+    pub worst_wall_um: f64,
+    pub worst_ra_um: f64,
+    pub worst_extra_wear_um: f64,
+    pub notes: Vec<String>,
+}
+
+/// 치핑 위험으로 품질 저하를 표시하는 누적 치핑 확률 — 감시 정책의 '날 확인 권장'(`toollife::CHIP_WARN_P`)과 같은 값
+pub const QUALITY_CHIP_P: f64 = crate::toollife::CHIP_WARN_P;
+/// 뷰포트에 보내는 품질 저하 점 상한
+const QUALITY_POINTS_MAX: usize = 1500;
+const FACE_DIRS: [&str; 8] = ["+X", "+X+Y", "+Y", "−X+Y", "−X", "−X−Y", "−Y", "+X−Y"];
+
+fn quality_severity(w: &WallErrorSample) -> u8 {
+    if w.tool_state >= 3 {
+        3
+    } else if w.chip_p >= QUALITY_CHIP_P {
+        2
+    } else if w.tool_state >= 2 {
+        1
+    } else {
+        0
+    }
+}
+
+/// 손상 공구(수명 한계 넘김 · 치핑 위험 · 3차 마모)로 깎은 최종 벽을 벽 구간으로 묶는다. 같은 벽면 = 공구에서 벽 쪽 방향(45° 단위) ·
+/// 그 방향으로 잰 벽 위치(반경 폭 띠) · 같은 원인 · 같은 공구이고, 벽을 따라 2·D 넘게 끊기면 다른 구간 (층이 여러 개면 한 구간에 Z 범위로).
+/// 품질 저하량은 다른 벽이 아니라 같은 절삭의 반사실과 견준다 — 치수는 수명 한계 수준을 넘는 반경 마모, 조도는 같은 절삭을 새 날로 깎았을 때의 Ra.
+/// `wear_at_limit_um` 는 VB 한계에서의 반경 마모 (µm)
+pub fn quality_loss(walls: &[WallErrorSample], wear_at_limit_um: f64, tool_d_mm: f64) -> QualityLoss {
+    use std::cmp::Ordering;
+    let finals: Vec<&WallErrorSample> = walls.iter().filter(|w| w.final_wall).collect();
+    let mut out = QualityLoss {
+        final_points: finals.len(),
+        ..Default::default()
+    };
+    if finals.is_empty() {
+        return out;
+    }
+    let (good, mut bad): (Vec<&WallErrorSample>, Vec<&WallErrorSample>) = finals.into_iter().partition(|w| quality_severity(w) == 0);
+    out.good_points = good.len();
+    if !good.is_empty() {
+        out.good_ra_mean_um = good.iter().map(|w| w.ra_um).sum::<f64>() / good.len() as f64;
+        let mut v: Vec<f64> = good.iter().map(|w| w.total_um.abs()).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        out.good_wall_p90_um = v[((v.len() - 1) as f64 * 0.9).round() as usize];
+    }
+    out.degraded_points = bad.len();
+    out.degraded_fraction = bad.len() as f64 / out.final_points as f64;
+    if bad.is_empty() {
+        return out;
+    }
+    bad.sort_by(|a, b| a.t_s.partial_cmp(&b.t_s).unwrap_or(Ordering::Equal));
+    let step = std::f64::consts::FRAC_PI_4;
+    let band = (0.5 * tool_d_mm).max(1.0);
+    let gap = (2.0 * tool_d_mm).max(3.0);
+    // (원인, 공구, 벽 방향, 벽 위치 띠) → (벽을 따라 잰 위치, bad 번호)
+    let mut groups: std::collections::BTreeMap<(u8, u32, i32, i64), Vec<(f64, usize)>> = std::collections::BTreeMap::new();
+    for (i, w) in bad.iter().enumerate() {
+        let b = ((w.ny.atan2(w.nx) / step).round() as i32).rem_euclid(8);
+        let (s, c) = (b as f64 * step).sin_cos();
+        let across = w.x * c + w.y * s;
+        let along = -w.x * s + w.y * c;
+        groups.entry((quality_severity(w), w.tool_no, b, (across / band).round() as i64)).or_default().push((along, i));
+    }
+    let cause_of = |s: u8| match s {
+        3 => ("accelerated", "3차(가속) 마모 — 랜드가 급히 넓어지는 공구"),
+        2 => ("chip_risk", "치핑 위험 — 이가 빠졌을 수 있는 공구"),
+        _ => ("past_limit", "수명 한계(VB)를 넘긴 공구"),
+    };
+    let mut zones: Vec<(QualityZone, Vec<usize>)> = Vec::new();
+    for ((s, tool_no, b, _), mut v) in groups {
+        v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+        let mut runs: Vec<Vec<(f64, usize)>> = vec![Vec::new()];
+        for e in v {
+            let split = runs.last().and_then(|r| r.last()).map(|l| e.0 - l.0 > gap).unwrap_or(false);
+            if split {
+                runs.push(Vec::new());
+            }
+            runs.last_mut().expect("run").push(e);
+        }
+        for run in runs.into_iter().filter(|r| !r.is_empty()) {
+            let (cause, label) = cause_of(s);
+            let f = bad[run[0].1];
+            let mut z = QualityZone {
+                cause: cause.into(),
+                label: label.into(),
+                severity: s,
+                tool_no,
+                wall_dir: FACE_DIRS[b as usize].into(),
+                seg_from: f.seg,
+                seg_to: f.seg,
+                t_from_s: f.t_s,
+                t_to_s: f.t_s,
+                x_min: f.x,
+                x_max: f.x,
+                y_min: f.y,
+                y_max: f.y,
+                z_min: f.z_mid,
+                z_max: f.z_mid,
+                len_mm: run[run.len() - 1].0 - run[0].0,
+                ..Default::default()
+            };
+            let (mut ra_sum, mut fresh_sum) = (0.0, 0.0);
+            for &(_, i) in run.iter() {
+                let w = bad[i];
+                z.seg_from = z.seg_from.min(w.seg);
+                z.seg_to = z.seg_to.max(w.seg);
+                z.t_from_s = z.t_from_s.min(w.t_s);
+                z.t_to_s = z.t_to_s.max(w.t_s);
+                z.x_min = z.x_min.min(w.x);
+                z.x_max = z.x_max.max(w.x);
+                z.y_min = z.y_min.min(w.y);
+                z.y_max = z.y_max.max(w.y);
+                z.z_min = z.z_min.min(w.z_mid);
+                z.z_max = z.z_max.max(w.z_mid);
+                z.points += 1;
+                z.life_used_max = z.life_used_max.max(w.life_used);
+                z.chip_p_max = z.chip_p_max.max(w.chip_p);
+                z.wear_um_max = z.wear_um_max.max(w.wear_um);
+                z.wall_err_max_um = z.wall_err_max_um.max(w.total_um.abs());
+                z.ra_max_um = z.ra_max_um.max(w.ra_um);
+                ra_sum += w.ra_um;
+                fresh_sum += w.ra_fresh_um;
+            }
+            let n = z.points.max(1) as f64;
+            z.ra_mean_um = ra_sum / n;
+            z.ra_fresh_mean_um = fresh_sum / n;
+            z.ra_ratio = if z.ra_fresh_mean_um > 1e-9 { z.ra_mean_um / z.ra_fresh_mean_um } else { 1.0 };
+            z.extra_wear_um = (z.wear_um_max - wear_at_limit_um).max(0.0);
+            zones.push((z, run.iter().map(|e| e.1).collect()));
+        }
+    }
+    zones.sort_by(|a, b| a.0.t_from_s.partial_cmp(&b.0.t_from_s).unwrap_or(Ordering::Equal));
+    let mut zone_of = vec![0usize; bad.len()];
+    for (k, (_, idx)) in zones.iter().enumerate() {
+        for &i in idx.iter() {
+            zone_of[i] = k;
+        }
+    }
+    let zones: Vec<QualityZone> = zones.into_iter().map(|(z, _)| z).collect();
+    out.worst_wall_um = zones.iter().map(|z| z.wall_err_max_um).fold(0.0, f64::max);
+    out.worst_ra_um = zones.iter().map(|z| z.ra_max_um).fold(0.0, f64::max);
+    out.worst_extra_wear_um = zones.iter().map(|z| z.extra_wear_um).fold(0.0, f64::max);
+    let stride = bad.len().div_ceil(QUALITY_POINTS_MAX).max(1);
+    out.points = bad
+        .iter()
+        .enumerate()
+        .step_by(stride)
+        .map(|(i, w)| QualityPoint {
+            x: w.x,
+            y: w.y,
+            z: w.z_mid,
+            t_s: w.t_s,
+            seg: w.seg,
+            severity: quality_severity(w),
+            zone: zone_of[i],
+            wall_um: w.total_um,
+            ra_um: w.ra_um,
+        })
+        .collect();
+    out.notes.push(format!(
+        "최종 벽 {}점 중 {}점({:.0}%)을 손상 공구로 깎음 — 벽 {}곳 · 한계 넘어 덜 깎임 최대 +{:.1} µm · Ra 최대 {:.2} µm{}",
+        out.final_points,
+        out.degraded_points,
+        out.degraded_fraction * 100.0,
+        zones.len(),
+        out.worst_extra_wear_um,
+        out.worst_ra_um,
+        if out.good_points > 0 { format!(" (정상 공구로 깎은 벽 평균 {:.2} µm)", out.good_ra_mean_um) } else { " (정상 공구로 깎은 최종 벽 없음)".to_string() }
+    ));
+    out.notes.push("치수: 반경 마모 중 수명 한계(VB) 수준을 넘는 몫을 손상 공구 탓으로 봄 — 벽 위치 오차(전체)는 휨·열·런아웃을 함께 담아 참고로만".into());
+    out.notes.push(format!(
+        "조도: 같은 절삭을 새 날로 깎았을 때(마모 배수만 뺌)와 견줌. 치핑 위험은 누적 치핑 확률 {:.0}% 이상(날 확인 권장) — 이가 빠진 날이 남기는 자국은 수치로 내지 않고 위치와 확률로만 표시",
+        QUALITY_CHIP_P * 100.0
+    ));
+    out.notes.push("찢김·번짐·버(burr)·가공 변질층과 깨진 날이 남기는 바닥 자국은 수치 모델이 없어 구간 위치로만 표시 — 현장에서는 그 구간을 확대경·조도계로 확인".into());
+    out.zones = zones;
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -863,6 +1123,9 @@ pub struct LoadSimReport {
     /// 경로 중 교체가 있으면 위의 `vb_start_mm`·`wear_age0_min`·`growth_*`·`thermal_damage`·`wear_field` 는 마지막 공구의 값이다
     #[serde(default)]
     pub tool_life: crate::toollife::ToolLifeReport,
+    /// 손상 공구(수명 한계 넘김 · 치핑 위험 · 3차 마모)로 깎은 최종 벽 — 위치와 치수·조도 저하
+    #[serde(default)]
+    pub quality_loss: QualityLoss,
 }
 
 fn one_f64() -> f64 {
@@ -2369,11 +2632,14 @@ pub fn simulate_segments_prog(
                     if let Some(w) = tw {
                         wp_defl = w.defl_um;
                     }
+                    let rkey = (quant(fz_here, fz_nom.max(1e-6) * 0.01), quant(vb, 0.005), margin.to_bits(), quant(sample_force.h_max_mm, 1e-4), quant(th.bue_risk, 0.05));
                     let rough = *ra_cache
-                        .entry((quant(fz_here, fz_nom.max(1e-6) * 0.01), quant(vb, 0.005), margin.to_bits(), quant(sample_force.h_max_mm, 1e-4), quant(th.bue_risk, 0.05)))
+                        .entry(rkey)
                         .or_insert_with(|| crate::surface::wall_roughness(r, tool.flutes, fz_here, tool.runout_ecc_mm(), h_min_wall, sample_force.h_max_mm, vb, wp_group, th.bue_risk, margin, chat_p));
                     ra_here = rough.ra_um;
                     ra_w = dt;
+                    // 품질 저하 비교용 반사실: 같은 절삭을 새 날로 깎았다면 (Ra 는 마모 배수에 비례하므로 그 배수만 뺌)
+                    let ra_fresh = rough.ra_um / rough.wear_factor.max(1e-9);
                     if wall_errors.len() < 200_000 {
                         wall_errors.push(WallErrorSample {
                             x: wx,
@@ -2399,6 +2665,19 @@ pub fn simulate_segments_prog(
                             runout_um,
                             ra_um: rough.ra_um,
                             waviness_um: rough.chatter_wpv_um * rough.chatter_probability,
+                            tool_no,
+                            life_used: life_u,
+                            tool_state: if accel_noted {
+                                3
+                            } else if ended || life_u >= 1.0 {
+                                2
+                            } else if warned {
+                                1
+                            } else {
+                                0
+                            },
+                            chip_p,
+                            ra_fresh_um: ra_fresh,
                         });
                     }
                 }
@@ -2624,6 +2903,7 @@ pub fn simulate_segments_prog(
         }
     }
     flag_final_walls(&grid, &mut wall_errors);
+    let quality = quality_loss(&wall_errors, vb_limit * tan_clear * 1000.0, ctx.tool.diameter_mm);
     let final_count = wall_errors.iter().filter(|w| w.final_wall).count();
     let transient_count = wall_errors.len() - final_count;
     let mut seg_end_tmp: Vec<f64> = seg_start_s.iter().skip(1).cloned().collect();
@@ -2814,6 +3094,7 @@ pub fn simulate_segments_prog(
         thermal_fatigue_per_min: tf_per_min,
         engage_audit: audit,
         tool_life: tl,
+        quality_loss: quality,
     })
 }
 

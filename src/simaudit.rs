@@ -412,6 +412,27 @@ pub struct AuditToolLife {
     #[serde(default)]
     pub chip_detected: u32,
     pub events: Vec<String>,
+    /// 손상 공구(수명 한계 넘김 · 치핑 위험 · 3차 마모)로 깎은 최종 벽 (`loadsim::quality_loss`)
+    #[serde(default)]
+    pub final_points: usize,
+    #[serde(default)]
+    pub degraded_points: usize,
+    #[serde(default)]
+    pub degraded_wall_max_um: f64,
+    #[serde(default)]
+    pub degraded_ra_max_um: f64,
+    /// 수명 한계 수준을 넘는 반경 마모 최대 (µm) — 손상 공구 탓의 치수 손실
+    #[serde(default)]
+    pub degraded_extra_wear_um: f64,
+    #[serde(default)]
+    pub good_points: usize,
+    #[serde(default)]
+    pub good_wall_p90_um: f64,
+    #[serde(default)]
+    pub good_ra_mean_um: f64,
+    /// 구간마다 한 줄 (원인 · 공구 · 위치 · 벽 오차 · Ra)
+    #[serde(default)]
+    pub degraded_zones: Vec<String>,
 }
 
 /// 측정 없이는 정할 수 없는 값 — 쓴 값, 그럴 법한 범위, 그것이 바꾸는 결과, 가장 싼 측정
@@ -1431,7 +1452,68 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
         load_alarm_t_s: tlr.load_alarm_t_s.map(f),
         chip_detected: tlr.chip_detected,
         events: tlr.events.iter().map(|e| format!("{} #{} t {:.1} s (절삭 {:.1} s) seg {} — {}", e.kind, e.tool_no, e.t_s, e.t_cut_s, e.seg, e.message)).collect(),
+        final_points: rep.quality_loss.final_points,
+        degraded_points: rep.quality_loss.degraded_points,
+        degraded_wall_max_um: f(rep.quality_loss.worst_wall_um),
+        degraded_ra_max_um: f(rep.quality_loss.worst_ra_um),
+        degraded_extra_wear_um: f(rep.quality_loss.worst_extra_wear_um),
+        good_points: rep.quality_loss.good_points,
+        good_wall_p90_um: f(rep.quality_loss.good_wall_p90_um),
+        good_ra_mean_um: f(rep.quality_loss.good_ra_mean_um),
+        degraded_zones: rep
+            .quality_loss
+            .zones
+            .iter()
+            .map(|z| {
+                format!(
+                    "{} · {} 쪽 벽 · 공구 #{} · seg {}–{} · t {:.1}–{:.1} s · X {:.1}~{:.1} Y {:.1}~{:.1} Z {:.2}~{:.2} mm · 벽 {:.1} mm · 수명 {:.0}% · 치핑 P {:.0}% · 한계 넘어 덜 깎임 +{:.1} µm (반경 마모 {:.1}) · Ra {:.2}/{:.2} µm (새 날 {:.2} · ×{:.2}) · 벽 위치 오차(전체) {:.1} µm",
+                    z.label,
+                    z.wall_dir,
+                    z.tool_no,
+                    z.seg_from,
+                    z.seg_to,
+                    z.t_from_s,
+                    z.t_to_s,
+                    z.x_min,
+                    z.x_max,
+                    z.y_min,
+                    z.y_max,
+                    z.z_min,
+                    z.z_max,
+                    z.len_mm,
+                    z.life_used_max * 100.0,
+                    z.chip_p_max * 100.0,
+                    z.extra_wear_um,
+                    z.wear_um_max,
+                    z.ra_mean_um,
+                    z.ra_max_um,
+                    z.ra_fresh_mean_um,
+                    z.ra_ratio,
+                    z.wall_err_max_um
+                )
+            })
+            .collect(),
     };
+    let ql = &rep.quality_loss;
+    if ql.degraded_points > 0 {
+        flag(
+            &mut flags,
+            "quality_degraded",
+            if ql.zones.iter().any(|z| z.severity >= 2) { 2 } else { 1 },
+            ql.degraded_fraction,
+            "0",
+            format!(
+                "최종 벽 {}점 중 {}점({:.0}%)을 손상 공구로 깎음 — 벽 {}곳 · 한계 넘어 덜 깎임 최대 +{:.1} µm · Ra 최대 {:.2} µm{}. 그 구간을 확대경·조도계로 확인",
+                ql.final_points,
+                ql.degraded_points,
+                ql.degraded_fraction * 100.0,
+                ql.zones.len(),
+                ql.worst_extra_wear_um,
+                ql.worst_ra_um,
+                if ql.good_points > 0 { format!(" (정상 공구로 깎은 벽 평균 {:.2})", ql.good_ra_mean_um) } else { " (정상 공구로 깎은 최종 벽 없음)".to_string() }
+            ),
+        );
+    }
     if tlr.failed {
         flag(&mut flags, "tool_failure", 2, tlr.completed_fraction(), "파손 없음", format!("{} — 경로의 {:.0}% 에서 정지, 부품 검사 필요", tlr.stop_reason().unwrap_or_default(), tlr.completed_fraction() * 100.0));
     } else if tlr.unfinished {
@@ -1687,6 +1769,18 @@ pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSim
             "시뮬레이션 누적은 실측 보정 전 σ_ln 0.5",
             "이어 쓰는 공구의 시작 마모 — 수명 판정·벽 오차의 출발점".into(),
             "공구 현미경 VB, 또는 레이저 반경 손실 ÷ (tanα/(1−tanα·tanγ))",
+        );
+    }
+    if rep.quality_loss.degraded_points > 0 {
+        add(
+            "damaged_tool_surface",
+            format!(
+                "손상 공구로 깎은 최종 벽 {} 점 — 치수는 수명 한계를 넘는 반경 마모, Ra 는 마모 배수로만 계산 (치핑 자국은 수치 없음)",
+                rep.quality_loss.degraded_points
+            ),
+            "치핑 크기·자리(날끝 모서리 · 절입 경계 노치)와 어느 날이 깨졌는지는 공구마다 다름 — 측정 전에는 정할 수 없음",
+            "깨진 날끝이 남기는 찢김·번짐·버(burr)·가공 변질층과 바닥 자국 높이는 모델 밖 — 구간 위치와 치핑 확률로만 표시".into(),
+            "의심 구간을 확대경·조도계로 확인하고, 공구는 날끝 현미경으로 치핑 크기·자리 확인",
         );
     }
     add(
@@ -2105,6 +2199,22 @@ pub fn lines(a: &SimAudit) -> Vec<String> {
     ));
     for e in tl.events.iter() {
         v.push(format!("[EOL] {}", e));
+    }
+    if tl.degraded_points > 0 {
+        v.push(format!(
+            "[AUDIT] 품질 저하: 최종 벽 {} 점 중 {} 점 ({:.0}%) 을 손상 공구로 깎음 · 벽 {}곳 · 한계 넘어 덜 깎임 최대 +{:.1} µm · Ra 최대 {:.2} µm · 벽 위치 오차(전체) 최대 {:.1} µm{}",
+            tl.final_points,
+            tl.degraded_points,
+            tl.degraded_points as f64 / tl.final_points.max(1) as f64 * 100.0,
+            tl.degraded_zones.len(),
+            tl.degraded_extra_wear_um,
+            tl.degraded_ra_max_um,
+            tl.degraded_wall_max_um,
+            if tl.good_points > 0 { format!(" | 정상 공구 벽 {} 점: Ra 평균 {:.2} µm · 벽 위치 오차 P90 {:.1} µm", tl.good_points, tl.good_ra_mean_um, tl.good_wall_p90_um) } else { " | 정상 공구로 깎은 최종 벽 없음".to_string() }
+        ));
+        for z in tl.degraded_zones.iter() {
+            v.push(format!("[QUAL] {}", z));
+        }
     }
     let fit = &a.fit;
     v.push(format!(
