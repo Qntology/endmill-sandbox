@@ -6,8 +6,9 @@
 #   QUICK=1 ONLY=04,11 MATRIX_PATTERNS=rect_profile ./test_linux.sh cpu
 #
 # 단계: 00 환경 · 01 빌드 · 02~08 통합 시험 · 09 단위 시험 · 10 MPM · 11 공구 수명·N:N 시험 · 12 전 프리셋 감사 ·
-#       13 전 프리셋 포켓 × 수명 정책 · 14 N:N 행렬(여러 경로) + 물리 점검 · 15 GPU↔CPU 대조 · 16 Vulkan 셰이더 대조
-# 절삭 시뮬레이션은 백엔드와 관계없이 CPU 계산이라 02~14 결과는 모든 백엔드에서 같아야 합니다.
+#       13 전 프리셋 포켓 × 수명 정책 · 14 N:N 행렬(여러 경로) + 물리 점검 · 15 GPU↔CPU 대조 · 16 Vulkan 셰이더 대조 ·
+#       17 문헌 실측 벤치마크 (논문 공구·소재·조건 N:N 을 실측값과 대조 — docs/literature-benchmark.md)
+# 절삭 시뮬레이션은 백엔드와 관계없이 CPU 계산이라 02~14 · 17 결과는 모든 백엔드에서 같아야 합니다.
 #
 # 필요 패키지(Ubuntu 24.04 기준): protobuf-compiler (LanceDB), libvulkan1 mesa-vulkan-drivers (Vulkan)
 # ROCm 은 /opt/rocm (또는 ROCM_PATH/HIP_PATH) 이 필요합니다.
@@ -136,6 +137,7 @@ if [ "$BACKEND" = vulkan ]; then
 else
   echo "16_vulkan_backend: skipped - vulkan only" >> "$SUMMARY"
 fi
+run 17 literature_bench - "${CT[@]}" --test literature_benchmark "${NC[@]}"
 
 {
   echo "========================================"
@@ -143,7 +145,7 @@ fi
 } >> "$SUMMARY"
 
 # 요약: pwsh 가 있으면 Windows 와 같은 test_summary.ps1, 없으면 grep 으로 핵심만
-TAG='^(test [^ ]+ \.\.\. )?\[(EOL|MATRIX|MATRIX-GRID|MATRIX-CHECK|AUDIT|UNKNOWN|GPU|COAT|TEMP|ENGAGE|GATES)'
+TAG='^(test [^ ]+ \.\.\. )?\[(EOL|MATRIX|MATRIX-GRID|MATRIX-CHECK|AUDIT|UNKNOWN|GPU|COAT|TEMP|ENGAGE|GATES|BENCH|BENCH-SUM|BENCH-GRID|BENCH-CHECK)'
 if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoProfile -File ./test_summary.ps1 -LogDir "$LOGDIR" -Backend "$BACKEND"
 else
@@ -160,6 +162,7 @@ else
     grep -h '^\[MATRIX-CHECK\] 경로 ' "$LOGDIR/highlights.log" | sed 's/^/  /' || true
     echo "N:N 물리 점검 결함: $(grep -c '^\[MATRIX-CHECK\]\[결함\]' "$LOGDIR/highlights.log" || true)"
     echo "GPU 대조 줄: $(grep -c '^\[GPU\]' "$LOGDIR/highlights.log" || true)"
+    echo "문헌 벤치마크: $(grep -h '^\[BENCH\] 대역 안 ' "$LOGDIR/highlights.log" | tail -1 | sed 's/^\[BENCH\] //' || true)"
     echo "[UNKNOWN] 항목: $(grep -oE '^\[UNKNOWN\] [^ ]+' "$LOGDIR/highlights.log" | sort -u | awk '{print $2}' | paste -sd, - || true)"
     echo "실패한 테스트:"; grep -h -E '^test .* \.\.\. FAILED' "$LOGDIR"/[0-9][0-9]_*.log | sed 's/^/  /' || true
   } >> "$SUMMARY"

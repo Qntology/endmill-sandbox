@@ -4,6 +4,8 @@
 //! 공구의 기계적 설계값을 피삭재 그룹별 권장 창(window)과 비교한다 (N:N 공구 × 피삭재 조합의 형상 몫):
 //!  * 경사각 · 날끝 반경(호닝+코팅) · 여유각: 창에서 '날을 약하게 하는 쪽'(경사 큼 · 날 날카로움 · 여유 큼)으로 벗어난 거리 d_weak 와
 //!    '무디게 하는 쪽'(경사 작음 · 반경 큼 · 여유 작음)으로 벗어난 거리 d_blunt 를 단계(경사 5° — Ti 2° · 반경 5 µm · 여유 3°) 단위로 잰다.
+//!    큰 여유각은 쐐기각(90° − 경사 − 여유)이 창의 가장 얇은 쐐기보다 얇아진 만큼만 약함으로 센다 (경사가 작으면 상쇄). 작은 여유각이
+//!    VB 를 빨리 키우는 몫은 마모 랜드 기하(`physics::flank_geometry_factor`)가 맡아 마모 배수에는 넣지 않는다 (구성인선·조도 배수에는 남김).
 //!  * 피삭재 경도 계수 h (Al 0.1 · CFRP 0.2 · 탄소강 0.4 · 합금강·스테인리스 0.6 · Ti 0.7 · Ni 1.0 · 고경도 1.5)로
 //!    마모 수명 배수 L = exp(−0.5·h·Σd_weak − 0.1·Σd_blunt) (0.02~1), 치핑 위험 배수 exp(1.5·h·Σd_weak),
 //!    구성인선·응착 배수 1 + 0.5·β·Σd_blunt, 조도 배수 1 + β·Σd_blunt (β: Al 1.0 · CFRP 0.8 · 스테인리스 0.6 · Ti 0.4 · Ni·탄소강 0.3 · 그 밖 0.1).
@@ -219,10 +221,15 @@ pub fn evaluate_with(tool: &ToolGeometry, wp: &WorkpieceProps, slotting: bool, a
             },
         });
     }
-    // ---- 여유각: 크면 쐐기가 얇아 약함, 작으면 플랭크 마찰(무딤). Ti 는 작은 여유각에서 응착으로 치핑까지 (8° vs 10°) ----
+    // ---- 여유각: 작으면 플랭크 마찰(무딤), 크면 쐐기가 얇아 약함. Ti 는 작은 여유각에서 응착으로 치핑까지 (8° vs 10°) ----
+    // 날의 강도는 쐐기각 90° − γ − α 가 정한다 — 큰 여유각은 경사각이 창 상한보다 작은 만큼 상쇄된다 (경사 0° · 여유 15° 인서트의 쐐기 75° 는
+    // 경사 8° · 여유 8° 엔드밀의 74° 와 같다. 예전에는 여유각만 따로 봐서 이런 인서트를 '쐐기가 얇아 치핑' 으로 판정했다).
+    // 작은 여유각이 VB 를 빨리 키우는 몫은 마모 랜드 기하(`physics::flank_geometry_factor`)가 맡아 여기서는 구성인선·조도에만 넣는다
     {
         let (lo, hi) = if ball && g == WpGroup::Hardened { (8.0, 12.0) } else { w.clearance_deg };
-        let (below, above) = steps_out(tool.clearance_deg, lo, hi, 3.0);
+        let (below, _) = steps_out(tool.clearance_deg, lo, hi, 3.0);
+        let thin_wedge = ((tool.clearance_deg - hi) - (w.rake_deg.1 - tool.rake_deg).max(0.0)).max(0.0) / 3.0;
+        let above = thin_wedge;
         let adhesion_chip = if matches!(g, WpGroup::Titanium) { 0.5 * below } else { 0.0 };
         items.push(FitItem {
             key: "clearance".into(),
@@ -239,7 +246,9 @@ pub fn evaluate_with(tool: &ToolGeometry, wp: &WorkpieceProps, slotting: bool, a
                     if adhesion_chip > 0.0 { " · Ti 플랭크 응착 → 치핑" } else { "" }
                 )
             } else if above > 0.0 {
-                format!("여유각 {:.0}° > 권장 {:.0}° — 쐐기가 얇아 치핑", tool.clearance_deg, hi)
+                format!("여유각 {:.0}° > 권장 {:.0}° — 쐐기각 {:.0}° 가 얇아 치핑", tool.clearance_deg, hi, 90.0 - tool.rake_deg - tool.clearance_deg)
+            } else if tool.clearance_deg > hi {
+                format!("여유각 {:.0}° > 권장 {:.0}° 이나 경사각 {:.0}° 라 쐐기각 {:.0}° 는 창 안", tool.clearance_deg, hi, tool.rake_deg, 90.0 - tool.rake_deg - tool.clearance_deg)
             } else {
                 format!("여유각 {:.0}° (권장 {:.0}~{:.0}°)", tool.clearance_deg, lo, hi)
             },
@@ -269,8 +278,9 @@ pub fn evaluate_with(tool: &ToolGeometry, wp: &WorkpieceProps, slotting: bool, a
     }
     let sum_weak: f64 = items.iter().map(|i| i.d_weak).sum();
     let sum_blunt: f64 = items.iter().map(|i| i.d_blunt).sum();
+    let sum_blunt_wear: f64 = items.iter().filter(|i| i.key != "clearance").map(|i| i.d_blunt).sum();
     let h = w.hardness;
-    let mut wear = (0.5 * h * sum_weak + 0.1 * sum_blunt).exp();
+    let mut wear = (0.5 * h * sum_weak + 0.1 * sum_blunt_wear).exp();
     let mut chip = (1.5 * h * sum_weak).exp();
     let bue = 1.0 + 0.5 * w.bue * sum_blunt;
     let ra = 1.0 + w.bue * sum_blunt;

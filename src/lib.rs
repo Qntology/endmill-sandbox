@@ -37,6 +37,7 @@ pub mod simaudit;
 pub mod toollife;
 pub mod appfit;
 pub mod pairmatrix;
+pub mod benchmark;
 
 pub use application::*;
 pub use metadata::*;

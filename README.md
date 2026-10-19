@@ -260,7 +260,7 @@ toolchain): `test_cuda.bat` (NVIDIA), `test_rocm.bat` (AMD HIP), `test_vulkan.ba
 feature). With extra arguments `test_rocm.bat` / `test_vulkan.bat` / `test_cpu.bat` run a single `cargo test` with them.
 A run writes `test_logs\<timestamp>_<backend>\`: one log per step (with its duration), `summary.log` (exit codes, test
 results, failed test names, audit-flag / tool-life-event counts, matrix verdicts per step, N:N check violations per rule,
-`[GPU]` parity lines, `[UNKNOWN]` keys), `highlights.log` (every `[EOL] [MATRIX] [MATRIX-CHECK] [AUDIT] [UNKNOWN] [GPU] …`
+`[GPU]` parity lines, `[UNKNOWN]` keys, literature-benchmark comparisons in band), `highlights.log` (every `[EOL] [MATRIX] [MATRIX-CHECK] [AUDIT] [UNKNOWN] [GPU] [BENCH] …`
 cross-check line in one file), `wear_logs\` (the job CSV/JSON of this run, also mirrored to the app's wear_logs folder),
 `matrix\` (tool × material CSV/JSON per path and `pair_matrix_<path>_check.json`) and `manifest.txt`.
 
@@ -275,8 +275,9 @@ cross-check line in one file), `wear_logs\` (the job CSV/JSON of this run, also 
 | 14 | tool × material N:N matrix — 8 built-in tools × 8 use cases on `MATRIX_PATTERNS` (default rect_profile, pocket_zigzag, helical_pocket) with the physical check `pairmatrix::check` (`[MATRIX-CHECK]`: finite values, no mm/min wear after coating break-through, temperature and VB bounds, the fit cap, diamond/DLC on Fe/Ti/Ni and HSS on 58 HRC judged unsuitable, intended pairs not unsuitable). Any calculation defect fails the step |
 | 15 | ML ops on the GPU backend against the CPU (`tests/gpu_backend.rs`: attention, norms, RoPE, SigLIP patch conv, tiny ModernBERT, matmul time) — skipped on cpu |
 | 16 | Vulkan shader-path parity (`tests/vulkan_backend.rs`) — vulkan only |
+| 17 | literature benchmark — the tools, materials and cutting conditions of the cited papers in the sandbox data, 13 paper tools + 8 built-in tools × 16 paper conditions, 31 comparisons with what the papers measured (`tests/literature_benchmark.rs`, `[BENCH]` lines; see [docs/literature-benchmark.md](docs/literature-benchmark.md)) |
 
-The cutting simulation runs on the CPU for every backend, so steps 02–14 must give the same results everywhere; the
+The cutting simulation runs on the CPU for every backend, so steps 02–14 and 17 must give the same results everywhere; the
 backend only changes the ML parts. Options: `QUICK=1` (skip steps 03, 13, 14), `ONLY=04,11`, `LEAN_LINK=1` (link this
 crate's test binaries without PDB debug info — far less link memory and disk on small machines), `CARGO_BUILD_JOBS=2`,
 `MATRIX_PATTERNS=…`, `APP_WEAR_LOG_DIR=…`, `NOPAUSE=1`. The summary is written by `test_summary.ps1`.
@@ -320,6 +321,9 @@ Expected folder naming (keyword search):
 * Kienzle power-law specific energy with `mc` exponent
 * Flank-wear land force (σ_flank · VB · db)
 * Edge-force terms (Kte, Kre) with minimum-chip-thickness ploughing ramp
+* Rake angle: the coating (friction) effect goes through Merchant's shear-angle relation at the material's base rake, the
+  tool's deviation from that rake through the manufacturer milling rule kc·(1 − γ0/100) (Sandvik Coromant, 1 %/°). Merchant
+  alone moved kc by about 1.9 %/° and put a 0° insert 21 % above a 10° end mill on the same steel cut.
 * Runout per-tooth chip-thickness offset. `runout_um` is the dial-indicator **TIR** (the "3 µm" of a holder datasheet):
   eccentricity e = TIR/2, the chip-thickness difference between two flutes is 2e = TIR (Kline & DeVor 1983). A slot with
   a 10 µm TIR therefore peaks at fz + 10 µm. Earlier versions read the number as e (offset ±2·TIR), which inflated the
@@ -382,6 +386,10 @@ also weaker in the model (≈ 0–6 %).
 ### Thermal Model
 
 * Boothroyd–Scott partition → chip/workpiece heat split
+* Primary shear-zone temperature from the shear flow stress × shear strain (τ·γ, γ = cos α / (sin φ cos(φ − α))), τ from
+  Johnson–Cook at the shear-plane temperature and strain rate, solved as a fixed point (Oxley 1989). It used to come from the
+  Kienzle specific energy, whose size-effect (edge ploughing) share put thin-chip hardened-steel shear planes at 1,100–1,400 °C
+  and made the edge temperature fall with cutting speed (Dewes et al. 1999 measure it rising).
 * Loewen–Shaw convective rise with Péclet number
 * Coolant film coefficient (jet velocity, boiling regime: nucleate / film / Leidenfrost)
 * Coating thermal barrier (steady + transient contact resistance)
@@ -398,7 +406,9 @@ also weaker in the model (≈ 0–6 %).
 
 ### Wear Model
 
-* 4 mechanisms: abrasion (hard-phase indentation), adhesion (sticking × load), diffusion/ dissolution (Arrhenius, two-zone activation), oxidation (environment-dependent)
+* 4 mechanisms: abrasion (hard-phase indentation), adhesion (sticking × load; Arrhenius-activated with the diffusion constants on Fe/Ti/Ni, as in Usui's wear law dW/dt = C·σn·Vs·exp(−λ/θ)), diffusion/ dissolution (Arrhenius, two-zone activation), oxidation (environment-dependent)
+* Flank-land geometry: the wear law gives the edge recession KE; VB = KE / radial_per_vb (Kronenberg), so VB grows in inverse
+  proportion to radial_per_vb relative to the material's default clearance (a 15° clearance grows VB about half as fast as 8°)
 * Reference-state normalisation (AlTiN, flood, 10 mm, S45C baseline)
 * 3-phase trajectory: break-in (exponential decay, pair-specific size and time constant) → steady → accelerated (force-temperature feedback loop, 1500-step ODE)
 * Coating compatibility factor, runout factor, chip-evacuation factor
@@ -556,6 +566,26 @@ pocket for 26 minutes past its limit. Every cutting step now runs a tool-life mo
   `unknowns` (`[UNKNOWN]` lines: value used, plausible range, effect, cheapest measurement); `[EOL]`, `[MATRIX]` lines.
   Retired tools keep their cause (`life_end`, `chipping`, `start_worn`, `failure`, `tlm_expired`).
 
+### Literature Benchmark — paper tools × paper conditions (`src/benchmark.rs`)
+
+* The tools, workpiece materials and cutting conditions of the cited papers (Karandikar et al. 2013/2014/2021 AISI 1018,
+  Tatar et al. 2020 · Liu et al. 2019 · Matuszak et al. 2023 · Li et al. 2014 Ti-6Al-4V, Grigoriev et al. 2020 AlCuMg2 / 41Cr4,
+  Hovsepian et al. 2006 Al7010, Dewes et al. 1999 H13 52 HRC) are written as sandbox tool settings and workpiece materials.
+  13 paper tools + 8 built-in tools × 16 paper conditions = 336 cells, compared with the measured values in 31 comparisons:
+  18 absolute (life, removed volume, interface temperature, mean force, radial ratio, Ra), 6 ratios inside one paper (coating
+  gain, condition change — unknown anchors cancel) and 7 sensitivities (Taylor slope d ln T / d ln Vc, radial-depth slope,
+  temperature-speed slope). Bands: life ×/÷2 (×/÷3 where the tool is assumed), forces ±25 % (Budak et al. 1996).
+* Mismatches were traced to physics, never fitted per cell: the shear-zone temperature (Thermal Model), adhesion activation
+  (Wear Model), the flank-land geometry and a wedge-angle (90° − γ − α) fit rule instead of clearance alone (`appfit`), and the
+  rake rule (Force Model). In band 13 → 15 / 31, median absolute-life error ×8.6 → ×3.0, the three 1018 Taylor slopes
+  −1.80 / −2.46 / −1.92 → −2.04 / −2.39 / −2.18 (measured −2.15 / −2.80 / −2.69). Changes that matched one comparison and
+  broke others were reverted (a Ti activation constant of 12,000 K, a Loewen–Shaw flank-heat partition) and are documented.
+* Open gaps (kept, not forced): Ti speed sensitivity (−2.4 vs −3.3…−4), aluminium light-cut life and DLC gain, thin-chip
+  41Cr4 life, the speed exponent of kc (−0.01 vs −0.18), hardened-steel Taylor slope. Paper values were read from abstracts
+  and excerpts; tool details the papers do not give are marked as assumptions with lower confidence.
+* Run: `cargo run --example lit_benchmark -- <dir>` (CSV/JSON: comparisons, all cells), test `tests/literature_benchmark.rs`
+  (test step 17). Full tables and reasoning: [docs/literature-benchmark.md](docs/literature-benchmark.md).
+
 ### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
 
 `crates/endmill_mpm` is a small 2D plane-strain orthogonal-cutting solver (MLS-MPM / APIC particles,
@@ -621,6 +651,7 @@ endmill-sandbox/
 │   ├── toollife.rs             # tool end of life: policies, tertiary wear, breakage / fatigue / chipping, load monitor
 │   ├── appfit.rs               # application fit of tool geometry / edge / substrate per workpiece group
 │   ├── pairmatrix.rs           # 8 built-in tools × 8 use cases matrix (nominal + path + tool-life monitor)
+│   ├── benchmark.rs            # literature benchmark: paper tools × paper conditions vs measured values
 │   ├── toolimage.rs            # image processing (silhouette, edge)
 │   ├── wear.rs                 # SigLIP2 wear comparison
 │   ├── mold.rs                 # heightmap / wall CMM analysis
@@ -651,9 +682,10 @@ endmill-sandbox/
 │   ├── interaction_physics.rs / pipeline_flow.rs / store_flow.rs
 │   ├── environment_tools.rs / tool_state.rs / wear_compensation.rs / physcal_flow.rs
 │   ├── tool_life_matrix.rs     # tool end of life, coating break-through, N:N matrix + physical check
+│   ├── literature_benchmark.rs # literature benchmark: N:N grid check, fixed-physics comparisons in band
 │   ├── gpu_backend.rs          # GPU ↔ CPU parity for cuda / rocm / vulkan
 │   └── vulkan_backend.rs       # Vulkan shader-path ↔ CPU parity (feature = "vulkan")
-├── examples/physics_probe.rs / physcal_probe.rs / sim_audit.rs / eol_probe.rs / pair_matrix.rs / pocket_probe.rs / wear_probe.rs
+├── examples/physics_probe.rs / physcal_probe.rs / sim_audit.rs / eol_probe.rs / pair_matrix.rs / pocket_probe.rs / wear_probe.rs / lit_benchmark.rs
 ├── run.bat / build.bat         # Windows CUDA helpers
 ├── _env_rocm.bat / _env_vulkan.bat  # shared MSVC / HIP SDK / protoc / Tauri CLI setup
 ├── {run,build,check,test}_{rocm,vulkan}.bat  # Windows ROCm / Vulkan helpers
