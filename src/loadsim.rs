@@ -331,7 +331,7 @@ pub struct Episode {
     pub limiting: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WallErrorSample {
     pub x: f64,
     pub y: f64,
@@ -1022,8 +1022,11 @@ pub struct ThinWall {
     pub thickness_mm: f64,
     pub height_mm: f64,
     pub k_n_per_mm: f64,
+    /// 건 힘 그대로의 뿌리 굽힘 응력 (탄성 계산) — 항복 응력을 넘으면 벽이 영구 변형된다
     pub stress_mpa: f64,
     pub sigma_per_n: f64,
+    /// 벽 뿌리 전소성 붕괴 하중 (N) — 탄성 복원(`defl_um`)은 이 힘까지만. 항복 응력을 모르면 무한대
+    pub collapse_n: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1354,9 +1357,32 @@ fn quant(v: f64, step: f64) -> i64 {
     (v / step).round() as i64
 }
 
+/// 얇은 벽 탐색 범위 (mm) — 벽 법선 방향으로 소재가 이보다 길게 이어지면 그 방향으로는 덩어리다
+const THIN_WALL_PROBE_MM: f64 = 15.0;
+
+/// 얇은 벽의 탄성 복원 (벽 휨 오차, µm). 벽면 위치 오차는 공구가 지나간 뒤 벽이 돌아오는 탄성 몫이다. 탄성-완전소성 외팔보에서 뿌리가
+/// 전소성 모멘트 Mp = σy·b·t²/4 (첫 항복의 1.5배)에 닿는 하중 Fp = 1.5·σy/σ_per_N 을 넘는 힘은 벽이 버티지 못하고 영구 변형(뿌리에서 꺾임)으로
+/// 가므로, 돌아오는 몫은 Fp/k = σy·a²/(E'·t) 를 넘지 않는다. 예전에는 탄성 휨을 ±500·t µm 에서 잘랐다 — 근거가 없고, 인코넬 프리셋 포켓의
+/// 0.92 mm 스킨(하중점 높이 6 mm)에서 첫 항복 148 µm · 붕괴 상한 222 µm 를 넘는 458 µm 를 벽 오차에 넣었다.
+/// 항복 응력을 모르면(`sigma_y_mpa` ≤ 0) 예전 자르기를 쓴다. 2차 보정 예측(`wearcomp`)도 이 식을 쓴다
+pub fn wall_springback_um(force_n: f64, k_n_per_mm: f64, sigma_per_n: f64, sigma_y_mpa: f64, thickness_mm: f64) -> f64 {
+    if !(k_n_per_mm > 0.0) {
+        return 0.0;
+    }
+    if sigma_y_mpa > 0.0 && sigma_per_n > 0.0 {
+        let fp = 1.5 * sigma_y_mpa / sigma_per_n;
+        force_n.clamp(-fp, fp) / k_n_per_mm * 1000.0
+    } else {
+        let t = thickness_mm.max(0.01);
+        (force_n / k_n_per_mm * 1000.0).clamp(-500.0 * t, 500.0 * t)
+    }
+}
+
+/// 공구 옆 얇은 벽(외팔보 판): 하중점 높이 a (벽 뿌리에서), 두께 t, 판 폭 b = ap + 2a — k = E'·b·t³/(4a³), 뿌리 응력 σ = 6aF/(b·t²).
+/// 힘이 0 이어도 벽 형상(두께·강성)은 돌려준다 (그 벽을 나중에 깎는 2차 보정 예측이 쓴다)
 #[allow(clippy::too_many_arguments)]
-fn thin_wall_um(grid: &StockGrid, wx: f64, wy: f64, side: (f64, f64), z_tip: f64, z_mid: f64, ap: f64, force_n: f64, e_n_mm2: f64) -> Option<ThinWall> {
-    if force_n.abs() < 1e-9 || ap <= 0.0 {
+fn thin_wall_um(grid: &StockGrid, wx: f64, wy: f64, side: (f64, f64), z_tip: f64, z_mid: f64, ap: f64, force_n: f64, e_n_mm2: f64, sigma_y_mpa: f64) -> Option<ThinWall> {
+    if ap <= 0.0 || !force_n.is_finite() {
         return None;
     }
     let step = grid.cell.max(0.02);
@@ -1368,7 +1394,7 @@ fn thin_wall_um(grid: &StockGrid, wx: f64, wy: f64, side: (f64, f64), z_tip: f64
         return None;
     }
     let mut t = step;
-    while t <= 15.0 {
+    while t <= THIN_WALL_PROBE_MM {
         t += step;
         if solid(t) {
             continue;
@@ -1383,18 +1409,62 @@ fn thin_wall_um(grid: &StockGrid, wx: f64, wy: f64, side: (f64, f64), z_tip: f64
         let thick = (t - 0.5 * step).max(0.5 * step);
         let l_eff = (ap + 2.0 * a).max(1.0);
         let k = (e_n_mm2 * l_eff * thick.powi(3) / (4.0 * a.powi(3))).max(1e-9);
-        let um = (force_n / k * 1000.0).clamp(-500.0 * thick, 500.0 * thick);
         let sigma_per_n = 6.0 * a / (l_eff * thick * thick);
         return Some(ThinWall {
-            defl_um: um,
+            defl_um: wall_springback_um(force_n, k, sigma_per_n, sigma_y_mpa, thick),
             thickness_mm: thick,
             height_mm: a,
             k_n_per_mm: k,
             stress_mpa: force_n.abs() * sigma_per_n,
             sigma_per_n,
+            collapse_n: if sigma_y_mpa > 0.0 { 1.5 * sigma_y_mpa / sigma_per_n } else { f64::INFINITY },
         });
     }
     None
+}
+
+/// 벽을 미는 칩이 얇은 벽에 붙어 있는가 — 아니면 그 힘은 덩어리가 받는다.
+/// 절삭 지점(제거 체적 중심 쪽으로 공구 바로 바깥, 벽 하중점 높이)에서 그 방향으로 소재 속을 공구 반경만큼 따라가며, 어느 점에서든 소재가
+/// 벽 법선 방향(= 칩이 소재를 미는 방향)으로 얇은 벽 탐색 범위보다 길게 이어지면 그 힘은 그 방향으로 길게 이어진 덩어리가 면내로 받아 공구 옆
+/// 얇은 벽의 자유 구간은 거의 휘지 않는다. 지그재그 포켓의 피치 이동이 그렇다: 공구 앞의 미절삭 띠를 폭 전체로 깎으면서(처음 1 mm 남짓은
+/// 미절삭 띠 바로 밑의 모서리 커스프) 옆으로 스톡 가장자리의 스킨을 만든다 — 예전에는 그 슬롯형 절삭의 법선 힘 전체(인코넬 프리셋 약 7 kN)를
+/// 0.92 mm 스킨에 걸었다. 벽을 따라 벽 쪽 띠만 깎는 측면 절삭은 띠와 벽이 한 몸으로 얇아(띠 + 벽 두께) 지금처럼 힘 전체가 벽에 걸린다.
+/// 벽과 덩어리가 힘을 나눠 받는 중간 경우는 강성 비(유한요소)로만 정할 수 있어 둘 중 하나로 본다 (`[UNKNOWN] thin_wall_load`)
+fn cut_zone_in_bulk(grid: &StockGrid, center: (f64, f64), cdir: (f64, f64), r: f64, side: (f64, f64), z_load: f64) -> bool {
+    // `cdir` 는 공구 중심에서 제거 체적 중심으로 가는 방향 (크기는 상관없음). 중심이 공구 축에 붙어 있으면 방향을 모른다
+    let on = (cdir.0 * cdir.0 + cdir.1 * cdir.1).sqrt();
+    if !(on > 0.05 * r.min(1.0)) {
+        return false;
+    }
+    let u = (cdir.0 / on, cdir.1 / on);
+    let step = grid.cell.max(0.02);
+    let solid = |x: f64, y: f64| {
+        let h = grid.height_at(x, y);
+        h != NO_MATERIAL && (h as f64) > z_load
+    };
+    // 벽 법선 양쪽으로 소재가 이어지는 길이 (각 방향 탐색 범위까지 — 둘을 한 상한으로 묶으면 덩어리가 범위 경계에서 반올림으로 빠진다)
+    let run = |q: (f64, f64), sgn: f64| {
+        let mut t = 0.0;
+        while t < THIN_WALL_PROBE_MM {
+            t += step;
+            if !solid(q.0 + sgn * side.0 * t, q.1 + sgn * side.1 * t) {
+                break;
+            }
+        }
+        t
+    };
+    let mut d = r + 1.5 * step;
+    while d <= 2.0 * r + 1.5 * step {
+        let q = (center.0 + u.0 * d, center.1 + u.1 * d);
+        if !solid(q.0, q.1) {
+            return false;
+        }
+        if run(q, 1.0) + run(q, -1.0) > THIN_WALL_PROBE_MM {
+            return true;
+        }
+        d += step;
+    }
+    false
 }
 
 pub fn wall_deflection(tool: &ToolGeometry, cal_defl: f64, f: &ForceResult, eng: &Engagement) -> Option<(f64, f64)> {
@@ -1431,6 +1501,62 @@ fn quantile_sorted(v: &[f64], q: f64) -> f64 {
     v[i] + (v[j] - v[i]) * (pos - i as f64)
 }
 
+/// 나중 패스가 다시 깎은 벽을 최종 벽에서 뺀다. 벽 점을 만든 세그먼트 뒤에 실행된 이송 경로의 공구 — 반경 r 원통, 벽 점은 그 벽을 만든
+/// 공구 축에서 r — 이 벽 점 높이(z_mid) 아래까지 내려간 채로 축을 벽 점에서 r − tol 안으로 가져오면 그 벽은 깎여 나갔다.
+/// `flag_final_walls` 는 같은 칸·같은 높이 키의 마지막 벽만 남기고 벽 너머 1.5 셀에 소재가 있는지 보는데, 단계 절입 포켓은 황삭 벽의 z_mid 가
+/// 단계마다 달라 전체 깊이 정삭 윤곽의 벽과 키가 다르고, 정삭 여유가 1.5 셀보다 얇으면(뷰포트 격자에서 고경도 0.15 mm 는 약 1 셀) 탐침도 정삭 벽
+/// 너머 소재에 닿아 황삭 벽이 최종 벽으로 남았다. 같은 세그먼트의 뒤쪽 점은 벽을 따라가 거리가 r 이상이고, 같은 윤곽을 더 깊게 다시 지나는
+/// 다음 단계는 거리가 정확히 r 이라 `tol` 로 남긴다 (그 아래에 새 벽을 만들 뿐). 볼 노즈의 구 부분 반경 축소는 보지 않는다.
+/// `done` 은 실행된 이송 경로 조각 (`feed_pieces`, 세그먼트 번호와 함께). 뺀 점 수를 돌려준다
+fn exclude_recut_walls(walls: &mut [WallErrorSample], done: &[(usize, [(f64, f64, f64); 2])], r: f64, tol: f64) -> usize {
+    if done.is_empty() {
+        return 0;
+    }
+    let pieces: Vec<[(f64, f64, f64); 2]> = done.iter().map(|p| p.1).collect();
+    let index = PieceIndex::new(&pieces, r);
+    let reach = r - tol;
+    let mut n = 0;
+    for w in walls.iter_mut().filter(|w| w.final_wall) {
+        if index.near(w.x, w.y).iter().any(|&i| done[i].0 > w.seg && tip_reach(&pieces[i], w.x, w.y, w.z_mid).is_some_and(|d| d < reach)) {
+            w.final_wall = false;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 경로 조각의 수평 칸 색인: 조각마다 (경계 상자 + r) 가 걸치는 칸에 넣는다 — 벽 점에서 r 안에 오는 조각은 그 점이 든 칸에 반드시 있다
+struct PieceIndex {
+    bin: f64,
+    cells: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl PieceIndex {
+    fn new(pieces: &[[(f64, f64, f64); 2]], r: f64) -> Self {
+        let bin = (2.0 * r).max(1.0);
+        let mut out = Self { bin, cells: HashMap::new() };
+        for (i, [a, b]) in pieces.iter().enumerate() {
+            let lo = out.key(a.0.min(b.0) - r, a.1.min(b.1) - r);
+            let hi = out.key(a.0.max(b.0) + r, a.1.max(b.1) + r);
+            for kx in lo.0..=hi.0 {
+                for ky in lo.1..=hi.1 {
+                    out.cells.entry((kx, ky)).or_default().push(i);
+                }
+            }
+        }
+        out
+    }
+
+    fn key(&self, x: f64, y: f64) -> (i64, i64) {
+        ((x / self.bin).floor() as i64, (y / self.bin).floor() as i64)
+    }
+
+    /// 점 (x, y) 에서 r 안에 올 수 있는 조각 번호들
+    fn near(&self, x: f64, y: f64) -> &[usize] {
+        self.cells.get(&self.key(x, y)).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+}
+
 fn flag_final_walls(grid: &StockGrid, walls: &mut [WallErrorSample]) {
     let probe = 1.5 * grid.cell;
     let mut latest: HashMap<(i64, i64, i64), usize> = HashMap::new();
@@ -1458,7 +1584,13 @@ fn flag_final_walls(grid: &StockGrid, walls: &mut [WallErrorSample]) {
 /// `sag_mm` 이하가 되게 나눈다. 급이송과 이송 0 은 시뮬레이션처럼 깎지 않으므로 뺀다. `stop_at` = (멈춘 세그먼트, 그 세그먼트에서 실행한
 /// 비율 0~1) — 비율은 `ToolPathSegment::polyline_from` 의 매개변수와 같다 (원호는 각도·높이 모두 선형).
 fn remainder_path(segments: &[ToolPathSegment], start: (f64, f64, f64), stop_at: (usize, f64), sag_mm: f64) -> Vec<[(f64, f64, f64); 2]> {
-    let (k0, t0) = stop_at;
+    feed_pieces(segments, start, stop_at, sag_mm).into_iter().map(|(_, p)| p).collect()
+}
+
+/// 이송 경로의 조각 (세그먼트 번호, 공구 끝 3차원 선분) — `from` = (세그먼트, 그 세그먼트에서 건너뛸 비율 0~1) 부터 끝까지.
+/// 직선·플런지는 한 선분, 원호는 현의 처짐이 `sag_mm` 이하가 되게 나누고, 급이송·이송 0 은 깎지 않으므로 뺀다 (`remainder_path` · `exclude_recut_walls`)
+fn feed_pieces(segments: &[ToolPathSegment], start: (f64, f64, f64), from: (usize, f64), sag_mm: f64) -> Vec<(usize, [(f64, f64, f64); 2])> {
+    let (k0, t0) = from;
     let mut out = Vec::new();
     let mut prev = start;
     for (k, seg) in segments.iter().enumerate() {
@@ -1481,11 +1613,11 @@ fn remainder_path(segments: &[ToolPathSegment], start: (f64, f64, f64), stop_at:
                 let mut last = at(ta);
                 for i in 1..=n {
                     let p = at(ta + (1.0 - ta) * i as f64 / n as f64);
-                    out.push([last, p]);
+                    out.push((k, [last, p]));
                     last = p;
                 }
             }
-            None => out.push([(s.0 + (e.0 - s.0) * ta, s.1 + (e.1 - s.1) * ta, s.2 + (e.2 - s.2) * ta), e]),
+            None => out.push((k, [(s.0 + (e.0 - s.0) * ta, s.1 + (e.1 - s.1) * ta, s.2 + (e.2 - s.2) * ta), e])),
         }
     }
     out
@@ -1526,26 +1658,11 @@ fn exclude_uncut_boundary(walls: &mut [WallErrorSample], rest: &[[(f64, f64, f64
     if rest.is_empty() {
         return 0;
     }
-    // 수평 칸 색인: 선분마다 (경계 상자 + r) 가 걸치는 칸에 넣는다 — 벽 점에서 r 안에 오는 선분은 그 점이 든 칸에 반드시 있다
-    let bin = (2.0 * r).max(1.0);
-    let key = |x: f64, y: f64| ((x / bin).floor() as i64, (y / bin).floor() as i64);
-    let mut index: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for (i, [a, b]) in rest.iter().enumerate() {
-        let lo = key(a.0.min(b.0) - r, a.1.min(b.1) - r);
-        let hi = key(a.0.max(b.0) + r, a.1.max(b.1) + r);
-        for kx in lo.0..=hi.0 {
-            for ky in lo.1..=hi.1 {
-                index.entry((kx, ky)).or_default().push(i);
-            }
-        }
-    }
+    let index = PieceIndex::new(rest, r);
     let reach = r - tol;
     let mut n = 0;
     for w in walls.iter_mut().filter(|w| w.final_wall) {
-        let Some(near) = index.get(&key(w.x, w.y)) else {
-            continue;
-        };
-        if near.iter().any(|&i| tip_reach(&rest[i], w.x, w.y, w.z_mid).is_some_and(|d| d < reach)) {
+        if index.near(w.x, w.y).iter().any(|&i| tip_reach(&rest[i], w.x, w.y, w.z_mid).is_some_and(|d| d < reach)) {
             w.final_wall = false;
             w.uncut_boundary = true;
             n += 1;
@@ -2396,14 +2513,17 @@ pub fn simulate_segments_prog(
                 let (hx, hy, hz) = (p.0 + odx, p.1 + ody, p.2 + 0.25 * ap_eff);
                 let self_window = (2.0 * r / (feed / 60.0).max(1e-3)).clamp(0.05, 10.0);
                 let moved = ((hx - last_eval_xy.0).powi(2) + (hy - last_eval_xy.1).powi(2)).sqrt();
-                if !(t - last_eval_t < 0.05 && moved < 0.5) {
+                // 칩을 만들지 않는 스텝(결합 깊이·폭이 격자 잡음 수준이라 힘 0 — 예: 헬리컬 구멍 바닥을 지나는 직선 이동이 바닥 잡음만 스침)은
+                // 접촉 열이 없다. 잔열(앞선 절삭이 남긴 국부 온도)도 칩을 만드는 접촉에서만 읽는다
+                let contact = sample_force.f_res_mean > 0.0;
+                if contact && !(t - last_eval_t < 0.05 && moved < 0.5) {
                     preheat = heat.excess(hx, hy, hz, t, t - self_window).max(0.0);
                     last_eval_t = t;
                     last_eval_xy = (hx, hy);
                 }
-                pre_here = preheat;
-                max_preheat = max_preheat.max(preheat);
-                let th = physics::thermal_preheated(ctx, &co, &sample_force, vce, rpm, &eng_for_heat, body.mass_kg, body.area_m2, preheat + wp_rise.max(0.0));
+                pre_here = if contact { preheat } else { 0.0 };
+                max_preheat = max_preheat.max(pre_here);
+                let th = physics::thermal_preheated(ctx, &co, &sample_force, vce, rpm, &eng_for_heat, body.mass_kg, body.area_m2, pre_here + wp_rise.max(0.0));
                 wp_heat = th.workpiece_heat_w;
                 heat.deposit(hx, hy, hz, t - 0.5 * dt, th.workpiece_heat_w * dt, tau0);
                 if t - last_prune_t > 1.0 {
@@ -2742,7 +2862,23 @@ pub fn simulate_segments_prog(
                     let wy = p.1 + side.1 * r;
                     let along_normal = (wx - datum.0) * side.0 + (wy - datum.1) * side.1;
                     let thermal_wp = ctx.wp.expansion * along_normal * wp_rise * 1000.0;
-                    let tw = thin_wall_um(&grid, wx, wy, side, p.2, z_mid, ap_eff, away_force, e_wp);
+                    // 벽의 항복 응력은 지금 소재 온도에서 (2차 보정의 얇은 벽 게이트와 같은 σy)
+                    let sigma_y = ctx.wp.flow_stress(0.0, 1.0, bulk + wp_rise);
+                    let mut tw = thin_wall_um(&grid, wx, wy, side, p.2, z_mid, ap_eff, away_force, e_wp, sigma_y);
+                    if let Some(w) = tw.as_mut() {
+                        // 칩이 붙은 소재가 벽 법선 방향으로 덩어리면(피치 이동처럼 공구 앞 미절삭 띠를 통째로 깎음) 그 힘은 덩어리가 받는다 (`cut_zone_in_bulk`).
+                        // 절삭 지점 방향은 이 스텝 자신의 제거 중심 (구간 평균은 패스 끝 → 피치 이동 모서리에서 앞 패스 쪽으로 늦게 돈다)
+                        let zone = if rem.volume > 1e-9 {
+                            let (l, f) = (rem.lateral / rem.volume, rem.forward / rem.volume);
+                            (f * dir.0 - l * dir.1, f * dir.1 + l * dir.0)
+                        } else {
+                            cdir
+                        };
+                        if cut_zone_in_bulk(&grid, (p.0, p.1), zone, r, side, z_mid) {
+                            w.defl_um = 0.0;
+                            w.stress_mpa = 0.0;
+                        }
+                    }
                     if let Some(w) = tw {
                         wp_defl = w.defl_um;
                     }
@@ -3022,6 +3158,16 @@ pub fn simulate_segments_prog(
         }
     }
     flag_final_walls(&grid, &mut wall_errors);
+    // 나중에 실행된 패스가 다시 깎은 벽 (단계 절입 황삭 벽을 전체 깊이 정삭 윤곽이 다시 깎음 — 높이 키가 달라 위에서 못 거름).
+    // 멈춘 작업은 멈춘 세그먼트 앞까지만 (그 뒤는 아래 남은 경로의 몫)
+    let last_seg = match tl.stopped_seg {
+        Some(s) if stop => s.checked_sub(1),
+        _ => segments.len().checked_sub(1),
+    };
+    if let Some(last) = last_seg {
+        let done: Vec<(usize, [(f64, f64, f64); 2])> = feed_pieces(segments, path_start, (0, 0.0), 0.025 * grid.cell).into_iter().filter(|(k, _)| *k <= last).collect();
+        exclude_recut_walls(&mut wall_errors, &done, r, 0.25 * grid.cell);
+    }
     // 멈춘 작업: 마지막에 깎인 벽 중 남은 경로가 다시 깎을 미절삭 경계는 부품 벽이 아니다 — 끝난 작업은 남은 경로가 없어 그대로
     let rest = if stop { remainder_path(segments, path_start, stop_at.unwrap_or((0, 0.0)), 0.025 * grid.cell) } else { Vec::new() };
     let uncut_count = exclude_uncut_boundary(&mut wall_errors, &rest, r, 0.25 * grid.cell);
@@ -3047,6 +3193,20 @@ pub fn simulate_segments_prog(
             tw, max_wp_defl
         ));
     }
+    // 벽에 걸린 힘이 뿌리를 항복시키면 그 벽은 영구 변형(휨·꺾임)이다 — 벽 오차에는 전소성 하중까지의 탄성 복원만 넣었다 (`wall_springback_um`).
+    // 소재 온도가 오르면 σy 가 내려가므로 덩어리 온도의 σy 로 세면 적게 센다
+    let sigma_y_bulk = ctx.wp.flow_stress(0.0, 1.0, bulk).max(1.0);
+    let yielded: Vec<&WallErrorSample> = wall_errors.iter().filter(|w| w.final_wall && w.wall_stress_mpa > sigma_y_bulk).collect();
+    if !yielded.is_empty() {
+        let worst = yielded.iter().map(|w| w.wall_stress_mpa).fold(0.0, f64::max);
+        warnings.push(format!(
+            "얇은 벽 항복 — 최종 벽 {}점에서 벽 뿌리 굽힘 응력이 항복 응력 {:.0} MPa 를 넘음 (최대 {:.0} MPa, ×{:.1}): 그 벽은 영구 변형(휨·꺾임)돼 치수 오차가 아니라 불량이고, 벽 휨에는 전소성 하중까지의 탄성 복원만 넣었습니다 — 벽 쪽 절입을 줄이거나 단계 절입·지지를 남기는 순서로 바꾸세요",
+            yielded.len(),
+            sigma_y_bulk,
+            worst,
+            worst / sigma_y_bulk
+        ));
+    }
     if max_preheat > 15.0 {
         warnings.push(format!(
             "이전 패스의 잔류열이 다 빠지기 전에 다음 패스가 지나가 절삭 지점 소재가 최대 {:.0} K 예열됩니다 (열확산율 {:.1} mm²/s) — 패스 순서·간격 조정 또는 냉각 강화를 검토하세요",
@@ -3060,8 +3220,18 @@ pub fn simulate_segments_prog(
     }
     let (heat_packets, heat_field) = heat.finish(6000);
     let episodes = build_episodes(&samples, ctx, profile);
-    // 최종 벽이 없으면 모든 벽 표본으로 — 다만 미절삭 경계는 그때도 넣지 않는다 (부품 벽이 아님)
-    let stat_walls: Vec<&WallErrorSample> = if final_count > 0 { wall_errors.iter().filter(|w| w.final_wall).collect() } else { wall_errors.iter().filter(|w| !w.uncut_boundary).collect() };
+    // 최종 벽이 없으면: 끝까지 간 작업은 모든 벽 표본으로 (미절삭 경계는 빼고), 멈춘 작업은 통계를 내지 않는다 — 정삭 윤곽 전에 멈춘 포켓은 남은
+    // 경로가 황삭 벽을 모두 다시 깎아 부품 벽이 없고, 과도 벽(황삭 줄의 경계)의 오차를 부품 벽 오차처럼 보이면 안 된다
+    let stat_walls: Vec<&WallErrorSample> = if final_count > 0 {
+        wall_errors.iter().filter(|w| w.final_wall).collect()
+    } else if stop {
+        Vec::new()
+    } else {
+        wall_errors.iter().filter(|w| !w.uncut_boundary).collect()
+    };
+    if stop && final_count == 0 && !wall_errors.is_empty() {
+        warnings.push("[공구 수명] 최종 벽 없음 — 멈춘 곳까지 깎은 벽은 모두 남은 경로가 다시 깎을 황삭 벽이라 벽 위치 오차·측벽 Ra 통계를 내지 않음 (0 으로 표시)".into());
+    }
     let (wall_ra_mean, wall_ra_p90, wall_ra_max, wall_wav_max) = {
         let mut ra: Vec<f64> = stat_walls.iter().map(|w| w.ra_um).filter(|v| *v > 0.0).collect();
         ra.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -3404,8 +3574,8 @@ mod tests {
                 g.h[j * 200 + i] = -10.0;
             }
         }
-        let thick = thin_wall_um(&g, 3.0, 0.5, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0).unwrap();
-        let thin = thin_wall_um(&g, 5.0, 0.5, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0).unwrap();
+        let thick = thin_wall_um(&g, 3.0, 0.5, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0, 300.0).unwrap();
+        let thin = thin_wall_um(&g, 5.0, 0.5, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0, 300.0).unwrap();
         assert!(thin.defl_um > 10.0 * thick.defl_um, "{:?} {:?}", thin, thick);
         assert!((thick.thickness_mm - 3.0).abs() < 0.2);
         assert!(thick.k_n_per_mm > thin.k_n_per_mm && (thick.height_mm - 5.0).abs() < 1e-9);
@@ -3413,7 +3583,88 @@ mod tests {
         for v in solid.h.iter_mut() {
             *v = 0.0;
         }
-        assert!(thin_wall_um(&solid, 3.0, 0.5, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0).is_none());
+        assert!(thin_wall_um(&solid, 3.0, 0.5, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0, 300.0).is_none());
+    }
+
+    #[test]
+    fn thin_wall_springback_stops_at_the_plastic_collapse_load() {
+        // 0.95 mm 벽 · 하중점 높이 5 mm · E' 69 GPa · σy 300 MPa: 첫 항복까지는 F/k 그대로, 그 위로는 전소성 붕괴 하중 Fp = 1.5·σy/σ_per_N 까지만
+        // 돌아온다 — 상한 Fp/k = σy·a²/(E'·t) ≈ 114 µm (예전 ±500·t 자르기는 475 µm 를 허용)
+        let mut g = StockGrid {
+            x0: 0.0,
+            y0: 0.0,
+            cell: 0.1,
+            nx: 200,
+            ny: 10,
+            h: vec![0.0; 2000],
+            top: 0.0,
+            bottom: -20.0,
+            cov: Vec::new(),
+            fill: Vec::new(),
+        };
+        for j in 0..10 {
+            for i in 60..200 {
+                g.h[j * 200 + i] = -10.0;
+            }
+        }
+        let wall = |f: f64, sy: f64| thin_wall_um(&g, 5.0, 0.5, (1.0, 0.0), -10.0, -5.0, 10.0, f, 69000.0, sy).unwrap();
+        let el = wall(50.0, 300.0);
+        assert!((el.defl_um - 50.0 / el.k_n_per_mm * 1000.0).abs() < 1e-9 && el.stress_mpa < 300.0, "below yield the wall is elastic: {:?}", el);
+        let cap_um = 300.0 * el.height_mm.powi(2) / (69000.0 * el.thickness_mm) * 1000.0;
+        assert!((el.collapse_n / el.k_n_per_mm * 1000.0 - cap_um).abs() < 1e-6 && cap_um > 100.0 && cap_um < 130.0, "{:.1}", cap_um);
+        let hard = wall(5000.0, 300.0);
+        assert!((hard.defl_um - cap_um).abs() < 1e-6 && hard.stress_mpa > 10.0 * 300.0, "the overload bends the wall for good, only Fp/k springs back: {:?}", hard);
+        assert!((wall(-5000.0, 300.0).defl_um + cap_um).abs() < 1e-6);
+        // 항복 응력을 모르면 예전 자르기
+        let old = wall(5000.0, 0.0);
+        assert!((old.defl_um - 500.0 * old.thickness_mm).abs() < 1e-6 && old.defl_um > 4.0 * cap_um && old.collapse_n.is_infinite());
+        // 2차 보정 예측도 같은 식
+        assert!((wall_springback_um(5000.0, hard.k_n_per_mm, hard.sigma_per_n, 300.0, hard.thickness_mm) - cap_um).abs() < 1e-6);
+        assert_eq!(wall_springback_um(5000.0, 0.0, hard.sigma_per_n, 300.0, hard.thickness_mm), 0.0);
+    }
+
+    #[test]
+    fn a_stepover_into_uncut_stock_does_not_load_the_skin_beside_it() {
+        // 지그재그 포켓의 피치 이동: 공구(r 6)가 X 12 에서 +Y 로 가며 앞의 미절삭 덩어리(Y ≥ 10)를 폭 전체로 깎고, 오른쪽으로 X 18~19 의
+        // 1 mm 스킨(그 너머는 스톡 밖)을 만든다. 칩이 소재를 미는 방향(+X)으로 덩어리가 19 mm 이어져 그 힘은 덩어리가 면내로 받는다
+        let cell = 0.1;
+        let (nx, ny) = (200usize, 200usize);
+        let mut g = StockGrid {
+            x0: 0.0,
+            y0: 0.0,
+            cell,
+            nx,
+            ny,
+            h: vec![0.0; nx * ny],
+            top: 0.0,
+            bottom: -20.0,
+            cov: Vec::new(),
+            fill: Vec::new(),
+        };
+        let carve = |g: &mut StockGrid, band_from: Option<f64>| {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let (x, y) = ((i as f64 + 0.5) * cell, (j as f64 + 0.5) * cell);
+                    g.h[j * nx + i] = match band_from {
+                        _ if x >= 19.0 => NO_MATERIAL,
+                        None if x < 18.0 && y < 10.0 => -12.0,
+                        Some(b) if x < b => -12.0,
+                        _ => 0.0,
+                    };
+                }
+            }
+        };
+        carve(&mut g, None);
+        assert!(cut_zone_in_bulk(&g, (12.0, 4.0), (0.0, 1.0), 6.0, (1.0, 0.0), -6.0));
+        // 스킨의 형상(두께·강성)은 그대로 남는다 — 나중에 그 스킨을 따라 깎는 2차 보정이 쓴다
+        let skin = thin_wall_um(&g, 18.0, 4.0, (1.0, 0.0), -12.0, -6.0, 12.0, 0.0, 218000.0, 1241.0).unwrap();
+        assert!((skin.thickness_mm - 1.0).abs() < 0.11 && (skin.height_mm - 6.0).abs() < 1e-9 && skin.defl_um == 0.0 && skin.stress_mpa == 0.0, "{:?}", skin);
+        // 벽을 따라 벽 쪽 띠(X 15.6~18)만 깎는 측면 절삭: 띠 + 스킨이 3.4 mm 로 얇은 한 몸이라 힘이 스킨에 걸린다
+        let mut side_cut = g.clone();
+        carve(&mut side_cut, Some(15.6));
+        assert!(!cut_zone_in_bulk(&side_cut, (12.0, 4.0), (0.95, 0.31), 6.0, (1.0, 0.0), -6.0));
+        // 제거 중심 방향을 모르면 예전처럼 벽에 건다
+        assert!(!cut_zone_in_bulk(&g, (12.0, 4.0), (0.0, 0.0), 6.0, (1.0, 0.0), -6.0));
     }
 
     #[test]
@@ -3430,14 +3681,16 @@ mod tests {
             cov: Vec::new(),
             fill: Vec::new(),
         };
-        assert!(thin_wall_um(&g, 2.95, 0.55, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0).is_none());
+        assert!(thin_wall_um(&g, 2.95, 0.55, (1.0, 0.0), -10.0, -5.0, 10.0, 100.0, 69000.0, 300.0).is_none());
         for j in 0..10 {
             for i in 30..34 {
                 g.h[j * 200 + i] = 0.0;
             }
         }
-        let w = thin_wall_um(&g, 2.95, 0.55, (1.0, 0.0), -10.0, -5.0, 10.0, 5000.0, 69000.0).unwrap();
+        let w = thin_wall_um(&g, 2.95, 0.55, (1.0, 0.0), -10.0, -5.0, 10.0, 5000.0, 69000.0, 0.0).unwrap();
         assert!(w.thickness_mm < 0.5 && w.defl_um <= 500.0 * w.thickness_mm + 1e-9, "{:?}", w);
+        let wy = thin_wall_um(&g, 2.95, 0.55, (1.0, 0.0), -10.0, -5.0, 10.0, 5000.0, 69000.0, 300.0).unwrap();
+        assert!(wy.defl_um <= wy.collapse_n / wy.k_n_per_mm * 1000.0 + 1e-9, "{:?}", wy);
     }
 
     /// 셀이 반경 절입(ae)과 같은 크기여도 지운 체적이 기하(ae × ap × 이동 거리)와 맞아야 한다.
@@ -3611,6 +3864,49 @@ mod tests {
         assert_eq!(exclude_uncut_boundary(&mut w, &skim, r, tol), 0);
         assert!(w[0].final_wall);
         assert_eq!(exclude_uncut_boundary(&mut w, &[], r, tol), 0, "a finished run has no rest");
+    }
+
+    /// 실행된 나중 패스가 다시 깎은 벽: 단계 절입 황삭 벽(세그먼트 1·2, 높이 키가 서로·정삭과 다름)은 정삭 여유 0.5 mm 바깥을 전체 깊이로 지나는
+    /// 정삭 윤곽(세그먼트 4)에 덮여 빠지고, 정삭 윤곽 자신이 만든 벽과 같은 윤곽을 더 깊이 다시 지난 다음 단계(거리 정확히 r)의 앞 단계 벽은 남는다
+    #[test]
+    fn walls_a_later_executed_pass_recuts_are_not_final() {
+        use ToolPathSegment as S;
+        let wall = |y: f64, z_mid: f64, seg: usize| WallErrorSample {
+            x: 20.0,
+            y,
+            nx: 0.0,
+            ny: -1.0,
+            z_mid,
+            seg,
+            final_wall: true,
+            ..WallErrorSample::default()
+        };
+        let (r, tol, a) = (6.0, 0.04, 0.5);
+        // 단계 1·2 황삭 줄 y = r + a (벽 y = a, 세그먼트 2·4), 정삭 윤곽 y = r (벽 y = 0, 세그먼트 7)
+        let segs = vec![
+            S::Rapid { x: 0.0, y: r + a, z: 0.5 },
+            S::Linear { x: 0.0, y: r + a, z: -6.0, feed: 100.0 },
+            S::Linear { x: 40.0, y: r + a, z: -6.0, feed: 100.0 },
+            S::Linear { x: 40.0, y: r + a, z: -12.0, feed: 100.0 },
+            S::Linear { x: 0.0, y: r + a, z: -12.0, feed: 100.0 },
+            S::Rapid { x: 0.0, y: r, z: 0.5 },
+            S::Linear { x: 0.0, y: r, z: -12.0, feed: 100.0 },
+            S::Linear { x: 40.0, y: r, z: -12.0, feed: 100.0 },
+        ];
+        let done = feed_pieces(&segs, (0.0, 0.0, 30.0), (0, 0.0), 0.004);
+        assert!(done.iter().all(|(k, _)| *k != 0 && *k != 5), "rapids do not cut");
+        let mut w = vec![wall(a, -3.0, 2), wall(a, -9.0, 4), wall(0.0, -6.0, 7)];
+        assert_eq!(exclude_recut_walls(&mut w, &done, r, tol), 2);
+        assert!(!w[0].final_wall && !w[1].final_wall, "the finishing contour re-cuts both roughing levels");
+        assert!(w[2].final_wall && !w[2].uncut_boundary, "the contour's own wall stays and is not an uncut boundary");
+        // 정삭 없이 단계만: 단계 2 는 같은 윤곽을 더 깊게 지나 단계 1 벽까지 거리 r — 그 벽은 남는다
+        let mut w = vec![wall(a, -3.0, 2)];
+        let roughing: Vec<(usize, [(f64, f64, f64); 2])> = done.iter().cloned().filter(|(k, _)| *k <= 4).collect();
+        assert_eq!(exclude_recut_walls(&mut w, &roughing, r, tol), 0);
+        assert!(w[0].final_wall);
+        // 같은 세그먼트(또는 앞 세그먼트)의 조각은 보지 않는다
+        let mut w = vec![wall(a, -3.0, 7)];
+        assert_eq!(exclude_recut_walls(&mut w, &done, r, tol), 0);
     }
 }
 

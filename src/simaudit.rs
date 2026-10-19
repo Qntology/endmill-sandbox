@@ -1259,6 +1259,28 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             format!("공구 끝 컴플라이언스 {:.3} µm/N 중 홀더({:.0} N/µm)·스핀들({:.0} N/µm) 몫 {:.0}% — 공구 보 굽힘이 휨을 거의 다 정한다", total_c, t.holder_stiffness_n_per_um, t.spindle_stiffness_n_per_um, deflection.holder_share * 100.0),
         );
     }
+    // 얇은 벽 항복: 벽에 걸린 힘이 뿌리를 항복시킨 최종 벽 — 벽 오차에는 전소성 하중까지의 탄성 복원만 들어간다 (`loadsim::wall_springback_um`)
+    {
+        let sigma_y = ctx.wp.flow_stress(0.0, 1.0, rep.bulk_c).max(1.0);
+        let thin: Vec<&crate::loadsim::WallErrorSample> = rep.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).collect();
+        let worst = thin.iter().map(|w| w.wall_stress_mpa).fold(0.0, f64::max);
+        if worst > sigma_y {
+            let n = thin.iter().filter(|w| w.wall_stress_mpa > sigma_y).count();
+            flag(
+                &mut flags,
+                "thin_wall_yield",
+                1,
+                worst / sigma_y,
+                "< 1 (탄성)",
+                format!(
+                    "최종 얇은 벽 {}점에서 벽 뿌리 굽힘 응력이 항복 응력 {:.0} MPa 의 최대 {:.1}배 — 그 벽은 영구 변형(휨·꺾임)돼 치수 오차가 아니라 불량이고, 벽 오차에는 전소성 하중(1.5·σy)까지의 탄성 복원만 들어갔다. 벽 쪽 절입을 줄이고 단계 절입·지지를 남기는 순서로 바꿀 것",
+                    n,
+                    sigma_y,
+                    worst / sigma_y
+                ),
+            );
+        }
+    }
 
     // ---- 표면조도 ----
     let group = crate::pairref::WpGroup::of(&ctx.wp);
@@ -1822,6 +1844,80 @@ pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSim
         format!("고정 휨 {:.2} µm · 얇은 벽 휨", nominal.fixture_deflection_um),
         "정삭 위치에서 탭·밀기 시험",
     );
+    {
+        let thin: Vec<&crate::loadsim::WallErrorSample> = rep.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).collect();
+        if !thin.is_empty() {
+            let sigma_y = ctx.wp.flow_stress(0.0, 1.0, rep.bulk_c).max(1.0);
+            let unloaded = thin.iter().filter(|w| w.wall_stress_mpa <= 0.0).count();
+            let yielded = thin.iter().filter(|w| w.wall_stress_mpa > sigma_y).count();
+            add(
+                "thin_wall_load",
+                format!(
+                    "얇은 벽 최소 {:.2} mm (최종 벽 {}점): 칩이 붙은 소재가 벽 재료면 공구 법선 힘 전체, 벽 법선 방향으로 15 mm 넘게 이어진 덩어리면 0 ({}점) · 탄성 복원은 전소성 하중 1.5·σy (σy {:.0} MPa) 까지",
+                    thin.iter().map(|w| w.wall_mm).fold(f64::INFINITY, f64::min),
+                    thin.len(),
+                    unloaded,
+                    sigma_y
+                ),
+                "벽과 덩어리가 힘을 나눠 받는 몫 0~100 % (두 강성의 비 — 유한요소로만 정함, 미절삭 소재 1~5 mm 앞이면 벽 강성 ×4~115) · 판 폭 b = ap + 2a 는 강성 등가 폭과 ±15 % 이나 뿌리 응력은 Roark 판 해(응력 폭 1.6~2.0·a)로 1.3~1.5배 클 수 있음 · 벽 위끝 휨은 가운데 높이의 약 2.5배 (벽 오차는 가운데 높이) · 벽 자유 끝 강성 ×0.37 · 로트 σy ±10 % (IN718 시효재 0.2 % 내력 최소 1,034 MPa)",
+                format!("얇은 벽 휨 최대 {:.1} µm · 항복 넘은 최종 벽 {}점 (그 벽은 영구 변형 — 치수가 아니라 불량)", rep.max_workpiece_defl_um, yielded),
+                "정삭 전후 벽 두께를 마이크로미터로 재고, 다이얼 게이지를 대고 벽을 밀어 강성 확인 (또는 그 벽만 유한요소 해석)",
+            );
+        }
+    }
+    if rep.pattern == "pocket_zigzag" {
+        let plan = crate::gcode::pocket_plan(profile);
+        let entry = match plan.entry.as_str() {
+            "helix" => format!("헬리컬 진입 (구멍 Ø{:.1} mm, 공구 중심 경사 {:.1}°)", plan.helix_bore_mm, plan.ramp_deg),
+            "ramp" => format!("직선 램프 진입 ({:.1}°)", plan.ramp_deg),
+            _ => "직선 플런지 진입".to_string(),
+        };
+        add(
+            "pocket_path_strategy",
+            format!(
+                "합성 지그재그 포켓 — 단계 {} × {:.2} mm (슬롯 ap 상한 {}) · {} · 첫 줄 슬롯·줄 끝 피치 이동 fz ×{:.2} (칩 얇아짐 보정 뺌) · 벽 정삭 여유 {:.2} mm 를 남긴 뒤 전체 깊이 정삭 윤곽 ({}) · 벽 두께 {:.2} mm — {}",
+                plan.levels,
+                plan.level_ap_mm,
+                plan.slot_ap_max_mm.map(|v| format!("{:.1} mm", v)).unwrap_or_else(|| "자료 없음".into()),
+                entry,
+                plan.slot_feed_ratio,
+                plan.finish_allow_mm,
+                if plan.up_milling { "상향" } else { "하향" },
+                plan.wall_mm,
+                plan.notes.join(" · ")
+            ),
+            "제조사 슬롯 ap 는 같은 소재에서도 갈림 (Ti 0.25~1.25·D · Ni 합금 0.25~0.75·D · 58 HRC 0.05~0.5·D) · 헬리컬 이송 = 슬롯 이송의 20~100 % (Seco ↔ IMCO·SGS) · 벽 정삭 여유 2~6 % D (Seco·Haas·Helical) · 모서리 반경 4/3·r 은 부품 설계값으로 가정 (도면이 더 작으면 모서리 결합이 커짐)",
+            format!(
+                "슬롯 ap 를 범위 끝으로 옮기면 단계 수·절삭 시간·공구 응력이 움직임 · 최종 벽은 정삭 윤곽이 만든 벽 (이 작업 최종 벽 공구 휨 최대 {:.0} µm, 모서리 반경 {:.1} mm)",
+                rep.wall_errors.iter().filter(|w| w.final_wall).map(|w| w.deflection_um.abs()).fold(0.0, f64::max),
+                plan.corner_radius_mm
+            ),
+            "실제 CAM G-code 를 불러와 시뮬레이션 — 슬롯 ap·헬리컬 이송은 쓰는 공구의 제조사 자료로",
+        );
+    }
+    // 얕은 절입(헬리컬·램프 진입: 회전당 하강 0.3~0.5 mm 로 바닥 전폭)의 마모는 마모장의 공구 끝 칸에만 쌓이지만, 작업 안의 VB(수명 판정·
+    // 반경 마모 보정)는 깊이를 가리지 않고 더한다. 새 날 길들이기도 공구 나이로만 세어 처음 물린 곳(진입이면 날끝)에 다 들어간다
+    let band_ap = profile.conditions.axial_doc_mm;
+    let dvb_all: f64 = rep.regimes.iter().map(|g| g.dvb_mm).sum();
+    let dvb_shallow: f64 = if band_ap > 1e-9 { rep.regimes.iter().map(|g| g.dvb_mm * (1.0 - (g.ap_mm / band_ap).min(1.0))).sum() } else { 0.0 };
+    if dvb_all > 1e-9 && dvb_shallow > 0.15 * dvb_all {
+        add(
+            "shallow_cut_wear_depth",
+            format!(
+                "VB 성장의 {:.0}% 가 ap {:.1} mm 띠보다 얕은 절입 (마모장 띠 평균 {:.3} mm · 깊이를 가리지 않은 VB {:.3} mm) — 작업 안 수명 판정·반경 마모는 깊이 무관 VB, 공구 장부는 띠 평균을 이어 씀 · 길들이기는 공구 나이로만 셈",
+                100.0 * dvb_shallow / dvb_all,
+                band_ap,
+                rep.wear_field.band_vb(band_ap),
+                rep.vb_end_mm - rep.vb_start_mm
+            ),
+            "날 위치별 길들이기·날끝(코너) 마모 배분 자료 없음 — 진입 마모는 날끝 마모로 가고, 측면 띠는 처음 물릴 때 따로 길들여질 수 있음",
+            format!(
+                "작업 안 VB·수명 판정·벽 마모 보정이 측면 띠 마모보다 최대 {:.0}% 크고, 다음 작업의 시작 VB(띠 평균)는 그만큼 작음 — 날끝 마모는 마모장 최댓값(국부 수명)으로만 남음",
+                100.0 * dvb_shallow / dvb_all
+            ),
+            "진입이 긴 작업 하나 뒤 공구 현미경으로 날끝(코너)과 띠 중간 VB 를 따로 측정",
+        );
+    }
     add(
         "lot_hardness",
         format!("{} 대표 경도 {:.0} HRC", ctx.wp.label, ctx.wp.hardness_hrc),

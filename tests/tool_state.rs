@@ -172,6 +172,27 @@ fn simulate(p: &MachiningProfile, ctx: &CutContext) -> LoadSimReport {
     endmill_model::viewport::build_report_prog(p, "pocket_zigzag", ctx, &mut |_| true).unwrap().1
 }
 
+/// 경로 마모가 깊이 띠(0..ap)에 들어가는 몫의 범위: 절삭 체제마다 dvb × (그 체제 ap / 띠 ap). 헬리컬 진입처럼 얕게 깎은 마모는
+/// 공구 끝 쪽 칸에만 쌓여 띠 평균이 스칼라 VB 성장(깊이를 가리지 않고 더한 값)보다 작다. 걸친 깊이 칸(날 길이/80)은 칸 전체가
+/// 띠 평균에 들어가므로 위 경계는 한 칸 깊게 본다
+fn depth_band_range(r: &LoadSimReport, ap: f64) -> (f64, f64) {
+    let dz = r.wear_field.dz_mm;
+    let lo: f64 = r.regimes.iter().map(|g| g.dvb_mm * (g.ap_mm / ap).min(1.0)).sum();
+    let hi: f64 = r.regimes.iter().map(|g| g.dvb_mm * ((g.ap_mm + dz) / ap).min(1.0)).sum();
+    (lo, hi)
+}
+
+/// 공구 개체에 저장될 마모장의 ap 띠 평균: 시작 마모장 + 1차 경로 마모장 + 이 공구가 깎은 2차 마모장
+fn stored_band(j: &Tracked, comp: &CompOutcome, ap: f64) -> f64 {
+    let mut f = j.start.field.clone();
+    f.add_any(&j.report.wear_field);
+    let a = comp.decision.final_action;
+    if a.cuts() && a != CompAction::ToolChange {
+        f.add_any(&comp.wear_field2);
+    }
+    f.band_vb(ap)
+}
+
 #[test]
 fn simulation_continues_from_stored_wear_without_repeating_break_in() {
     let p = preset("탄소강");
@@ -193,7 +214,14 @@ fn simulation_continues_from_stored_wear_without_repeating_break_in() {
     assert!(first(&r2) < first(&r1), "worn tool must not repeat the break-in spike: {} vs {}", first(&r2), first(&r1));
     assert!(r1.warnings.iter().all(|w| !w.contains("누적 마모")));
     assert!(r2.warnings.iter().any(|w| w.contains("누적 마모")));
-    assert!((r1.wear_field.band_vb(p.conditions.axial_doc_mm) - (r1.vb_end_mm - r1.vb_start_mm)).abs() < 0.02 * r1.vb_end_mm.max(1e-6) + 1e-6);
+    // 마모장은 체제마다 그 깊이 띠에 마모를 쌓는다: 헬리컬 진입(회전당 하강 ≈ 0.3 mm, 바닥 전폭)의 마모는 공구 끝 칸에만 있어
+    // ap 띠 평균은 스칼라 VB 성장보다 작다 (탄소강 포켓: 성장의 약 40 %)
+    let ap = p.conditions.axial_doc_mm;
+    let grow = r1.vb_end_mm - r1.vb_start_mm;
+    let band = r1.wear_field.band_vb(ap);
+    let (lo, hi) = depth_band_range(&r1, ap);
+    assert!(band >= lo - 1e-6 && band <= hi + 0.03 * grow, "band {} outside the depth-weighted growth {}–{} (scalar growth {})", band, lo, hi, grow);
+    assert!(band < 0.9 * grow, "the helical entry wears the tool tip, not the side band: band {} vs scalar growth {}", band, grow);
     assert!(!r1.regimes.is_empty());
     assert!(r1.regimes.iter().all(|g| g.t_cut_s > 0.0 && g.phi_ex_deg >= g.phi_st_deg));
     assert!((r1.growth_calib_mm + r1.growth_fixed_mm - (r1.vb_end_mm - r1.vb_start_mm)).abs() < 1e-9);
@@ -276,9 +304,12 @@ fn tool_instance_accumulates_across_jobs_records_passes_and_resets() {
     let t1 = out1.tool.clone().unwrap();
     assert_eq!(row.id, t1.id);
     assert_eq!(t1.jobs, 1);
-    // 저장값은 날별 마모장의 '마지막 ap 띠' 평균이고 시뮬레이션 값은 경로 끝 스칼라 VB — 램프·부분 깊이 스텝은 얕은 띠에 쌓여
-    // 두 값이 1 % 안팎 다르다 (스핀들 모드로 스텝마다 채터 마모 배수 차이가 커져 1.0 % 를 넘음)
-    assert!((t1.vb_band_mm - j1.report.vb_end_mm).abs() < 0.02 * j1.report.vb_end_mm + 1e-6, "stored {} vs simulated {}", t1.vb_band_mm, j1.report.vb_end_mm);
+    // 저장값은 날별 마모장의 '마지막 ap 띠' 평균이다. 경로 끝 스칼라 VB 는 깊이를 가리지 않고 더한 값이라, 헬리컬 진입처럼 공구 끝
+    // 칸에만 쌓인 마모(탄소강 포켓: 성장의 약 40 %)만큼 띠보다 크다 — 깊이 회계는 `simulation_continues_from_stored_wear…` 에서 보고
+    // 여기서는 시뮬레이션 마모장(1차 + 이 공구의 2차)이 그대로 저장되는지 본다
+    let sim_band = stored_band(&j1, &j1.comp, p.conditions.axial_doc_mm);
+    assert!((t1.vb_band_mm - sim_band).abs() < 1e-9 + 1e-6 * sim_band, "stored {} vs simulated band {}", t1.vb_band_mm, sim_band);
+    assert!(sim_band > 0.0 && sim_band < j1.comp.vb_after_mm.max(j1.report.vb_end_mm), "band {} vs scalar {}", sim_band, j1.report.vb_end_mm);
     assert!(t1.cut_min >= j1.report.cut_time_min - 1e-9);
     assert!(out1.records > 0);
     let (j2, mut row2) = tracked_job(&mut store, &mut sds, &p, &opts);
@@ -286,7 +317,17 @@ fn tool_instance_accumulates_across_jobs_records_passes_and_resets() {
     assert!((j2.report.vb_start_mm - t1.vb_band_mm).abs() < 1e-9, "{} vs {}", j2.report.vb_start_mm, t1.vb_band_mm);
     assert!((j2.report.wear_age0_min - t1.cut_min).abs() < 1e-9, "break-in continues from the tool's real cutting minutes: {} vs {}", j2.report.wear_age0_min, t1.cut_min);
     assert!(j2.comp.draft.refs.as_ref().map(|r| r.n == 1).unwrap_or(false), "second job must find the first job (one reference per job)");
-    assert!(j2.log.life.as_ref().map(|l| l.history_n > j1.log.life.as_ref().map(|x| x.history_n).unwrap_or(0)).unwrap_or(false));
+    // 두 번째 작업의 수명 예측은 공구 개체의 누적 이력(첫 작업과 그 2차의 마모점)에서 이어진다. 예측 격자 점 수(history_n)는 이력 길이를
+    // 작업 시간의 1/8 또는 1/4 간격으로 다시 샘플한 값이라, 이력이 작업 두 개 길이면 둘 다 9점이 될 수 있다 (이력/간격이 8 경계) — 이력 자체를 본다
+    let (l1, l2) = (j1.log.life.as_ref().expect("life forecast, job 1"), j2.log.life.as_ref().expect("life forecast, job 2"));
+    assert!(
+        j1.log.prior_points == 0 && j2.log.prior_points > 0 && l2.t_now_min > l1.t_now_min + 0.9 * j1.report.cut_time_min,
+        "job 2 continues the tool's history: prior {} → {}, now {:.2} → {:.2} min",
+        j1.log.prior_points,
+        j2.log.prior_points,
+        l1.t_now_min,
+        l2.t_now_min
+    );
     assert!(j2.comp.draft.state_text.contains("reused"));
     let out2 = record(&store, &mut row2, &p, &j2, &j2.comp, "T2", None, false);
     let t2 = out2.tool.clone().unwrap();
@@ -701,8 +742,14 @@ fn stored_wear_matches_the_simulation_at_a_depth_between_bins_and_durability_nev
     let (j1, mut row) = tracked_job(&mut store, &mut sds, &p, &opts);
     let out1 = record(&store, &mut row, &p, &j1, &j1.comp, "N1", None, false);
     let t1 = out1.tool.unwrap();
-    let simulated = if j1.comp.decision.final_action.cuts() { j1.comp.vb_after_mm } else { j1.report.vb_end_mm };
-    assert!((t1.vb_band_mm - simulated).abs() < 0.02 * simulated + 1e-6, "stored {} vs simulated {}", t1.vb_band_mm, simulated);
+    // ap 6.3 mm 는 깊이 칸 경계 사이 — 걸친 칸의 몫이 맞으면 전 깊이로 깎은 체제의 마모가 띠 평균에 그대로(×1) 들어간다.
+    // 헬리컬 진입의 마모는 공구 끝 칸에만 쌓여 스칼라 VB 보다 작다 (`depth_band_range`)
+    let ap = p.conditions.axial_doc_mm;
+    let simulated = stored_band(&j1, &j1.comp, ap);
+    assert!((t1.vb_band_mm - simulated).abs() < 1e-9 + 1e-6 * simulated, "stored {} vs simulated band {}", t1.vb_band_mm, simulated);
+    let (band1, grow1) = (j1.report.wear_field.band_vb(ap), j1.report.vb_end_mm - j1.report.vb_start_mm);
+    let (lo, hi) = depth_band_range(&j1.report, ap);
+    assert!(band1 >= lo - 1e-6 && band1 <= hi + 0.03 * grow1, "band {} at ap {} outside the depth-weighted growth {}–{} (scalar growth {})", band1, ap, lo, hi, grow1);
     let (j2, mut row2) = tracked_job(&mut store, &mut sds, &p, &opts);
     assert!((j2.report.vb_start_mm - t1.vb_band_mm).abs() < 1e-9);
     let out2 = record(&store, &mut row2, &p, &j2, &j2.comp, "N2", None, false);
@@ -923,8 +970,11 @@ fn tool_change_parts_left_follows_a_fresh_tool_on_the_same_path() {
     };
     let (_, first, log0) = plan(0, None);
     let next_growth = runs[1].1.vb_end_mm - runs[1].1.vb_start_mm;
-    let fused = log0.per_part_vb_p50_mm.expect("fused per-part growth");
-    assert!(fused > 0.6 * next_growth && fused < 1.6 * next_growth, "the physics predictor must follow this path: fused {} mm/part vs the next part {}", fused, next_growth);
+    // 부품당 성장은 경로 물리 궤적으로 잡는다 — 시계열 기울기는 작업 끝(가벼운 정삭 윤곽)의 속도라 진입·황삭이 섞인 부품 하나를
+    // 0.4 배로 낮춰 봤다. 처음 날의 길들이기는 다음 부품에 다시 오지 않는다
+    let per_part = log0.per_part_vb_p50_mm.expect("per-part growth");
+    assert!(per_part > 0.8 * next_growth && per_part < 1.25 * next_growth, "the physics predictor must follow this path: {} mm/part vs the next part {}", per_part, next_growth);
+    assert!(log0.per_part_vb_p90_mm.unwrap() >= per_part);
     let left = (fresh_parts - 1) as f64;
     let f50 = first.parts_left_p50.expect("parts left after the first part");
     assert!(f50 <= left && f50 + 1.0 >= left, "first part: forecast {} more parts, the same tool really lasts {} more ({})", f50, left, first.parts_source);

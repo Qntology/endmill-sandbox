@@ -290,6 +290,7 @@ pub fn build(profile: &MachiningProfile, pattern_key: &str, sds: Option<&SdsStor
     let (ctx, _) = calibrated_context(profile, sds);
     let mut rep = loadsim::simulate_segments_res(profile, &segments, pattern.key(), &ctx, VIEWPORT_MAX_CELLS);
     rep.warnings.extend(crate::gcode::stepover_note(profile, &pattern));
+    rep.warnings.extend(crate::gcode::slot_note(profile, &pattern));
     Ok(assemble(profile, pattern.key(), &ctx, rep))
 }
 
@@ -302,6 +303,7 @@ pub fn build_with_context(profile: &MachiningProfile, pattern_key: &str, ctx: &C
     }
     let mut rep = loadsim::simulate_segments_res(profile, &segments, pattern.key(), ctx, VIEWPORT_MAX_CELLS);
     rep.warnings.extend(crate::gcode::stepover_note(profile, &pattern));
+    rep.warnings.extend(crate::gcode::slot_note(profile, &pattern));
     Ok(assemble(profile, pattern.key(), ctx, rep))
 }
 
@@ -319,6 +321,7 @@ pub fn build_report_prog(
     }
     let mut rep = loadsim::simulate_segments_prog(profile, &segments, pattern.key(), ctx, VIEWPORT_MAX_CELLS, progress)?;
     rep.warnings.extend(crate::gcode::stepover_note(profile, &pattern));
+    rep.warnings.extend(crate::gcode::slot_note(profile, &pattern));
     let view = assemble(profile, pattern.key(), ctx, rep.clone());
     Ok((view, rep, segments))
 }

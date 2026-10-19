@@ -238,6 +238,9 @@ pub struct CutRecordRow {
     pub flute_shares: Vec<f64>,
     pub measured_ratio: Option<f64>,
     pub created_at: i64,
+    /// 이 기록이 속한 부품(재계획 묶음)의 뿌리 작업 — 후보 조회(`candidate_records`)만 jobs 에서 채우고 그 밖에는 job_id
+    #[serde(default)]
+    pub part_job_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -384,6 +387,7 @@ fn record_of(r: &Row) -> rusqlite::Result<CutRecordRow> {
         flute_shares: serde_json::from_str(&shares).unwrap_or_default(),
         measured_ratio: r.get(32)?,
         created_at: r.get(33)?,
+        part_job_id: r.get(1)?,
     })
 }
 
@@ -982,11 +986,17 @@ impl Rdb {
         let mut st = self
             .conn()
             .prepare(&format!(
-                "SELECT {} FROM cut_records c JOIN jobs j ON j.id = c.job_id LEFT JOIN job_passes jp ON jp.job_id = c.job_id AND jp.pass = c.pass WHERE c.material_key = ?1 AND c.flutes = ?2 AND (?3 IS NULL OR (c.job_id <> ?3 AND COALESCE(j.root_job_id, -1) <> ?3)) AND COALESCE(jp.status, '') NOT IN ('replaced', 'awaiting_tool', 'superseded') ORDER BY c.created_at DESC LIMIT ?4",
+                "SELECT {}, COALESCE(j.root_job_id, c.job_id) FROM cut_records c JOIN jobs j ON j.id = c.job_id LEFT JOIN job_passes jp ON jp.job_id = c.job_id AND jp.pass = c.pass WHERE c.material_key = ?1 AND c.flutes = ?2 AND (?3 IS NULL OR (c.job_id <> ?3 AND COALESCE(j.root_job_id, -1) <> ?3)) AND COALESCE(jp.status, '') NOT IN ('replaced', 'awaiting_tool', 'superseded') ORDER BY c.created_at DESC LIMIT ?4",
                 cols.join(", ")
             ))
             .map_err(err)?;
-        let rows = st.query_map(params![material_key, flutes, exclude_root, limit.max(1)], record_of).map_err(err)?;
+        let rows = st
+            .query_map(params![material_key, flutes, exclude_root, limit.max(1)], |r| {
+                let mut c = record_of(r)?;
+                c.part_job_id = r.get(34)?;
+                Ok(c)
+            })
+            .map_err(err)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 }
@@ -1070,6 +1080,7 @@ fn regime_record(p: &MachiningProfile, ctx: &CutContext, job_id: i64, pass: i64,
         flute_shares: shares.to_vec(),
         measured_ratio: None,
         created_at: 0,
+        part_job_id: job_id,
     }
 }
 
@@ -1695,6 +1706,15 @@ pub fn reference_summary(rdb: &Rdb, p: &MachiningProfile, ctx: &CutContext, quer
     let (nose_fam, nose_r) = nose_family(&nose_key);
     let calib = ctx.calib.wear.max(1e-6);
     let t_max: f64 = query.iter().map(|q| q.t_cut_s).fold(0.0, f64::max).max(1e-9);
+    // 참조 단위는 부품: 원 작업과 그 재계획(2차를 다시 짠 작업)의 기록은 한 부품이라 가장 비슷한 1건만 쓴다.
+    // 실측 비도 부품 단위(실측은 뿌리 작업의 1차 기록에 붙는다) — 고른 기록에 없으면 같은 부품의 가장 최근 실측 비를 쓴다
+    let mut part_measured: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    for c in cands.iter() {
+        if let Some(m) = c.measured_ratio.filter(|r| r.is_finite() && *r > 0.0) {
+            part_measured.entry(c.part_job_id).or_insert(m);
+        }
+    }
+    let measured_of = |c: &CutRecordRow| c.measured_ratio.filter(|r| r.is_finite() && *r > 0.0).or_else(|| part_measured.get(&c.part_job_id).cloned());
     let mut best_by_job: std::collections::HashMap<i64, (f64, &CutRecordRow, f64)> = std::collections::HashMap::new();
     for c in cands.iter() {
         let (fam, r) = nose_family(&c.nose);
@@ -1731,7 +1751,7 @@ pub fn reference_summary(rdb: &Rdb, p: &MachiningProfile, ctx: &CutContext, quer
             }
         }
         if best > REF_MIN_SIMILARITY {
-            let e = best_by_job.entry(c.job_id).or_insert((best, c, best_rate_ratio));
+            let e = best_by_job.entry(c.part_job_id).or_insert((best, c, best_rate_ratio));
             let better = best > e.0 || (c.measured_ratio.is_some() && e.1.measured_ratio.is_none() && best > 0.8 * e.0);
             if better {
                 *e = (best, c, best_rate_ratio);
@@ -1750,7 +1770,7 @@ pub fn reference_summary(rdb: &Rdb, p: &MachiningProfile, ctx: &CutContext, quer
     out.sim_rate_ratio = Some((scored.iter().map(|s| s.0 * s.2.max(1e-6).ln()).sum::<f64>() / wsum).exp());
     let mut meas: Vec<(f64, f64)> = scored
         .iter()
-        .filter_map(|s| s.1.measured_ratio.filter(|r| r.is_finite() && *r > 0.0).map(|r| (r / calib, s.0)))
+        .filter_map(|s| measured_of(s.1).map(|r| (r / calib, s.0)))
         .collect();
     out.n_measured = meas.len();
     if !meas.is_empty() {
@@ -1785,14 +1805,14 @@ pub fn reference_summary(rdb: &Rdb, p: &MachiningProfile, ctx: &CutContext, quer
             fz_mm: c.fz_mm,
             vb_rate_um_min: c.vb_rate_um_min,
             chatter_min: c.chatter_min,
-            measured_ratio: c.measured_ratio.map(|r| r / calib),
+            measured_ratio: measured_of(c).map(|r| r / calib),
             tool_label: c.tool_label.clone(),
             material_key: c.material_key.clone(),
             created_at: c.created_at,
         })
         .collect();
     out.lines.push(format!(
-        "비슷한 과거 절삭 {}개 작업 (같은 피삭재·날 수·날끝 형상, 진입·이탈 각·ap/D·ae/D·vc·fz·코너 R·헬릭스 거리, 작업마다 가장 비슷한 1건, 평균 유사도 {:.2}) · 실측이 있는 작업 {}개{}",
+        "비슷한 과거 절삭 {}개 작업 (같은 피삭재·날 수·날끝 형상, 진입·이탈 각·ap/D·ae/D·vc·fz·코너 R·헬릭스 거리, 부품마다 가장 비슷한 1건 — 원 작업과 그 재계획은 한 부품, 평균 유사도 {:.2}) · 실측이 있는 작업 {}개{}",
         out.n,
         out.mean_similarity,
         out.n_measured,

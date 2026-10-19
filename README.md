@@ -472,10 +472,15 @@ also weaker in the model (≈ 0–6 %).
 * Adaptive feed-scale per episode
 * Thin-wall compliance (plate bending, thickness search)
 * G00 collision & G01 LOC-exceed warnings
-* The synthetic pocket pattern clamps its stepover to 0.2–0.6·D (multi-pass contour 0.1–0.4·D) and leaves a 1 mm wall
-  to the stock edge. A finishing preset (ae ≈ 0.03–0.1·D) is therefore cut like pocket roughing at several times its
-  radial engagement; the simulation now adds a warning when the pattern stepover differs from the preset ae by more
-  than 1.5×. Use the rectangular profile pattern to judge finishing conditions.
+* The synthetic pocket pattern (`gcode::pocket_plan`) follows CAM pocket roughing: a helical entry per level (bore
+  1.5·D, vendor ramp angle per material, centre feed reduced by (bore − D)/bore), step-down levels that keep the
+  slot-like moves (first full-width row, end-of-row stepovers) within the vendor slotting ap of the material, those
+  moves at the target chip without the small-ae chip-thinning boost, a finishing allowance (the stock allowance) on the
+  walls and a full-depth climb finishing contour with 4/3·r corner radii and arc-feed compensation. The pocket wall to
+  the stock edge is H/3 thick. Sources and before/after numbers: `docs/pocket-zigzag-path.md`. Its zigzag stepover is
+  still clamped to 0.2–0.6·D (multi-pass contour 0.1–0.4·D), so a finishing preset (ae ≈ 0.03–0.1·D) roughs at several
+  times its radial engagement; the simulation warns when the pattern stepover differs from the preset ae by more than
+  1.5×.
 
 ### Simulation Audit — cross-checking the logs (`src/simaudit.rs`)
 
@@ -648,7 +653,7 @@ endmill-sandbox/
 │   ├── tool_life_matrix.rs     # tool end of life, coating break-through, N:N matrix + physical check
 │   ├── gpu_backend.rs          # GPU ↔ CPU parity for cuda / rocm / vulkan
 │   └── vulkan_backend.rs       # Vulkan shader-path ↔ CPU parity (feature = "vulkan")
-├── examples/physics_probe.rs / physcal_probe.rs / sim_audit.rs / eol_probe.rs / pair_matrix.rs
+├── examples/physics_probe.rs / physcal_probe.rs / sim_audit.rs / eol_probe.rs / pair_matrix.rs / pocket_probe.rs / wear_probe.rs
 ├── run.bat / build.bat         # Windows CUDA helpers
 ├── _env_rocm.bat / _env_vulkan.bat  # shared MSVC / HIP SDK / protoc / Tauri CLI setup
 ├── {run,build,check,test}_{rocm,vulkan}.bat  # Windows ROCm / Vulkan helpers

@@ -773,8 +773,22 @@ pub fn analyze_ext(
     let horizon_s = hz as f64 * step;
     let s50 = (p50[hz - 1] - vb_last) / horizon_s.max(1e-9);
     let s90 = (p90[hz - 1] - vb_last) / horizon_s.max(1e-9);
-    log.per_part_vb_p50_mm = Some((s50 * total).max(0.0));
-    log.per_part_vb_p90_mm = Some((s90 * total).max(0.0));
+    // 다음 부품은 같은 경로를 처음부터 다시 깎는다. 시계열 예측의 기울기는 작업 끝 구간의 속도라 경로가 진입·황삭·정삭 윤곽처럼
+    // 갈리면(끝이 가벼운 정삭) 부품 한 개의 성장을 크게 낮춘다 (티타늄 정삭 포켓: 실제 다음 부품의 0.41배). 부품당 성장은 경로 전체의
+    // 마모 구성을 담은 물리 경로 궤적(이번 작업 성장으로 맞춘 경로 계수)으로 잡고, 시계열 융합은 P90/P50 폭에만 쓴다
+    let (fused50, fused90) = ((s50 * total).max(0.0), (s90 * total).max(0.0));
+    let path_part = traj.filter(|tr| !tr.t_min.is_empty()).map(|tr| tr.growth_from(vb_last, total / 60.0)).filter(|g| g.is_finite() && *g > 0.0);
+    match path_part {
+        Some(g) => {
+            log.per_part_vb_p50_mm = Some(g);
+            // 폭은 `p90_growth_factor` 와 같은 1~4 배, 융합 폭이 없으면(예측 기울기 0) 그 기본 1.5 배
+            log.per_part_vb_p90_mm = Some(g * if fused50 > 1e-9 { (fused90 / fused50).clamp(1.0, 4.0) } else { 1.5 });
+        }
+        None => {
+            log.per_part_vb_p50_mm = Some(fused50);
+            log.per_part_vb_p90_mm = Some(fused90);
+        }
+    }
     log.ttm_used = fcs.iter().any(|f| f.0 == "ttm");
     let prior_future: Vec<f64> = fcs.iter().find(|f| f.0 == "physics").map(|f| f.1.clone()).unwrap_or_default();
     let p50_idx = p50.iter().position(|v| *v >= vb_limit_mm);

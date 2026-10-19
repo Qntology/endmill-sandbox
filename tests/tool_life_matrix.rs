@@ -146,12 +146,20 @@ fn inconel_pocket_stops_changes_expires_or_breaks_by_policy_instead_of_cutting_o
 
 #[test]
 fn a_finishing_ball_cannot_rough_a_hardened_pocket() {
-    // 고경도 정삭 프리셋(Ø6 롱넥 볼)의 절입으로 포켓을 지그재그로 파면 슬롯에 가까운 결합 — 몸체 응력이 강도를 넘어 바로 부러진다
+    // 고경도 정삭 프리셋(Ø6 롱넥 볼)으로 포켓을 판다. 예전 경로는 ap 5.4 mm 를 슬롯형으로 깎아 첫 0.1 분에 몸체 과부하로 부러졌다. 지금 경로는
+    // 고경도 스퀘어 공구의 슬롯 ap 0.4·D 로 단계 절입하지만 (볼의 폭 전체 ap 는 제조사 자료가 없음), 58 HRC 를 볼로 폭 전체 깎는 결합은 채터·응력·
+    // 경도 배수로 치핑이 먼저 온다: 감시하면 경로 1 % 남짓에서 치핑 감지로 멈추고, 감시 없으면 그 자리에서 치핑 파손, 예비 공구로 이어 가면
+    // 공구를 수십 개 쓰고도 끝내지 못한다 — 어느 정책으로도 이 공구로는 포켓을 황삭할 수 없다
     for pol in ToolLifePolicy::ALL {
         let r = simulate(&with_policy("금형강", pol), "pocket_zigzag");
         let tl = &r.tool_life;
         print_events(&format!("고경도 포켓 · {}", pol.key()), &r);
-        assert!(tl.failed && tl.completed_fraction() < 0.2, "{:?}: the ball nose breaks early, not after 30 minutes", pol);
+        assert!((tl.unfinished || tl.failed) && tl.completed_fraction() < 0.5, "{:?}: the ball nose does not get through the pocket ({:.0}%)", pol, tl.completed_fraction() * 100.0);
+        match pol {
+            ToolLifePolicy::Stop => assert!(!tl.failed && tl.chip_detected >= 1 && tl.completed_fraction() < 0.05, "monitoring stops on chipping right away"),
+            ToolLifePolicy::ChangeTool => assert!(tl.tools_used >= 10, "sister tools keep chipping: {} tools", tl.tools_used),
+            _ => assert!(tl.failed && tl.failure_cause == "chipping" && tl.completed_fraction() < 0.05, "{:?}: chips at once, cause {:?}", pol, tl.failure_cause),
+        }
     }
 }
 
@@ -246,13 +254,12 @@ fn rest_reach(segs: &[ToolPathSegment], start: (f64, f64, f64), stop: &toollife:
 }
 
 /// 1차가 멈추면 마지막에 깎인 벽 중 남은 경로가 다시 깎을 곳은 미절삭 소재의 경계다 — 부품 벽이 아니라 최종 벽에서 빠진다.
-/// 인코넬 포켓(정지 정책, 61 % 에서 멈춤)에서 마지막 줄 너머의 벽은 다음 줄이 깎아 내고, 스톡 가장자리 스킨(줄 끝 피치 이동이 만든
-/// ±X 벽)은 남는다. 최종 벽 통계·세그먼트별 벽·품질 저하 보고·감사 줄이 모두 같은 최종 벽을 쓰고, 끝까지 간 작업은 그대로다
+/// 인코넬 포켓(옛 지그재그 고정 경로 `legacy_zigzag`, 정지 정책, 61 % 에서 멈춤)에서 마지막 줄 너머의 벽은 다음 줄이 깎아 내고, 스톡 가장자리
+/// 스킨(줄 끝 피치 이동이 만든 ±X 벽)은 남는다. 최종 벽 통계·세그먼트별 벽·품질 저하 보고·감사 줄이 모두 같은 최종 벽을 쓰고, 끝까지 간 작업은 그대로다
 #[test]
 fn a_stopped_pocket_counts_only_part_walls_as_final() {
     let p = with_policy("인코넬", ToolLifePolicy::Stop);
-    let ctx = CutContext::from_profile(&p);
-    let (_, r, segs) = endmill_model::viewport::build_report_prog(&p, "pocket_zigzag", &ctx, &mut |_| true).unwrap();
+    let (ctx, r, segs) = legacy_report(&p);
     let tl = &r.tool_life;
     assert!(tl.unfinished && !tl.failed);
     let stop = tl.events.iter().rev().find(|e| e.kind == "stop").expect("stop event");
@@ -336,7 +343,7 @@ fn a_stopped_pocket_counts_only_part_walls_as_final() {
     // 감사 줄: 수명 줄과 경로 미완료 플래그가 뺀 점 수를 밝힌다
     let sds = endmill_model::sds::SdsStore::open(&std::env::temp_dir().join(format!("endmill-uncut-sds-{}", std::process::id())));
     let log = endmill_model::wearcomp::analyze_job(&p, &ctx, &r, None, &sds);
-    let audit = endmill_model::simaudit::build(&p, &ctx, &r, &log, None, "pocket_zigzag");
+    let audit = endmill_model::simaudit::build(&p, &ctx, &r, &log, None, &r.pattern);
     assert_eq!(audit.tool_life.uncut_boundary_points, r.uncut_boundary_count);
     let lines = endmill_model::simaudit::lines(&audit);
     for l in lines.iter().filter(|l| l.contains("미절삭 경계")) {
@@ -352,6 +359,48 @@ fn a_stopped_pocket_counts_only_part_walls_as_final() {
     assert!(done.final_wall_count > 0 && done.wall_errors.iter().all(|w| !w.uncut_boundary));
     assert!(!done.warnings.iter().any(|w| w.contains("미절삭 경계")));
     assert_eq!(done.quality_loss.final_points, done.final_wall_count);
+}
+
+/// 새 기본 경로(`gcode::pocket_plan`)는 마지막 정삭 윤곽이 벽 치수를 정한다 — 그 전에 멈춘 포켓은 깎은 벽이 모두 남은 경로(남은 황삭 · 정삭 윤곽)가
+/// 다시 깎을 황삭 벽이라 부품 벽이 아직 없다. 최종 벽 0점, 벽 위치 오차·측벽 Ra 통계는 0 (황삭 과도 벽을 부품 벽 오차처럼 보이지 않게), 경고 한 줄,
+/// 미절삭 경계는 모두 남은 경로가 덮는 벽 (독립 계산), 품질 저하 보고·세그먼트별 벽·감사가 같은 판정을 쓴다
+#[test]
+fn a_pocket_stopped_before_its_finishing_contour_has_no_part_walls_yet() {
+    let p = with_policy("인코넬", ToolLifePolicy::Stop);
+    let ctx = CutContext::from_profile(&p);
+    let (_, r, segs) = endmill_model::viewport::build_report_prog(&p, "pocket_zigzag", &ctx, &mut |_| true).unwrap();
+    let tl = &r.tool_life;
+    assert!(tl.unfinished && !tl.failed, "the Inconel pocket stops on the tool-life call");
+    let stop = tl.events.iter().rev().find(|e| e.kind == "stop").expect("stop event");
+    let finish_at = segs.iter().rposition(|s| matches!(s, ToolPathSegment::Plunge { .. })).expect("finishing descent");
+    assert!(stop.seg < finish_at, "the stop comes before the finishing contour: seg {} vs {}", stop.seg, finish_at);
+    let start = (0.0, 0.0, p.endmill_setting.loc_mm + 10.0);
+    let rad = 0.5 * ctx.tool.diameter_mm;
+    let (reach, band) = (rad - 0.25 * r.cell_mm, 0.05 * r.cell_mm);
+    let uncut: Vec<&WallErrorSample> = r.wall_errors.iter().filter(|w| w.uncut_boundary).collect();
+    println!(
+        "[EOL] 인코넬 포켓 (기본 경로) · 정지 seg {} / 정삭 하강 seg {} · 완료 {:.0}% · 최종 벽 {} 점 · 미절삭 경계 {} 점 (보고서 표본 {})",
+        stop.seg,
+        finish_at,
+        tl.completed_fraction() * 100.0,
+        r.final_wall_count,
+        r.uncut_boundary_count,
+        uncut.len()
+    );
+    assert_eq!(r.final_wall_count, 0, "no part wall exists before the finishing contour");
+    assert!(r.uncut_boundary_count > 0 && !uncut.is_empty());
+    for w in uncut.iter() {
+        let dd = rest_reach(&segs, start, stop, w.x, w.y, w.z_mid);
+        assert!(dd < reach + band, "uncut-boundary wall at ({:.2}, {:.2}, {:.2}) is {:.3} mm from the rest of the path (reach {:.3})", w.x, w.y, w.z_mid, dd, reach);
+    }
+    assert!(r.max_wall_error_um == 0.0 && r.mean_wall_error_um == 0.0 && r.wall_ra_mean_um == 0.0, "no statistics from roughing walls: {:.1} µm", r.max_wall_error_um);
+    assert!(r.warnings.iter().any(|w| w.contains("최종 벽 없음")), "{:#?}", r.warnings);
+    assert_eq!(r.quality_loss.final_points, 0);
+    assert!(r.seg_walls.is_empty());
+    let sds = endmill_model::sds::SdsStore::open(&std::env::temp_dir().join(format!("endmill-uncut-new-sds-{}", std::process::id())));
+    let log = endmill_model::wearcomp::analyze_job(&p, &ctx, &r, None, &sds);
+    let audit = endmill_model::simaudit::build(&p, &ctx, &r, &log, None, "pocket_zigzag");
+    assert_eq!(audit.tool_life.uncut_boundary_points, r.uncut_boundary_count);
 }
 
 #[test]
@@ -565,4 +614,107 @@ fn tool_material_matrix_ranks_like_practice() {
     for c in cells.iter().filter(|c| c.intended) {
         assert!(c.rank_in_material <= 4, "{} × {} ranks {}", c.use_case, c.tool, c.rank_in_material);
     }
+}
+
+// ---------------------------------------------------------------- 포켓 벽 오차 (얇은 벽 하중·탄성 복원, 슬롯형 이동)
+
+/// 세그먼트가 Y 방향 직선 이동인가 (지그재그 포켓의 패스 끝 피치 이동)
+fn y_move(segs: &[endmill_model::gcode::ToolPathSegment], seg: usize) -> bool {
+    let prev = if seg > 0 { segs[seg - 1].end_point() } else { (0.0, 0.0, 0.0) };
+    let e = segs[seg.min(segs.len() - 1)].end_point();
+    (e.0 - prev.0).abs() < 1e-6 && (e.1 - prev.1).abs() > 1e-6 && (e.2 - prev.2).abs() < 1e-6
+}
+
+/// 2026-10-19 개편 전의 합성 지그재그 포켓 — 직선 플런지로 ap 전체, 스톡 가장자리 1 mm 스킨 (여유 D/2 + 1), 줄 끝 피치 이동 ×0.7 이송, 정삭 없음.
+/// 앱 기본 경로(`gcode::pocket_plan`)는 이제 그런 스킨을 남기지 않으므로, 얇은 벽 하중 모델과 미절삭 경계 판정은 이 고정 경로가 만든 스킨으로 계속 확인한다
+fn legacy_zigzag(p: &MachiningProfile) -> Vec<ToolPathSegment> {
+    use ToolPathSegment as S;
+    let feed = p.conditions.feed_rate_mm_min;
+    let cut_z = -p.conditions.axial_doc_mm;
+    let safe_z = cut_z + p.endmill_setting.loc_mm + 10.0;
+    let (w, h, dia) = (p.workpiece_setup.width_mm, p.workpiece_setup.height_mm, p.endmill_setting.diameter_mm);
+    let step = endmill_model::gcode::pattern_stepover(p, 0.2, 0.6);
+    let margin = dia / 2.0 + 1.0;
+    let (inner_w, inner_h) = (w - 2.0 * margin, h - 2.0 * margin);
+    let mut segs = vec![
+        S::Rapid { x: 0.0, y: 0.0, z: safe_z },
+        S::Rapid { x: margin, y: margin, z: safe_z },
+        S::Plunge { x: margin, y: margin, z_start: safe_z, z_end: cut_z, feed: feed * 0.4 },
+    ];
+    let (mut y, mut dir) = (margin, 1.0f64);
+    while y < margin + inner_h {
+        let x_end = if dir > 0.0 { margin + inner_w } else { margin };
+        segs.push(S::Linear { x: x_end, y, z: cut_z, feed });
+        y += step;
+        if y < margin + inner_h {
+            segs.push(S::Linear { x: x_end, y, z: cut_z, feed: feed * 0.7 });
+        }
+        dir = -dir;
+    }
+    segs.push(S::Rapid { x: 0.0, y: 0.0, z: safe_z });
+    endmill_model::gcode::GCodeGenerator::insert_safe_retracts(segs, safe_z)
+}
+
+/// 옛 지그재그 고정 경로를 뷰포트와 같은 격자로 시뮬레이션
+fn legacy_report(p: &MachiningProfile) -> (CutContext, endmill_model::loadsim::LoadSimReport, Vec<ToolPathSegment>) {
+    let ctx = CutContext::from_profile(p);
+    let segs = legacy_zigzag(p);
+    let r = endmill_model::loadsim::simulate_segments_prog(p, &segs, "pocket_zigzag_legacy", &ctx, endmill_model::viewport::VIEWPORT_MAX_CELLS, &mut |_| true).unwrap();
+    (ctx, r, segs)
+}
+
+#[test]
+fn pocket_skin_carries_only_its_own_chip_force_and_springs_back_within_its_collapse_load() {
+    use endmill_model::loadsim::WallErrorSample;
+    // 2026-10-19 품질 저하 보고: 인코넬 프리셋 pocket_zigzag 의 최종 벽 오차 600~1,013 µm (정상 공구로도). 최악 점(12번째 패스 끝의 피치 이동,
+    // 스톡 가장자리 0.92 mm 스킨, z −6) 1,012.7 = 공구 휨 501.2 + 얇은 벽 458.3 + 마모 45.7 + 소재 열 8.8 − 런아웃 1.3 − 공구 열 0.1.
+    // 얇은 벽 458 µm 는 공구 앞 미절삭 띠를 폭 전체로 깎는 피치 이동의 법선 힘 6.9 kN 전체를 스킨에 걸어 나온 탄성 1.48 mm 를 ±500·t 로
+    // 자른 값이었다 (뿌리 굽힘 12 GPa = 항복의 10배). 그 힘은 공구 앞 덩어리가 면내로 받고, 벽이 돌아오는 몫은 전소성 하중까지다.
+    // 앱 기본 경로는 그 뒤 개편돼 스킨을 남기지 않으므로 그때의 경로(`legacy_zigzag`)로 본다
+    let run = |name: &str| legacy_report(&preset(name));
+    let collapse_cap_ok = |ctx: &CutContext, w: &WallErrorSample, bulk_c: f64| {
+        // 경로의 σy 는 그때 소재 온도에서 — 가장 찬(가장 단단한) 온도로 잰 상한을 넘지 않아야 한다
+        let sy = ctx.wp.flow_stress(0.0, 1.0, ctx.env.ambient_c.min(bulk_c));
+        w.workpiece_um.abs() <= 1.5 * sy / w.wall_sigma_per_n.max(1e-12) / w.wall_k_n_mm * 1000.0 + 1e-6
+    };
+    let (ctx, r, segs) = run("인코넬");
+    let finals: Vec<&WallErrorSample> = r.wall_errors.iter().filter(|w| w.final_wall).collect();
+    let skin_steps: Vec<&&WallErrorSample> = finals.iter().filter(|w| w.wall_k_n_mm > 0.0 && y_move(&segs, w.seg)).collect();
+    let worst = finals.iter().max_by(|a, b| a.total_um.abs().partial_cmp(&b.total_um.abs()).unwrap()).expect("final walls");
+    println!(
+        "[WALL] 인코넬 포켓 · 최종 벽 {}점 (스킨 피치 이동 {}점) · 최대 {:.1} µm (seg {} 공구 휨 {:.1} + 얇은 벽 {:.1} + 마모 {:.1}) · 얇은 벽 휨 최대 {:.1} µm",
+        finals.len(),
+        skin_steps.len(),
+        r.max_wall_error_um,
+        worst.seg,
+        worst.deflection_um,
+        worst.workpiece_um,
+        worst.wear_um,
+        r.max_workpiece_defl_um
+    );
+    for w in r.warnings.iter().filter(|w| w.contains("슬롯형") || w.contains("얇은 벽")) {
+        println!("[WALL]    {}", w);
+    }
+    assert!(skin_steps.len() >= 50, "the stepover moves form the side skins: {}", skin_steps.len());
+    assert!(
+        skin_steps.iter().all(|w| w.workpiece_um == 0.0 && w.wall_stress_mpa == 0.0),
+        "the stepover's chip force goes into the uncut stock ahead, not into the skin beside it: {:?}",
+        skin_steps.iter().map(|w| (w.seg, w.workpiece_um)).filter(|x| x.1 != 0.0).take(5).collect::<Vec<_>>()
+    );
+    // 스킨 형상(두께·강성)은 남는다 — 그 스킨을 따라 깎는 2차 보정 예측이 쓴다
+    assert!(skin_steps.iter().all(|w| w.wall_mm > 0.5 && w.wall_mm < 1.5 && w.wall_k_n_mm > 0.0));
+    assert!(finals.iter().filter(|w| w.wall_k_n_mm > 0.0).all(|w| collapse_cap_ok(&ctx, w, r.bulk_c)));
+    // 남는 최악 오차는 슬롯형 이동(ap 1·D, 법선 힘 6~7 kN)의 공구 휨이다 — 공구 끝 강성 13.8 N/µm 는 실측 대역이라 경로 쪽 문제였고,
+    // 그래서 기본 경로를 슬롯 ap 단계 절입 · 정삭 윤곽으로 바꿨다 (`docs/pocket-zigzag-path.md`)
+    assert!(worst.workpiece_um.abs() < 1.0 && worst.deflection_um > 400.0, "{:?}", (worst.deflection_um, worst.workpiece_um));
+    assert!(r.max_wall_error_um < 650.0, "was 968.6 µm (Stop) with the skin term: {:.1}", r.max_wall_error_um);
+    // 탄소강 프리셋: 끝까지 깎아 마지막 패스가 위쪽 스킨을 측면 절삭(벽 쪽 띠만)으로 만든다 — 그 벽은 지금처럼 힘을 받아 휘고(띠와 벽이 한 몸),
+    // 피치 이동이 만든 옆 스킨은 휘지 않는다. 예전 최대 533 µm 중 324 µm 가 피치 이동의 스킨 휨이었다
+    let (cs, rs, ss) = run("탄소강");
+    let thin: Vec<&WallErrorSample> = rs.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).collect();
+    println!("[WALL] 탄소강 포켓 · 최종 얇은 벽 {}점 · 최대 벽 오차 {:.1} µm · 얇은 벽 휨 최대 {:.1} µm", thin.len(), rs.max_wall_error_um, rs.max_workpiece_defl_um);
+    assert!(thin.iter().any(|w| !y_move(&ss, w.seg) && w.workpiece_um > 1.0), "side milling along a skin still bends it");
+    assert!(thin.iter().filter(|w| y_move(&ss, w.seg)).all(|w| w.workpiece_um == 0.0));
+    assert!(thin.iter().all(|w| collapse_cap_ok(&cs, w, rs.bulk_c)));
+    assert!(rs.max_wall_error_um < 300.0, "{:.1}", rs.max_wall_error_um);
 }
