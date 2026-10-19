@@ -1866,18 +1866,56 @@ pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSim
         }
     }
     if rep.pattern == "pocket_zigzag" {
-        // 스킨 두께는 힘을 받았든 아니든 최종 얇은 벽의 형상으로 (피치 이동이 만든 스킨은 덩어리 판정으로 휨 0 이라 `thin_wall_mm` 에 안 잡힌다)
-        let skin = rep.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).map(|w| w.wall_mm).fold(f64::INFINITY, f64::min);
+        let plan = crate::gcode::pocket_plan(profile);
+        let entry = match plan.entry.as_str() {
+            "helix" => format!("헬리컬 진입 (구멍 Ø{:.1} mm, 공구 중심 경사 {:.1}°)", plan.helix_bore_mm, plan.ramp_deg),
+            "ramp" => format!("직선 램프 진입 ({:.1}°)", plan.ramp_deg),
+            _ => "직선 플런지 진입".to_string(),
+        };
         add(
             "pocket_path_strategy",
-            "합성 지그재그 포켓 — 프리셋 ap 를 한 번에 직선 플런지, 첫 패스 슬롯(ae = D)·패스 끝 피치 이동(공구 앞 띠를 폭 전체로 깎는 슬롯형)이 최종 벽을 만들고 정삭 윤곽 패스가 없음, 스톡 가장자리에 1 mm 스킨".into(),
-            "CAM 포켓 황삭은 램핑·헬리컬 진입, 단계 절입(슬롯 ap 는 소재·공구별 제조사 권장), 벽에 정삭 여유를 남긴 뒤 정삭 윤곽 패스로 벽 치수를 정함",
             format!(
-                "최종 벽 오차·Ra 가 황삭 벽 기준 — 피치 이동의 공구 휨이 벽 오차를 정함 (이 작업 최종 벽 공구 휨 최대 {:.0} µm{})",
-                rep.wall_errors.iter().filter(|w| w.final_wall).map(|w| w.deflection_um.abs()).fold(0.0, f64::max),
-                if skin.is_finite() { format!(", 스톡 가장자리 스킨 {:.2} mm", skin) } else { String::new() }
+                "합성 지그재그 포켓 — 단계 {} × {:.2} mm (슬롯 ap 상한 {}) · {} · 첫 줄 슬롯·줄 끝 피치 이동 fz ×{:.2} (칩 얇아짐 보정 뺌) · 벽 정삭 여유 {:.2} mm 를 남긴 뒤 전체 깊이 정삭 윤곽 ({}) · 벽 두께 {:.2} mm — {}",
+                plan.levels,
+                plan.level_ap_mm,
+                plan.slot_ap_max_mm.map(|v| format!("{:.1} mm", v)).unwrap_or_else(|| "자료 없음".into()),
+                entry,
+                plan.slot_feed_ratio,
+                plan.finish_allow_mm,
+                if plan.up_milling { "상향" } else { "하향" },
+                plan.wall_mm,
+                plan.notes.join(" · ")
             ),
-            "실제 CAM G-code 를 불러와 시뮬레이션 (정삭 벽 치수는 사각형 프로파일 패턴으로 평가)",
+            "제조사 슬롯 ap 는 같은 소재에서도 갈림 (Ti 0.25~1.25·D · Ni 합금 0.25~0.75·D · 58 HRC 0.05~0.5·D) · 헬리컬 이송 = 슬롯 이송의 20~100 % (Seco ↔ IMCO·SGS) · 벽 정삭 여유 2~6 % D (Seco·Haas·Helical) · 모서리 반경 4/3·r 은 부품 설계값으로 가정 (도면이 더 작으면 모서리 결합이 커짐)",
+            format!(
+                "슬롯 ap 를 범위 끝으로 옮기면 단계 수·절삭 시간·공구 응력이 움직임 · 최종 벽은 정삭 윤곽이 만든 벽 (이 작업 최종 벽 공구 휨 최대 {:.0} µm, 모서리 반경 {:.1} mm)",
+                rep.wall_errors.iter().filter(|w| w.final_wall).map(|w| w.deflection_um.abs()).fold(0.0, f64::max),
+                plan.corner_radius_mm
+            ),
+            "실제 CAM G-code 를 불러와 시뮬레이션 — 슬롯 ap·헬리컬 이송은 쓰는 공구의 제조사 자료로",
+        );
+    }
+    // 얕은 절입(헬리컬·램프 진입: 회전당 하강 0.3~0.5 mm 로 바닥 전폭)의 마모는 마모장의 공구 끝 칸에만 쌓이지만, 작업 안의 VB(수명 판정·
+    // 반경 마모 보정)는 깊이를 가리지 않고 더한다. 새 날 길들이기도 공구 나이로만 세어 처음 물린 곳(진입이면 날끝)에 다 들어간다
+    let band_ap = profile.conditions.axial_doc_mm;
+    let dvb_all: f64 = rep.regimes.iter().map(|g| g.dvb_mm).sum();
+    let dvb_shallow: f64 = if band_ap > 1e-9 { rep.regimes.iter().map(|g| g.dvb_mm * (1.0 - (g.ap_mm / band_ap).min(1.0))).sum() } else { 0.0 };
+    if dvb_all > 1e-9 && dvb_shallow > 0.15 * dvb_all {
+        add(
+            "shallow_cut_wear_depth",
+            format!(
+                "VB 성장의 {:.0}% 가 ap {:.1} mm 띠보다 얕은 절입 (마모장 띠 평균 {:.3} mm · 깊이를 가리지 않은 VB {:.3} mm) — 작업 안 수명 판정·반경 마모는 깊이 무관 VB, 공구 장부는 띠 평균을 이어 씀 · 길들이기는 공구 나이로만 셈",
+                100.0 * dvb_shallow / dvb_all,
+                band_ap,
+                rep.wear_field.band_vb(band_ap),
+                rep.vb_end_mm - rep.vb_start_mm
+            ),
+            "날 위치별 길들이기·날끝(코너) 마모 배분 자료 없음 — 진입 마모는 날끝 마모로 가고, 측면 띠는 처음 물릴 때 따로 길들여질 수 있음",
+            format!(
+                "작업 안 VB·수명 판정·벽 마모 보정이 측면 띠 마모보다 최대 {:.0}% 크고, 다음 작업의 시작 VB(띠 평균)는 그만큼 작음 — 날끝 마모는 마모장 최댓값(국부 수명)으로만 남음",
+                100.0 * dvb_shallow / dvb_all
+            ),
+            "진입이 긴 작업 하나 뒤 공구 현미경으로 날끝(코너)과 띠 중간 VB 를 따로 측정",
         );
     }
     add(

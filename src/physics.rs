@@ -120,10 +120,16 @@ pub struct WorkpieceProps {
     /// 길들이기 크기의 절삭속도 지수 (Ti·Ni 는 속도가 오르면 초기 날끝 손상이 커진다). 0 이면 속도 무관
     #[serde(default)]
     pub breakin_vc_exp: f64,
-    /// 초경 엔드밀 슬롯(ae = D) 권장 ap/D 의 상한 — 제조사 자료로 확인한 소재만 (없으면 판정하지 않음, `gcode::slot_note`).
-    /// 측면 절삭용 `ap_ratio` 를 슬롯형 이동에 그대로 쓰는 합성 경로가 이 값을 넘으면 경고한다
+    /// 초경 엔드밀 슬롯(ae = D) 권장 ap/D — 제조사 자료로 확인한 소재만 (없으면 판정하지 않음). 합성 포켓 지그재그는 슬롯형 이동(첫 줄 · 줄 끝
+    /// 피치 이동)이 이 깊이를 넘지 않게 단계 절입하고(`gcode::pocket_plan`), 슬롯 패턴이 넘으면 경고한다 (`gcode::slot_note`)
     #[serde(default)]
     pub slot_ap_ratio: Option<f64>,
+    /// 헬리컬 진입 경사각 (°, 공구 중심 경로 기준 — 회전당 하강 = π·(구멍 지름 − D)·tan α) — 제조사 자료로 확인한 소재만 (`gcode::pocket_plan`)
+    #[serde(default)]
+    pub ramp_deg: Option<f64>,
+    /// 벽 정삭을 상향(업)밀링으로 — 제조사가 그 소재에 상향을 지시할 때만 (없으면 하향: Sandvik · Iscar · Harvey 의 첫 선택)
+    #[serde(default)]
+    pub finish_up_milling: bool,
 }
 
 fn default_kr_floor() -> f64 {
@@ -278,6 +284,8 @@ impl WorkpieceProps {
             breakin_tau_min: 2.0,
             breakin_vc_exp: 0.0,
             slot_ap_ratio: None,
+            ramp_deg: None,
+            finish_up_milling: false,
         };
         match m {
             WorkpieceMaterial::Aluminum => WorkpieceProps {
@@ -343,10 +351,20 @@ impl WorkpieceProps {
                 // 연마날·DLC 의 길들이기는 20 µm 이하 (직접 실측 없음, 확신도 낮음)
                 breakin_vb_um: 15.0,
                 breakin_tau_min: 2.0,
+                // 2~3날 초경 슬롯 ap: SGS S-Carb · YG-1 Alu-Power HPC · Haas HSAM2 1.0·D (같은 양식의 표), Helical H45AL-C-3 1.0~1.5·D,
+                // Guhring Uni-Pro 0.5~1.0·D, Mitsubishi Alimaster 0.5·D (Ø12~25) — 주류 1.0
+                slot_ap_ratio: Some(1.0),
+                // 헬리컬 경사 (공구 중심 경로): IMCO M202/M203·Streaker 3~5° (슬롯 이송), Seco JHP490 회전당 5 % Dc (구멍 1.3·Dc → 3.0°), JS45x 10 % (6.1°)
+                ramp_deg: Some(3.0),
                 ..base("aluminum", "알루미늄 합금")
             },
             WorkpieceMaterial::CarbonSteel => WorkpieceProps {
                 hardness_hrc: 15.0,
+                // 4날 초경 슬롯 ap (Ø10): SGS Z-Carb AP · OSG AE-VMS · Haas HTPM 1.0·D, Kennametal HARVI I TE P2 1.25·D, Helical HSV-4 0.75~1.25·D,
+                // Guhring Uni-Pro 0.5~1.0·D — 주류 1.0
+                slot_ap_ratio: Some(1.0),
+                // 헬리컬 경사: Seco JS554 (4날 범용) 회전당 2 % Dc → 1.2° · JS514 3 % → 1.8°, IMCO M924 1~2.5° — 작은 쪽
+                ramp_deg: Some(1.2),
                 ..base("carbon_steel", "탄소강 (S45C)")
             },
             WorkpieceMaterial::AlloySteel { hardness_hrc } => {
@@ -421,6 +439,19 @@ impl WorkpieceProps {
                     // 날카로운 초경 볼 HRC 52 첫 4초 절삭에 31~63 µm (PHM2010) — 수십 초~2분 안에 끝남
                     breakin_vb_um: if hard { 45.0 } else { 30.0 },
                     breakin_tau_min: if hard { 0.5 } else { 2.0 },
+                    // 초경 슬롯 ap: ≤ 30 HRC 는 탄소강과 같은 1.0·D (Kennametal HPHVBN P0~P3 1.0·D, SGS Z-Carb AP ≤ 40 HRC 1.0·D),
+                    // 30~45 HRC 0.75·D (Kennametal HPHVBN/UKDV P4 0.75 · OSG AE-VMS 1.0 · Helical ≥ 35 HRC 0.6~1.0 · OSG WXL 0.5 · SGS Z-Carb MD 0.4),
+                    // > 45 HRC 0.4·D — 고경도 전용 공구 SGS Z-Carb MD (35~60 HRC) 0.4·D, OSG WXL (55~60 HRC) 0.5·D, GARANT Diabolo 70 (60~70 HRC) 0.05·D,
+                    // NS Tool '측면 ap 의 50 % 이하'. 볼 엔드밀의 폭 전체 절삭 ap 는 제조사 자료가 없다 (`[UNKNOWN] pocket_path_strategy`)
+                    slot_ap_ratio: Some(if h <= 30.0 {
+                        1.0
+                    } else if h <= 45.0 {
+                        0.75
+                    } else {
+                        0.4
+                    }),
+                    // 헬리컬 경사: Seco JS554 (P) · JH120/JHP170 (H, 4·2날) · JH111 (H, 볼) 모두 회전당 2 % Dc → 1.2°, IMCO M924·M726 1~2.5°
+                    ramp_deg: Some(1.2),
                     ..base(&format!("alloy_steel_hrc{}", hardness_hrc), &format!("합금강/금형강 (HRC {})", hardness_hrc))
                 }
             }
@@ -479,6 +510,11 @@ impl WorkpieceProps {
                 // 호닝 8~10 µm nACo 코팅으로 316L 을 깎으면 30분간 마모가 보이지 않음 (Tymczyszyn 외 2025, Materials 18:1959 — 미세 마모는 30분 뒤부터) → 작은 길들이기
                 breakin_vb_um: 20.0,
                 breakin_tau_min: 2.0,
+                // 초경 슬롯 ap (Ø8): OSG AE-VMS 1.0·D (D > 6, D ≤ 6 은 0.5), SGS Z-Carb AP · Haas HTPM 1.0·D, Helical HSV-3 (3날 부등분할) 1.0~1.5·D,
+                // Kennametal HARVI I TE M1 1.25·D, Guhring Uni-Pro 0.5~1.0·D — 주류 1.0
+                slot_ap_ratio: Some(1.0),
+                // 헬리컬 경사: Seco JS553 (3날 부등분할) · JS513 회전당 3 % Dc → 1.8°, IMCO M525 1~2.5°
+                ramp_deg: Some(1.8),
                 ..base("stainless", "스테인리스강 (SUS304)")
             },
             WorkpieceMaterial::Titanium => WorkpieceProps {
@@ -540,6 +576,11 @@ impl WorkpieceProps {
                 breakin_vb_um: 60.0,
                 breakin_tau_min: 1.5,
                 breakin_vc_exp: 0.5,
+                // 4날 초경 슬롯 ap (Ø10) 는 제조사마다 크게 갈린다: OSG AE-VMS 0.25·D · Haas HTPM 0.5·D · Guhring Uni-Pro 0.5~1.0·D · SGS Z-Carb AP ≤ 1.0·D ·
+                // Helical HSV-4 0.6~1.25·D · Kennametal HPHVBN/UKDV 1.0·D · HARVI I TE 1.25·D — 가운데값 1.0 (퍼짐은 `[UNKNOWN] pocket_path_strategy`)
+                slot_ap_ratio: Some(1.0),
+                // 헬리컬 경사: Seco JHP770 · JHP750 회전당 3 % Dc → 1.8°, IMCO M525 1~2.5°
+                ramp_deg: Some(1.8),
                 ..base("titanium", "티타늄 (Ti-6Al-4V)")
             },
             WorkpieceMaterial::Inconel => WorkpieceProps {
@@ -601,6 +642,8 @@ impl WorkpieceProps {
                 // Ni 계(S3) 초경 엔드밀 슬롯 ap: Kennametal HARVI II TE 5날 Ø12 R1 (이 프리셋 공구와 같은 급) 0.75·D · Seco JHP780 0.6·D ·
                 // Helical HEV-5 0.25~0.5·D · Mitsubishi VQN6MVRB 0.5·D · Haas HTPM 0.5·D · OSG AE-VMS 0.25·D, 슬롯 fz 0.03~0.04 mm (Ø12) — 상한 0.75
                 slot_ap_ratio: Some(0.75),
+                // 헬리컬 경사: Seco JHP780 (HRSA) 회전당 3 % Dc (구멍 1.3·Dc → 1.8°), IMCO M525 1~2.5°, Haimer F1005LL 직선 램프 1~2°
+                ramp_deg: Some(1.8),
                 ..base("inconel", "인코넬 718")
             },
             WorkpieceMaterial::SuperAlloy => WorkpieceProps {
@@ -657,6 +700,8 @@ impl WorkpieceProps {
                 breakin_vc_exp: 0.5,
                 // 제조사 슬롯 자료의 Ni 계 내열합금 묶음(S3)과 같은 값 (인코넬 참조)
                 slot_ap_ratio: Some(0.75),
+                // 헬리컬 경사: 인코넬과 같은 HRSA 묶음 (Seco JHP780 3 % Dc → 1.8°, IMCO M525 1~2.5°)
+                ramp_deg: Some(1.8),
                 ..base("superalloy", "수퍼알로이")
             },
             WorkpieceMaterial::CFRP => WorkpieceProps {
@@ -719,6 +764,11 @@ impl WorkpieceProps {
                 // 20 µm / 2 분 → 30 µm / 0.35 분: 다이아몬드 코팅 라우터는 첫 1 m 슬롯(약 0.3~0.7 분) 안에 VB 25~40 µm (Hamedanianpour 2013)
                 breakin_vb_um: 30.0,
                 breakin_tau_min: 0.35,
+                // 다이아몬드 공구 슬롯 ap: Amana CVD 12날 라우터 1×D (2×D 는 칩 하중 −25 %), Harvey 다이아몬드 컷 슬롯 1×D, OSG AERO-REC 1×D 미만 — 1.0.
+                // 헬리컬 경사·구멍 지름은 제조사 자료 없음 (SGS 복합재 라우터 직선 램프 5° 뿐) → `gcode::ENTRY_RAMP_DEG_UNKNOWN`
+                slot_ap_ratio: Some(1.0),
+                // Sandvik CoroMill Plura 복합재: 상향(업)밀링 지시 — 벽 정삭도 상향
+                finish_up_milling: true,
                 ..base("cfrp", "CFRP")
             },
         }

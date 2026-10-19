@@ -91,14 +91,21 @@ fn print_quality(tag: &str, r: &LoadSimReport) {
     }
 }
 
+/// 한계 가까이 쓴 공구로 시작 (VB = 한계 × `frac`) — 새 포켓 경로는 마지막 정삭 윤곽이 벽을 정하므로, 손상 공구가 그 윤곽을 깎는 경우를 만든다
+fn simulate_worn(p: &MachiningProfile, pattern: &str, frac: f64) -> (CutContext, LoadSimReport) {
+    let mut ctx = CutContext::from_profile(p);
+    ctx.tool.flank_wear_mm = frac * ctx.vb_limit_mm();
+    let r = endmill_model::viewport::build_report_prog(p, pattern, &ctx, &mut |_| true).unwrap().1;
+    (ctx, r)
+}
+
 /// `ENDMILL_QUALITY_DUMP` 가 있으면 뷰포트·보고서 미리보기용으로 경로·뷰포트 결과와 공구 손상 선택 카드를 JSON 으로 남긴다
-fn dump_for_preview(p: &MachiningProfile, pattern: &str, card: &endmill_model::choice::ChoicePrompt) {
+fn dump_for_preview(p: &MachiningProfile, ctx: &CutContext, pattern: &str, card: &endmill_model::choice::ChoicePrompt) {
     let Ok(path) = std::env::var("ENDMILL_QUALITY_DUMP") else {
         return;
     };
     use endmill_model::gcode::ToolPathSegment as S;
-    let ctx = CutContext::from_profile(p);
-    let (view, _, segs) = endmill_model::viewport::build_report_prog(p, pattern, &ctx, &mut |_| true).unwrap();
+    let (view, _, segs) = endmill_model::viewport::build_report_prog(p, pattern, ctx, &mut |_| true).unwrap();
     let rpm = p.conditions.spindle_rpm;
     let segments: Vec<serde_json::Value> = segs
         .iter()
@@ -148,34 +155,36 @@ fn check_zones(r: &LoadSimReport, d_mm: f64) {
     }
 }
 
+/// 포켓 경로는 마지막 정삭 윤곽이 벽 치수를 정한다 (`docs/pocket-zigzag-path.md`) — 손상 공구 표시는 손상 공구가 그 윤곽을 깎았을 때 나온다.
+/// 인코넬 포켓은 첫 단계 진입·첫 줄에서 수명 판정에 닿아 정삭 전에 멈춘다: 카드는 뜨지만 부품 벽이 아직 없어 품질 저하도 없다.
+/// 한계 가까이 쓴 공구(VB 0.95 × 한계)로 탄소강 포켓을 깎으면: 정지는 황삭 중에 멈춰 카드를 띄우고, 손상 공구로 끝까지 가면 한계를 넘긴
+/// 공구가 정삭 윤곽을 깎아 최종 벽이 모두 품질 저하로 남으며(수명 한계 수준보다 덜 깎임), 예비 공구로 이어 가면 새 공구가 정삭해 정상 벽이 된다
 #[test]
 fn a_damaged_tool_stop_offers_to_continue_and_finishing_with_it_marks_the_degraded_walls() {
+    let past = |r: &LoadSimReport| r.quality_loss.zones.iter().filter(|z| z.severity != 2).map(|z| z.points).sum::<usize>();
+    let card_of = |r: &LoadSimReport| {
+        let card = toollife::damage_choice(&r.tool_life).expect("a stopped first pass asks the operator");
+        assert_eq!(card.kind, "damage");
+        assert_eq!(card.recommended, "change_tool");
+        assert_eq!(card.options[0].key, "change_tool", "the recommended option comes first");
+        for k in ["change_tool", "finish_part", "stop"] {
+            assert!(card.options.iter().any(|o| o.key == k && o.enabled), "{} is offered", k);
+        }
+        card
+    };
     let d_mm = CutContext::from_profile(&with_policy("인코넬", ToolLifePolicy::Stop)).tool.diameter_mm;
     let stop = simulate(&with_policy("인코넬", ToolLifePolicy::Stop), "pocket_zigzag");
     print_quality("인코넬 포켓 · 정지", &stop);
     let tl = &stop.tool_life;
     assert!(tl.unfinished && !tl.failed, "the Inconel pocket stops on the tool-life call");
     check_zones(&stop, d_mm);
-    let card = toollife::damage_choice(tl).expect("a stopped first pass asks the operator");
-    assert_eq!(card.kind, "damage");
-    assert_eq!(card.recommended, "change_tool");
-    assert_eq!(card.options[0].key, "change_tool", "the recommended option comes first");
-    for k in ["change_tool", "finish_part", "stop"] {
-        assert!(card.options.iter().any(|o| o.key == k && o.enabled), "{} is offered", k);
-    }
-
-    // 손상 공구로 끝까지: 한계를 넘긴 공구로 깎은 벽이 늘고, 그 벽은 수명 한계 수준보다 덜 깎인다
+    card_of(&stop);
+    assert_eq!(stop.quality_loss.final_points, 0, "the stop comes before the finishing contour — no part wall yet");
+    // 손상 공구로 끝까지: 인코넬 공구는 정삭 윤곽에 닿기 전에 부러진다 — 다시 묻고, 수명 한계를 넘긴 뒤의 파손이면 예비 공구로 이어 갈 수 있다
     let fin = simulate(&with_policy("인코넬", ToolLifePolicy::FinishPart), "pocket_zigzag");
     print_quality("인코넬 포켓 · 손상 공구로 끝까지", &fin);
-    let q = &fin.quality_loss;
     assert!(fin.cut_time_min >= stop.cut_time_min - 1e-9, "continuing cuts at least as far as the stop");
     check_zones(&fin, d_mm);
-    let past = |r: &LoadSimReport| r.quality_loss.zones.iter().filter(|z| z.severity != 2).map(|z| z.points).sum::<usize>();
-    assert!(past(&fin) > past(&stop), "finishing with the damaged tool cuts more walls past the limit: {} vs {}", past(&fin), past(&stop));
-    assert!(q.degraded_points >= stop.quality_loss.degraded_points);
-    assert!(q.worst_extra_wear_um > stop.quality_loss.worst_extra_wear_um, "walls are left thicker the longer the worn tool cuts");
-    dump_for_preview(&with_policy("인코넬", ToolLifePolicy::FinishPart), "pocket_zigzag", &card);
-    // 손상 공구로 끝까지 가다 부러지면 다시 묻는다 — 수명 한계를 넘긴 뒤의 파손이면 예비 공구로 이어 갈 수 있다
     if fin.tool_life.failed {
         let again = toollife::damage_choice(&fin.tool_life).expect("a broken tool asks again");
         assert!(again.options.iter().any(|o| o.key == "finish_part" && !o.enabled), "a broken tool cannot finish the part");
@@ -184,16 +193,30 @@ fn a_damaged_tool_stop_offers_to_continue_and_finishing_with_it_marks_the_degrad
         }
     }
 
-    // 예비 공구로 이어서: 끝까지 가고, 한계를 넘긴 공구로 깎은 벽은 '지금 절삭을 마치는' 몫 정도로 적다
-    let change = simulate(&with_policy("인코넬", ToolLifePolicy::ChangeTool), "pocket_zigzag");
-    print_quality("인코넬 포켓 · 예비 공구로 이어서", &change);
-    if !change.tool_life.failed {
-        assert!(!change.tool_life.unfinished);
-        check_zones(&change, d_mm);
-        assert!(change.quality_loss.good_points > 0, "the sister tool cuts good walls");
-        assert!(past(&change) < past(&fin), "sister tools keep the worn edge off most walls: {} vs {}", past(&change), past(&fin));
-        assert!(toollife::damage_choice(&change.tool_life).is_none(), "a finished path asks nothing");
-    }
+    // 한계 가까이 쓴 공구로 탄소강 포켓
+    let worn = |pol: ToolLifePolicy| simulate_worn(&with_policy("탄소강", pol), "pocket_zigzag", 0.95);
+    let ds_mm = CutContext::from_profile(&with_policy("탄소강", ToolLifePolicy::Stop)).tool.diameter_mm;
+    let (_, s_stop) = worn(ToolLifePolicy::Stop);
+    print_quality("탄소강 포켓 · 한계 가까운 공구 · 정지", &s_stop);
+    assert!(s_stop.tool_life.unfinished && !s_stop.tool_life.failed, "the worn tool reaches its limit during roughing");
+    check_zones(&s_stop, ds_mm);
+    let card = card_of(&s_stop);
+    assert_eq!(s_stop.quality_loss.final_points, 0);
+    let (ctx_fin, s_fin) = worn(ToolLifePolicy::FinishPart);
+    print_quality("탄소강 포켓 · 한계 가까운 공구 · 손상 공구로 끝까지", &s_fin);
+    check_zones(&s_fin, ds_mm);
+    let q = &s_fin.quality_loss;
+    assert!(!s_fin.tool_life.unfinished && s_fin.tool_life.expired, "the expired tool finishes the program");
+    assert!(q.final_points > 0 && q.degraded_points == q.final_points, "the expired tool cuts the whole finishing contour: {} of {}", q.degraded_points, q.final_points);
+    assert!(past(&s_fin) > past(&s_stop) && q.worst_extra_wear_um > 0.0, "walls past the limit are left thicker: +{:.1} µm", q.worst_extra_wear_um);
+    dump_for_preview(&with_policy("탄소강", ToolLifePolicy::FinishPart), &ctx_fin, "pocket_zigzag", &card);
+    // 예비 공구로 이어서: 끝까지 가고, 새 공구가 정삭 윤곽을 깎아 최종 벽은 정상
+    let (_, s_change) = worn(ToolLifePolicy::ChangeTool);
+    print_quality("탄소강 포켓 · 한계 가까운 공구 · 예비 공구로 이어서", &s_change);
+    assert!(!s_change.tool_life.unfinished && s_change.tool_life.tool_changes >= 1);
+    check_zones(&s_change, ds_mm);
+    assert!(s_change.quality_loss.good_points > 0 && past(&s_change) < past(&s_fin), "the sister tool finishes the walls: {} vs {}", past(&s_change), past(&s_fin));
+    assert!(toollife::damage_choice(&s_change.tool_life).is_none(), "a finished path asks nothing");
 }
 
 #[test]

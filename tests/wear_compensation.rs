@@ -120,12 +120,13 @@ fn tiny_laya(dir: &PathBuf) -> LayaAdvisor {
     LayaAdvisor::load(dir, &dev).unwrap()
 }
 
-/// 티타늄 프리셋 포켓은 2차를 계획하지 않고 보류하며 1차는 건드리지 않는다. 예전에는 '1차 벽이 항복했다'(1차 유효성 게이트 3등급)가 보류 이유였지만
-/// 그 항복은 피치 이동의 슬롯형 법선 힘 전체를 스톡 가장자리 1 mm 스킨에 걸었던 모델 결함이었다 (`loadsim::cut_zone_in_bulk`, docs/pocket-wall-error.md).
-/// 지금 이 포켓의 1차 벽은 탄성 범위(벽 응력/항복 약 0.1)이고, 공차 ±10 µm 에서 2차 휨 불확도가 공차 절반을 넘어 모든 절삭 선택지가 막혀 보류한다.
+/// 티타늄 프리셋 포켓은 1차를 건드리지 않고 2차 감속 패스를 계획한다. 포켓 경로를 CAM 포켓 황삭처럼 바꾼 뒤(헬리컬 진입 · 슬롯 ap 단계 ·
+/// 정삭 여유를 남긴 전체 깊이 하향 정삭 윤곽, docs/pocket-zigzag-path.md) 최종 벽은 정삭 윤곽이 만든다: 하향 정삭에서는 공구가 벽에서 밀려나
+/// 미삭(+)만 남아 예전 상향 줄 벽의 과삭 게이트(2등급)가 없어지고, 2차가 깎을 양이 줄어 휨 불확도(약 4 µm)가 공차 절반(5 µm) 안이라
+/// 절삭 선택지가 열린다. 예전에는 옛 경로의 줄 끝·피치 이동이 남긴 큰 잔여량 때문에 휨 게이트(3등급)가 모든 절삭을 막아 보류했다.
 /// 1차 벽이 실제로 항복하면 1차 결과가 무효라는 판정 경로는 같은 1차 결과의 얇은 벽 구간 응력을 항복 위로 올려 따로 본다
 #[test]
-fn titanium_pocket_holds_without_touching_pass_one_and_yielded_walls_invalidate_pass_one() {
+fn titanium_pocket_plans_a_reduced_second_pass_without_touching_pass_one_and_yielded_walls_invalidate_pass_one() {
     let p = preset("티타늄");
     let dir = temp_dir("ti");
     let mut sds = SdsStore::open(&dir.join("sds"));
@@ -150,18 +151,20 @@ fn titanium_pocket_holds_without_touching_pass_one_and_yielded_walls_invalidate_
     let o = &r.outcome;
     let d = &o.draft;
     assert!(d.need && d.zones.iter().any(|z| z.needs));
-    assert!(d.gates.iter().any(|g| g.id == "overcut_pass1" && g.severity == 2));
+    // 보정이 필요한 구간은 모두 정삭 윤곽(마지막 플런지 뒤 — 황삭으로 비운 곳으로 내려가 전체 깊이로 한 바퀴)
+    let finish_from = r.segments.iter().rposition(|s| matches!(s, endmill_model::gcode::ToolPathSegment::Plunge { .. })).expect("finishing descent");
+    assert!(d.zones.iter().filter(|z| z.needs).all(|z| z.seg > finish_from), "zones {:?} vs finishing contour after segment {}", d.zones.iter().filter(|z| z.needs).map(|z| z.seg).collect::<Vec<_>>(), finish_from);
+    let over = d.gates.iter().find(|g| g.id == "overcut_pass1").expect("overcut gate");
+    assert_eq!(over.severity, 0, "a climb finishing contour is pushed away from the wall and leaves no overcut: {}", over.message);
     let p1 = d.gates.iter().find(|g| g.id == "pass1_validity").expect("pass1 gate");
     assert!(p1.severity <= 1 && p1.value < 1.0 && p1.blocks.is_empty(), "pass-one walls stay elastic: {}", p1.message);
     assert!(r.report.seg_walls.iter().any(|s| s.wall_stress_mpa > 0.0));
     let defl = d.gates.iter().find(|g| g.id == "pass2_deflection").expect("deflection gate");
-    assert_eq!(defl.severity, 3, "{}", defl.message);
-    assert!(defl.blocks.contains(&CompAction::Execute) && defl.blocks.contains(&CompAction::ExecuteReduced) && defl.blocks.contains(&CompAction::Split));
-    assert!(!d.allowed.iter().any(|a| a.cuts()));
-    assert_eq!(o.decision.final_action, CompAction::Hold);
-    assert!(o.decision.operator_confirm);
-    assert!(o.program_text.is_empty() && o.segments.is_empty());
-    assert!(o.notes.iter().any(|n| n.contains("보류")));
+    assert!(defl.severity <= 1 && defl.value < defl.limit && defl.blocks.is_empty(), "{}", defl.message);
+    assert!(d.allowed.contains(&CompAction::Execute) && d.allowed.contains(&CompAction::ExecuteReduced) && d.allowed.contains(&CompAction::Split));
+    assert_eq!(d.rule_action, CompAction::ExecuteReduced, "{:?}", d.reasons);
+    assert_eq!(o.decision.final_action, CompAction::ExecuteReduced);
+    assert!(!o.program_text.is_empty() && !o.segments.is_empty());
     let pass1 = endmill_model::gcode::GCodeGenerator::program_from_segments(&p, &r.segments, "P1").to_text();
     assert!(!pass1.contains("COMP2") && !pass1.contains("G04"));
     let status = sds.status(400);
@@ -358,10 +361,12 @@ fn ttm_and_laya_models_are_actually_used_in_the_job() {
 fn titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked() {
     // Ti 반경력을 실측 계수(Krc/Ktc 0.37, Kte ×1.7, Kre/Kte 1.9)로 바로잡자 1차 벽 휨과 잔여량이 커져 분할 패스의 칩이 최소 칩 두께를
     // 넘게 되었다 — '모든 절삭이 막힌' 판정 시나리오를 유지하려고 이송을 줄인다. 런아웃 과삭(0.85·e)을 2차 바이어스에 넣고 스핀들
-    // 컴플라이언스를 휨에 더하자 0.75 배에서 분할 마지막 칩이 3.79 µm 로 최소 칩 3.72 µm 를 넘어 0.70 배로 낮춘다 (1회 칩은 약 4.7 µm 로 여전히 위)
+    // 컴플라이언스를 휨에 더하자 0.75 배에서 분할 마지막 칩이 3.79 µm 로 최소 칩 3.72 µm 를 넘어 0.70 배로 낮췄다. 포켓 경로를 CAM 처럼 바꾼 뒤
+    // (최종 벽 = 정삭 윤곽, 잔여량 상위 10 % 약 43 µm) 0.70 배에서 분할 마지막 칩이 3.84 µm 로 다시 최소 칩을 넘어 분할이 열린다 — 0.60 배로
+    // 낮춘다 (분할 마지막 3.34 µm 로 10 % 아래, 1회 칩 4.44 µm 로 여전히 위)
     let mut p = titanium_finishing();
-    p.conditions.feed_per_tooth_mm *= 0.70;
-    p.conditions.feed_rate_mm_min *= 0.70;
+    p.conditions.feed_per_tooth_mm *= 0.60;
+    p.conditions.feed_rate_mm_min *= 0.60;
     // 공정감쇠를 실측에 맞춘 뒤(임계 길이 0.75 mm) Vc 66 · 파장 약 0.3 mm 의 Ti 정삭은 공정감쇠 이득이 상한(5)이라 경로의 7 % 만 한계 밖이고
     // (ζ 0.01 이어도 11 %) '채터 미검증' 판정이 성립하지 않는다 — 감쇠가 아주 작은 짧은 열박음 홀더(ζ 0.006, 추정 0.4~0.7 % · Schmitz 2020)로
     // 예전 시나리오만큼의 1차 경로 채터를 되살린다 (예전: ζ 0.03 × 공정감쇠 이득 1.23 ≈ 지금 ζ 0.0075 × 5)
@@ -487,17 +492,25 @@ fn air_codes_are_checked_numerically_for_both_on_and_off() {
 
 #[test]
 fn far_walls_gain_stock_from_thermal_expansion_and_near_walls_do_not() {
+    use endmill_model::loadsim::SegWallStat;
     let p = preset("탄소강");
     let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, None);
     let (_, rep, _) = endmill_model::viewport::build_report_prog(&p, "pocket_zigzag", &ctx, &mut |_| true).unwrap();
     assert!(rep.wp_temp_end_c > rep.bulk_c + 10.0);
-    let w = p.workpiece_setup.width_mm;
-    let far: Vec<&endmill_model::loadsim::SegWallStat> = rep.seg_walls.iter().filter(|s| s.nx > 0.5 && s.x_mm > 0.5 * w).collect();
-    let near: Vec<&endmill_model::loadsim::SegWallStat> = rep.seg_walls.iter().filter(|s| s.nx < -0.5 && s.x_mm < 0.1 * w).collect();
-    assert!(!far.is_empty() && !near.is_empty());
-    assert!(far.iter().all(|s| s.thermal_um > 0.0), "{:?}", far.iter().map(|s| s.thermal_um).collect::<Vec<_>>());
+    let (w, h) = (p.workpiece_setup.width_mm, p.workpiece_setup.height_mm);
+    // 곧은 벽만 본다 — 모서리 원호(벽 반경 4/3·r)는 법선이 두 축에 걸쳐 원점(작업 기준점)까지의 거리가 섞인다
+    let far: Vec<&SegWallStat> = rep.seg_walls.iter().filter(|s| s.nx > 0.9 && s.x_mm > 0.5 * w).collect();
+    let top: Vec<&SegWallStat> = rep.seg_walls.iter().filter(|s| s.ny > 0.9 && s.y_mm > 0.5 * h).collect();
+    let near: Vec<&SegWallStat> = rep.seg_walls.iter().filter(|s| s.nx < -0.9 && s.x_mm < 0.1 * w).collect();
+    assert!(!far.is_empty() && !top.is_empty() && !near.is_empty());
+    let mean = |v: &[&SegWallStat]| v.iter().map(|s| s.thermal_um).sum::<f64>() / v.len() as f64;
+    println!("[THERM] 오른쪽 벽 {:.1} µm · 위 벽 {:.1} µm · 왼쪽 벽 {:.1} µm (소재 {:.0} °C)", mean(&far), mean(&top), mean(&near), rep.wp_temp_end_c);
+    // 원점에서 법선 방향으로 먼 벽은 늘어난 소재만큼 덜 깎이고(정삭 여유가 남음), 원점 쪽 벽은 그렇지 않다
+    assert!(far.iter().all(|s| s.thermal_um > 20.0), "{:?}", far.iter().map(|s| s.thermal_um).collect::<Vec<_>>());
     assert!(near.iter().all(|s| s.thermal_um < 1.0));
-    assert!(far.last().unwrap().thermal_um > far.first().unwrap().thermal_um + 20.0);
+    // 늘어남은 원점까지 거리에 비례한다: 오른쪽 벽(x ≈ W) 대 위 벽(y ≈ H) ≈ W/H = 1.5 (둘 다 마지막 정삭 윤곽에서 거의 같은 소재 온도로 깎임)
+    let ratio = mean(&far) / mean(&top);
+    assert!(ratio > 1.2 && ratio < 1.9, "expansion scales with the distance from the datum: right/top {:.2} vs W/H {:.2}", ratio, w / h);
 }
 
 #[test]
@@ -565,7 +578,14 @@ fn laya_cannot_lower_a_rule_hold_but_can_still_lower_a_cutting_choice() {
     let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, Some(&sds));
     let (_, rep, _) = endmill_model::viewport::build_report_prog(&p, "pocket_zigzag", &ctx, &mut |_| true).unwrap();
     let log = wearcomp::analyze_job(&p, &ctx, &rep, None, &sds);
-    let d = wearcomp::evaluate(&p, &ctx, &rep, &log, &CompOptions::default(), None);
+    // 규칙 보류: 1차 벽이 항복한 결과(얇은 벽 구간 뿌리 응력을 항복 위로) — 1차 유효성 게이트 3등급이 모든 절삭을 막는다.
+    // (Ti 포켓 그대로는 정삭 윤곽이 벽을 만들어 2차 감속 패스를 계획하므로 보류 시나리오를 항복한 벽으로 만든다)
+    let sigma_y = ctx.wp.flow_stress(0.0, 1.0, ctx.env.ambient_c);
+    let mut yielded = rep.clone();
+    for s in yielded.seg_walls.iter_mut().filter(|s| s.wall_k_n_mm > 0.0) {
+        s.wall_stress_mpa = 1.5 * sigma_y;
+    }
+    let d = wearcomp::evaluate(&p, &ctx, &yielded, &log, &CompOptions::default(), None);
     assert_eq!(d.rule_action, CompAction::Hold);
     assert!(d.gates.iter().any(|g| g.severity >= 3));
     assert!(d.allowed.contains(&CompAction::Skip));
@@ -710,9 +730,10 @@ fn runout_is_averaged_over_a_revolution_in_down_and_up_milling() {
 /// 작업자가 고른 값은 판단에 반영되고(decided_by operator) SDS 원장에 작업자–규칙 일치로 남는다 — laya 의 사람 판단 이력
 #[test]
 fn the_choice_card_offers_only_what_the_gates_allow_and_records_the_operator() {
+    // `titanium_finishing_holds_instead_of_skipping_when_every_cut_is_blocked` 와 같은 '모든 절삭이 막힌' 시나리오 (이송 0.60 배 · ζ 0.006)
     let mut p = titanium_finishing();
-    p.conditions.feed_per_tooth_mm *= 0.70;
-    p.conditions.feed_rate_mm_min *= 0.70;
+    p.conditions.feed_per_tooth_mm *= 0.60;
+    p.conditions.feed_rate_mm_min *= 0.60;
     p.machine.damping_ratio = 0.006;
     let dir = temp_dir("choice");
     let mut sds = SdsStore::open(&dir.join("sds"));
