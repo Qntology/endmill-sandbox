@@ -275,6 +275,9 @@ pub struct ViewportSim {
     /// 공구 수명 감시 (수명 판정·교체·파손·정지 사건, 몸체 응력·피로·치핑 확률, 용도 적합도)
     #[serde(default)]
     pub tool_life: ToolLifeView,
+    /// 손상 공구로 깎은 최종 벽 — 구간·점 (뷰포트 '품질' 표시와 보고서)
+    #[serde(default)]
+    pub quality: loadsim::QualityLoss,
 }
 
 pub fn build(profile: &MachiningProfile, pattern_key: &str, sds: Option<&SdsStore>) -> Result<ViewportSim, String> {
@@ -410,6 +413,7 @@ pub fn assemble(profile: &MachiningProfile, pattern: &str, ctx: &CutContext, rep
         depth,
         tool_wear,
         tool_life: ToolLifeView::of(&rep.tool_life, ctx),
+        quality: rep.quality_loss.clone(),
     }
 }
 

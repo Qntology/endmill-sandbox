@@ -429,3 +429,171 @@ pub fn standing_unknowns(tool: &ToolGeometry, s: &ToolStrength) -> Vec<String> {
         "3차 마모 배수와 날끝 붕괴 수명 사용률은 피삭재 그룹 대표값 — 이 공구·조건에서 VB 한계를 넘긴 실측 마모 곡선이 없으면 확정 불가".to_string(),
     ]
 }
+
+/// 공구 손상으로 1차가 멈췄을 때 작업자에게 묻는 선택 카드. 고른 정책으로 같은 부품을 다시 계산한다 — 시뮬레이션은 결정적이라
+/// 멈춘 지점까지는 같고 그 뒤만 달라진다. 수명 안에서 과부하·소성 파손이 나면 같은 조건으로는 새 공구도 그 자리에서 다시 부러지므로
+/// 예비 공구로 이어 가기를 막고 조건 변경을 권한다. 수명 한계를 넘긴 뒤의 파손(마모가 키운 하중) · 날끝 붕괴(마모 끝) · 피로(반복 하중
+/// 누적)는 새 공구로 다시 시작하면 그 상태가 아니므로 예비 공구로 이어 갈 수 있다. 부러진 공구로는 끝까지 갈 수 없다
+pub fn damage_choice(tl: &ToolLifeReport) -> Option<crate::choice::ChoicePrompt> {
+    use crate::choice::{ChoiceOption, ChoicePrompt};
+    if !tl.unfinished {
+        return None;
+    }
+    let last = tl.events.iter().rev().find(|e| matches!(e.kind.as_str(), "stop" | "failure" | "start_worn"));
+    let (kind, cause) = last.map(|e| (e.kind.as_str(), e.cause.as_str())).unwrap_or(("stop", "life_end"));
+    let chip_broken = tl.failed && cause == "chipping";
+    let hard_broken = tl.failed && !chip_broken;
+    // 새 공구로 바꾸면 그 상태가 아닌 파손: 수명 한계를 넘긴 뒤(마모가 키운 하중·온도) · 날끝 붕괴(마모 끝) · 피로(반복 하중 누적)
+    let fresh_avoids = hard_broken && (tl.life_used_end >= 1.0 || matches!(cause, "collapse" | "fatigue"));
+    let cond_broken = hard_broken && !fresh_avoids;
+    let done = tl.completed_fraction() * 100.0;
+    let cause_label = match (kind, cause) {
+        ("start_worn", _) => "시작 전에 이미 수명 한계를 넘은 공구".to_string(),
+        ("failure", "chipping") => "치핑으로 공구 파손".to_string(),
+        ("failure", c) => format!(
+            "공구 파손 ({})",
+            match c {
+                "overload" => "정적 과부하",
+                "fatigue" => "피로",
+                "collapse" => "날끝 붕괴",
+                "plastic" => "고온 소성 변형",
+                other => other,
+            }
+        ),
+        (_, "chipping") => "치핑(이 빠짐) 감지".to_string(),
+        _ => "수명 판정 (VB 한계)".to_string(),
+    };
+    let blocked_cond = "같은 조건으로 이어 깎으면 새 공구도 같은 자리에서 다시 부러짐 — 절입·이송을 줄여 다시 계산하세요".to_string();
+    let blocked_broken = "부러진 공구로는 이어 깎을 수 없음".to_string();
+    let blocked_chip = "이가 빠져 부러진 공구는 이어 쓸 수 없음".to_string();
+    let blocked_same = "이미 이 정책으로 계산한 결과 — 다시 계산해도 같은 자리에서 멈춤".to_string();
+    let opt = |key: &str, label: &str, detail: String, recommended: bool, blocked: Option<&String>| ChoiceOption {
+        key: key.into(),
+        label: label.into(),
+        detail,
+        recommended,
+        enabled: blocked.is_none(),
+        blocked_by: blocked.map(|b| vec![b.clone()]).unwrap_or_default(),
+        ..Default::default()
+    };
+    let can_change = !cond_broken && tl.policy != ToolLifePolicy::ChangeTool;
+    let can_finish = !tl.failed && !continues_past_limit(tl.policy);
+    let mut options = vec![
+        opt(
+            "change_tool",
+            "예비 공구로 교체 후 이어서",
+            "같은 부품을 다시 계산 — 멈춘 지점에서 같은 사양 새 공구로 바꿔 끝까지 (교체 시간·길들이기·벽 단차 불확도 포함)".into(),
+            can_change,
+            if can_change {
+                None
+            } else if cond_broken {
+                Some(&blocked_cond)
+            } else {
+                Some(&blocked_same)
+            },
+        ),
+        opt(
+            "finish_part",
+            "손상 공구로 끝까지",
+            "감시를 끄고 지금 공구로 끝까지 — 손상 공구로 깎은 벽의 치수·조도 저하를 구간으로 표시 (3차 마모·파손 판정은 그대로라 도중에 부러질 수 있음)".into(),
+            false,
+            if can_finish {
+                None
+            } else if hard_broken {
+                Some(&blocked_broken)
+            } else if chip_broken {
+                Some(&blocked_chip)
+            } else {
+                Some(&blocked_same)
+            },
+        ),
+        opt("stop", "여기서 정지 (지금 결과 유지)", format!("{:.0}% 까지 깎은 지금 결과를 그대로 둠 — 공구를 교체한 뒤 다시 계산", done), !can_change, None),
+    ];
+    if let Some(o) = options.iter_mut().find(|o| o.recommended) {
+        o.rule = true;
+    }
+    let mut attention: Vec<String> = last.map(|e| vec![e.message.clone()]).unwrap_or_default();
+    if fresh_avoids {
+        attention.push(if tl.life_used_end >= 1.0 {
+            format!("수명 한계를 넘긴 뒤(수명 사용 {:.0}%) 부러짐 — 예비 공구로 바꾸면 한계에서 교체되어 그 상태까지 가지 않음", tl.life_used_end * 100.0)
+        } else if cause == "collapse" {
+            "날끝 붕괴는 마모 끝의 파손 — 예비 공구로 바꾸면 새 날로 다시 시작".to_string()
+        } else {
+            "피로 파손은 반복 하중 누적 — 예비 공구는 처음부터 다시 쌓지만, 같은 조건이면 비슷한 절삭 시간 뒤 다시 위험".to_string()
+        });
+    }
+    let mut c = ChoicePrompt {
+        kind: "damage".into(),
+        header: "공구 손상".into(),
+        question: format!("{} — 1차가 {:.0}% 에서 멈췄습니다. 어떻게 할까요?", cause_label, done),
+        recommended: if can_change { "change_tool".into() } else { "stop".into() },
+        decided_by: "rule".into(),
+        attention,
+        advisor_note: format!("감시 정책: {}", policy_label(tl.policy)),
+        options,
+        ..Default::default()
+    };
+    c.sort_options(|k| match k {
+        "change_tool" => 0,
+        "finish_part" => 1,
+        _ => 2,
+    });
+    c.needs_attention = true;
+    Some(c)
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+
+    fn stopped(kind: &str, cause: &str, failed: bool) -> ToolLifeReport {
+        ToolLifeReport {
+            unfinished: true,
+            failed,
+            total_feed_mm: 100.0,
+            uncut_feed_mm: 40.0,
+            events: vec![ToolLifeEvent {
+                kind: kind.into(),
+                cause: cause.into(),
+                message: "이송 정지".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_worn_tool_stop_offers_changing_or_finishing_with_the_damaged_tool() {
+        let c = damage_choice(&stopped("stop", "life_end", false)).unwrap();
+        assert_eq!(c.options[0].key, "change_tool");
+        assert!(c.options[0].recommended && c.options.iter().all(|o| o.enabled));
+        assert!(c.needs_attention && c.question.contains("60%"));
+    }
+
+    #[test]
+    fn an_overload_break_within_life_cannot_be_continued_with_the_same_conditions() {
+        let c = damage_choice(&stopped("failure", "overload", true)).unwrap();
+        assert_eq!(c.recommended, "stop");
+        let ch = c.options.iter().find(|o| o.key == "change_tool").unwrap();
+        assert!(!ch.enabled && ch.blocked_by[0].contains("다시 부러짐"));
+        let fin = c.options.iter().find(|o| o.key == "finish_part").unwrap();
+        assert!(!fin.enabled && fin.blocked_by[0].contains("부러진 공구"));
+        let chip = damage_choice(&stopped("failure", "chipping", true)).unwrap();
+        assert!(chip.options.iter().find(|o| o.key == "change_tool").unwrap().enabled);
+        assert!(!chip.options.iter().find(|o| o.key == "finish_part").unwrap().enabled);
+        assert!(damage_choice(&ToolLifeReport::default()).is_none(), "a finished path asks nothing");
+    }
+
+    #[test]
+    fn a_break_a_fresh_tool_would_not_reach_can_continue_on_a_spare_tool() {
+        let mut worn = stopped("failure", "overload", true);
+        worn.life_used_end = 1.5;
+        for tl in [worn, stopped("failure", "collapse", true), stopped("failure", "fatigue", true)] {
+            let c = damage_choice(&tl).unwrap();
+            assert_eq!(c.recommended, "change_tool", "{}", tl.events[0].cause);
+            assert!(c.options.iter().any(|o| o.key == "change_tool" && o.enabled));
+            assert!(c.options.iter().any(|o| o.key == "finish_part" && !o.enabled), "a broken tool cannot finish the part");
+            assert!(c.attention.len() >= 2, "the card says why a spare tool helps");
+        }
+    }
+}

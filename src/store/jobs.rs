@@ -412,6 +412,100 @@ fn metric(m: &serde_json::Value, key: &str) -> f64 {
 }
 
 impl Rdb {
+    /// 공구 손상으로 멈춘 작업을 작업자가 고른 정책으로 같은 부품을 다시 계산하기 전에, 그 작업의 1차 기록을 공구 개체에서
+    /// 되돌리고 작업을 '대체됨'으로 표시한다 (같은 마모를 두 번 쌓지 않게). `job_id` 가 재계획(2차만 다시 고른 작업)이면 1차를
+    /// 맡은 원 작업으로 거슬러 올라가 그 1차를 되돌리고, 원 작업과 그 재계획을 모두 대체로 표시한다. 1차를 공구 하나가 맡았고 그
+    /// 공구에 이 부품 뒤의 기록이 없을 때만 되돌리고, 아니면 이유와 함께 거절한다. 원 작업이 공구를 은퇴시켰으면(치핑 감지·파손·
+    /// 수명 관리 만료) 같은 자리에 다른 공구가 없을 때 은퇴를 되돌린다 (다시 계산하는 같은 부품이 그 공구로 시작하므로)
+    pub fn supersede_job(&self, job_id: i64, tool: &ToolGeometry, vb_limit_mm: f64) -> Result<Vec<String>, String> {
+        let mut lines = Vec::new();
+        let root = self.root_of(job_id)?;
+        let lineage: Vec<i64> = {
+            let conn = self.conn();
+            let mut st = conn.prepare("SELECT id FROM jobs WHERE id = ?1 OR root_job_id = ?1 ORDER BY id").map_err(err)?;
+            let rows = st.query_map(params![root], |r| r.get::<_, i64>(0)).map_err(err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(err)?
+        };
+        let job_id = root;
+        let detail = self.job_detail(job_id)?.ok_or_else(|| format!("작업 #{} 기록이 없습니다", job_id))?;
+        let passes = self.job_passes(job_id)?;
+        if passes.iter().any(|p| p.status == "superseded") {
+            return Err(format!("작업 #{} 은 이미 다른 계산으로 대체됐습니다", job_id));
+        }
+        let mut events = Vec::new();
+        for j in lineage.iter() {
+            events.extend(self.job_events(*j)?);
+        }
+        let tools: std::collections::BTreeSet<i64> = events.iter().map(|e| e.tool_instance_id).collect();
+        if tools.len() > 1 {
+            return Err(format!("작업 #{} 은 경로 중 공구를 바꿔 여러 공구에 기록되어 되돌릴 수 없습니다", job_id));
+        }
+        let tid = detail.job.tool_instance_id.or_else(|| tools.iter().next().copied());
+        if let (Some(p1), Some(tid)) = (passes.iter().find(|p| p.pass == 1 && p.committed), tid) {
+            let mut t = self.tool_by_id(tid)?.ok_or_else(|| format!("공구 #{} 기록이 없습니다", tid))?;
+            if self.wear_events(tid, 1000)?.iter().any(|e| e.job_id.map(|j| j > job_id && !lineage.contains(&j)).unwrap_or(false)) {
+                return Err(format!("공구 #{} 에 작업 #{} 뒤의 기록이 있어 되돌릴 수 없습니다 — 공구를 리셋하고 새로 계산하세요", tid, job_id));
+            }
+            if t.retired_at.is_some() {
+                let retired_here = events.iter().any(|e| e.tool_instance_id == tid && matches!(e.kind.as_str(), "failure" | "chipping" | "tlm_expired"));
+                if !retired_here {
+                    return Err(format!("공구 #{} 은 작업 #{} 뒤에 리셋(교체)되어 같은 부품을 이어 계산할 수 없습니다 — 새 공구로 '다시 계산 후 재생' 하세요", tid, job_id));
+                }
+                if let Some(other) = self.active_tool(&t.slot_key)? {
+                    return Err(format!("같은 자리에 공구 #{} 가 이미 장착되어 공구 #{} 의 기록을 되돌릴 수 없습니다", other.id, tid));
+                }
+                self.conn()
+                    .execute("UPDATE tool_instances SET retired_at = NULL, retire_reason = '', version = version + 1 WHERE id = ?1", params![tid])
+                    .map_err(err)?;
+                t = self.tool_by_id(tid)?.ok_or_else(|| format!("공구 #{} 기록이 없습니다", tid))?;
+                lines.push(format!("작업 #{} 에서 은퇴한 공구 #{} 을 다시 장착된 것으로 되돌림", job_id, tid));
+            }
+            let before = t.vb_band_mm;
+            if let Some(f) = p1.field.as_ref() {
+                t.field.subtract(f);
+            }
+            t.cut_min = (t.cut_min - p1.cut_min).max(0.0);
+            t.removed_cm3 = (t.removed_cm3 - p1.removed_cm3).max(0.0);
+            t.jobs = (t.jobs - 1).max(0);
+            t.thermal_damage = (t.thermal_damage - metric(&p1.metrics, "thermal_damage")).max(0.0);
+            t.pred_base_um = (t.pred_base_um - metric(&p1.metrics, "pred_base_um")).max(0.0);
+            let cut = t.cut_min;
+            t.history.retain(|(tm, _)| *tm <= cut + 1e-9);
+            let ap = metric(&p1.metrics, "ap_mm");
+            // 예전 기록에는 작업 전 값이 없다 — 0 으로 두면 refresh 가 남은 마모 지도로 다시 잰다
+            t.life_used_max = metric(&p1.metrics, "life_used_max_before");
+            // 이 작업(과 재계획)의 '공구 교체 후 2차' 대기도 함께 거둔다 (대체된 계획이 다음 새 공구에 기록되지 않게)
+            if t.pending_job_id.map(|j| lineage.contains(&j)).unwrap_or(false) {
+                t.pending_job_id = None;
+            }
+            t.refresh(tool, ap, vb_limit_mm);
+            t.version = self.save_tool(&t)?;
+            self.add_wear_event(&WearEventRow {
+                tool_instance_id: t.id,
+                job_id: Some(job_id),
+                kind: "superseded".into(),
+                cut_min_after: t.cut_min,
+                vb_before_mm: before,
+                vb_after_mm: t.vb_band_mm,
+                source: "operator".into(),
+                note: format!("작업 #{} 의 1차 {:.2}분을 되돌림 — 작업자가 고른 정책으로 같은 부품을 다시 계산", job_id, p1.cut_min),
+                ..Default::default()
+            })?;
+            lines.push(format!("작업 #{} 의 1차 기록 {:.2}분을 공구 #{} 에서 되돌림 (VB {:.3} → {:.3} mm)", job_id, p1.cut_min, t.id, before, t.vb_band_mm));
+        }
+        for j in lineage.iter() {
+            for p in self.job_passes(*j)?.iter() {
+                self.set_pass_status(*j, p.pass, "superseded", false)?;
+            }
+        }
+        lines.push(format!(
+            "작업 #{} 은 다시 계산한 기록으로 대체됨{}",
+            job_id,
+            if lineage.len() > 1 { format!(" (재계획 {}건 포함)", lineage.len() - 1) } else { String::new() }
+        ));
+        Ok(lines)
+    }
+
     pub fn active_tool(&self, slot_key: &str) -> Result<Option<ToolInstanceRow>, String> {
         self.conn()
             .query_row(
@@ -502,7 +596,7 @@ impl Rdb {
     }
 
     fn charge_pending(&self, n: &mut ToolInstanceRow, job: i64, tool: &ToolGeometry, vb_limit_mm: f64, lines: &mut Vec<String>) -> Result<(), String> {
-        let Some(p2) = self.job_passes(job)?.into_iter().find(|p| p.pass == 2 && !p.committed && p.action == CompAction::ToolChange.key()) else {
+        let Some(p2) = self.job_passes(job)?.into_iter().find(|p| p.pass == 2 && !p.committed && p.action == CompAction::ToolChange.key() && p.status != "superseded") else {
             return Ok(());
         };
         let before = n.vb_band_mm;
@@ -888,7 +982,7 @@ impl Rdb {
         let mut st = self
             .conn()
             .prepare(&format!(
-                "SELECT {} FROM cut_records c JOIN jobs j ON j.id = c.job_id LEFT JOIN job_passes jp ON jp.job_id = c.job_id AND jp.pass = c.pass WHERE c.material_key = ?1 AND c.flutes = ?2 AND (?3 IS NULL OR (c.job_id <> ?3 AND COALESCE(j.root_job_id, -1) <> ?3)) AND COALESCE(jp.status, '') NOT IN ('replaced', 'awaiting_tool') ORDER BY c.created_at DESC LIMIT ?4",
+                "SELECT {} FROM cut_records c JOIN jobs j ON j.id = c.job_id LEFT JOIN job_passes jp ON jp.job_id = c.job_id AND jp.pass = c.pass WHERE c.material_key = ?1 AND c.flutes = ?2 AND (?3 IS NULL OR (c.job_id <> ?3 AND COALESCE(j.root_job_id, -1) <> ?3)) AND COALESCE(jp.status, '') NOT IN ('replaced', 'awaiting_tool', 'superseded') ORDER BY c.created_at DESC LIMIT ?4",
                 cols.join(", ")
             ))
             .map_err(err)?;
@@ -1224,6 +1318,7 @@ fn record_inner(rdb: &Rdb, tool: Option<&ToolInstanceRow>, inp: &JobInput) -> Re
             "thermal_damage": rep.thermal_damage,
             "thermal_fatigue_per_min": rep.thermal_fatigue_per_min,
             "ap_mm": ap,
+            "life_used_max_before": work.as_ref().map(|t| fin(t.life_used_max)),
         }),
     })?;
     let p2_cut_min = if action.cuts() { comp.cut_time_s / 60.0 } else { 0.0 };

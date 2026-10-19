@@ -136,6 +136,15 @@ pub struct DecisionReport {
     pub agreement: Option<bool>,
     pub transition_to_replace: Option<f64>,
     pub notes: Vec<String>,
+    /// 작업자가 선택 카드에서 고른 조치 (게이트 판단보다 덜 보수적일 수 없음)
+    #[serde(default)]
+    pub operator_choice: Option<Action>,
+    /// 작업자가 고르기 전 시스템 판단 (게이트 + 조언 상향)
+    #[serde(default)]
+    pub system_action: Option<Action>,
+    /// 선택 카드 (작업자에게 보여 줄 선택지 · 알림 이유)
+    #[serde(default)]
+    pub choice: Option<crate::choice::ChoicePrompt>,
 }
 
 fn gate(id: &str, label: &str, value: f64, limit: f64, unit: &str, severity: u8, action: Action, message: String) -> Gate {
@@ -598,8 +607,141 @@ pub fn evaluate(inp: &DecisionInput) -> DecisionReport {
         agreement: None,
         transition_to_replace: None,
         notes: Vec::new(),
+        operator_choice: None,
+        system_action: None,
+        choice: None,
     }
 }
+
+impl Action {
+    /// 선택 카드에 보이는 한 줄 설명
+    pub fn detail(&self) -> &'static str {
+        match self {
+            Action::Continue => "지금 절삭 조건 그대로 계속",
+            Action::ReduceFeed => "이송을 낮춰 절삭력·휨을 줄임",
+            Action::ReduceSpeed => "회전수를 낮춰 날끝 온도를 줄임 (fz 유지)",
+            Action::ChangeCoolant => "냉각 방식을 바꿔 열·마찰·열균열을 조절",
+            Action::InspectTool => "멈추고 날 마모·치핑을 확인 (조건 변경 없음)",
+            Action::ReplaceTool => "공구를 바꿈 (공구 패널에서 교체·리셋)",
+            Action::Stop => "즉시 정지 — 한계를 넘은 항목이 있음",
+        }
+    }
+}
+
+/// 작업자가 고를 수 있는가 — 결정적 게이트 판단보다 덜 보수적인 조치는 고를 수 없다 (게이트가 결정권자).
+/// 같은 보수성 단계(이송·회전수·냉각)끼리는 서로 바꿀 수 있다
+pub fn operator_can_choose(rep: &DecisionReport, a: Action) -> bool {
+    a.conservativeness() >= rep.rule_action.conservativeness()
+}
+
+/// 공정 판단 선택 카드. `operator_rate` 는 이 스코프의 작업자–조언 일치율 (SDS)
+pub fn choice_prompt(rep: &DecisionReport, operator_rate: Option<(f64, u64)>, advisor_rate: Option<(f64, u64)>) -> crate::choice::ChoicePrompt {
+    use crate::choice::{push_rate, ChoiceOption, ChoicePrompt};
+    let system = rep.system_action.unwrap_or(rep.final_action);
+    let prob = |a: Action| rep.advisor.as_ref().and_then(|ans| ans.labels.iter().position(|k| k == a.key()).and_then(|i| ans.probabilities.get(i).copied()));
+    let floor_gates: Vec<String> = rep
+        .gates
+        .iter()
+        .filter(|g| g.severity > 0 && g.action == rep.rule_action)
+        .map(|g| format!("{} ({})", g.label, ["통과", "관찰", "초과", "위험"][g.severity.min(3) as usize]))
+        .collect();
+    let detail = |a: Action| -> String {
+        match a {
+            Action::ReduceFeed => format!("{} — 이송 ×{:.2}", a.detail(), rep.feed_scale.unwrap_or(DEFAULT_OPERATOR_SCALE)),
+            Action::ReduceSpeed => format!("{} — 회전수 ×{:.2}", a.detail(), rep.speed_scale.unwrap_or(DEFAULT_OPERATOR_SCALE)),
+            Action::ChangeCoolant => match rep.coolant_suggestion.as_ref() {
+                Some(c) => format!("{} — 제안 {}", a.detail(), c),
+                None => format!("{} — 제안된 냉각 방식 없음 (기록만)", a.detail()),
+            },
+            _ => a.detail().to_string(),
+        }
+    };
+    let options: Vec<ChoiceOption> = Action::all()
+        .into_iter()
+        .map(|a| {
+            let enabled = operator_can_choose(rep, a);
+            ChoiceOption {
+                key: a.key().into(),
+                label: a.label().into(),
+                detail: detail(a),
+                recommended: a == system,
+                rule: a == rep.rule_action,
+                advisor_probability: prob(a),
+                advisor_top: rep.advisor_action == Some(a),
+                enabled,
+                blocked_by: if enabled { Vec::new() } else { floor_gates.clone() },
+                chosen: rep.operator_choice == Some(a),
+            }
+        })
+        .collect();
+    let mut attention = Vec::new();
+    if system.conservativeness() >= Action::InspectTool.conservativeness() {
+        attention.push(format!("{} 이상 조치가 필요합니다", Action::InspectTool.label()));
+    } else if system.conservativeness() >= 1 {
+        attention.push(format!("조건 조정이 필요합니다 ({})", system.label()));
+    }
+    if let (Some(false), Some(aa)) = (rep.agreement, rep.advisor_action) {
+        attention.push(format!("laya 1위({})와 규칙 판단({})이 다릅니다", aa.label(), rep.rule_action.label()));
+    }
+    if rep.escalated_by_advisor {
+        attention.push("laya 조언으로 공구 점검까지 상향됐습니다".into());
+    }
+    let mut agreement = Vec::new();
+    push_rate(&mut agreement, "규칙–laya", advisor_rate);
+    push_rate(&mut agreement, "작업자–laya", operator_rate);
+    let mut c = ChoicePrompt {
+        kind: "process".into(),
+        header: "공정 판단".into(),
+        question: "다음 조치를 무엇으로 할까요?".into(),
+        options,
+        recommended: system.key().into(),
+        decided_by: if rep.operator_choice.is_some() {
+            "operator".into()
+        } else if rep.escalated_by_advisor {
+            "rule+laya".into()
+        } else {
+            "rule".into()
+        },
+        needs_attention: false,
+        attention,
+        operator_choice: rep.operator_choice.map(|a| a.key().to_string()),
+        advisor_note: match (rep.advisor.as_ref(), rep.advisor_error.as_ref()) {
+            (Some(ans), _) => format!(
+                "laya 1위 {} {:.0}% · 행동 확률 {:.2}",
+                Action::from_key(&ans.top).map(|a| a.label()).unwrap_or(ans.top.as_str()),
+                ans.top_probability * 100.0,
+                ans.act_probability
+            ),
+            (None, Some(e)) => e.clone(),
+            (None, None) => "laya 조언 미사용".into(),
+        },
+        agreement,
+    };
+    c.sort_options(|k| Action::from_key(k).map(|a| a.conservativeness()).unwrap_or(9));
+    c.settle_attention();
+    c
+}
+
+/// 작업자가 고른 조치를 판단에 반영한다 (절삭 조건 변경은 `pipeline::Workspace::choose_decision`)
+pub fn apply_operator_choice(rep: &mut DecisionReport, a: Action) -> Result<(), String> {
+    if !operator_can_choose(rep, a) {
+        return Err(format!(
+            "안전 게이트 판단 '{}' 보다 덜 보수적인 '{}' 은 고를 수 없습니다",
+            rep.rule_action.label(),
+            a.label()
+        ));
+    }
+    if rep.system_action.is_none() {
+        rep.system_action = Some(rep.final_action);
+    }
+    rep.operator_choice = Some(a);
+    rep.final_action = a;
+    rep.final_action_label = a.label().into();
+    Ok(())
+}
+
+/// 작업자가 이송·회전수 감속을 골랐는데 게이트가 배율을 정하지 않았을 때 쓰는 배율
+pub const DEFAULT_OPERATOR_SCALE: f64 = 0.9;
 
 fn state_text(inp: &DecisionInput, gates: &[Gate]) -> String {
     let mut s = format!(
@@ -706,5 +848,70 @@ pub fn apply_advisor(rep: &mut DecisionReport, adv: &LayaAdvisor, allow_escalati
             rep.advisor = Some(ans);
         }
         Err(e) => rep.advisor_error = Some(e),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(rule: Action) -> DecisionReport {
+        DecisionReport {
+            gates: vec![Gate {
+                id: "vb_sim".into(),
+                label: "시뮬레이션 마모".into(),
+                value: 0.25,
+                limit: 0.2,
+                unit: "mm".into(),
+                severity: 2,
+                passed: false,
+                action: rule,
+                message: "VB 한계 초과".into(),
+            }],
+            rule_action: rule,
+            rule_action_label: rule.label().into(),
+            rule_reasons: Vec::new(),
+            feed_scale: None,
+            speed_scale: None,
+            coolant_suggestion: None,
+            state_text: String::new(),
+            advisor: None,
+            advisor_action: None,
+            advisor_error: None,
+            advisor_allowed: false,
+            final_action: rule,
+            final_action_label: rule.label().into(),
+            escalated_by_advisor: false,
+            agreement: None,
+            transition_to_replace: None,
+            notes: Vec::new(),
+            operator_choice: None,
+            system_action: None,
+            choice: None,
+        }
+    }
+
+    #[test]
+    fn the_operator_cannot_pick_below_the_gate() {
+        let mut r = report(Action::InspectTool);
+        let c = choice_prompt(&r, None, None);
+        assert_eq!(c.options[0].key, "inspect_tool", "the gate decision is offered first");
+        let cont = c.options.iter().find(|o| o.key == "continue").unwrap();
+        assert!(!cont.enabled && cont.blocked_by.iter().any(|b| b.contains("시뮬레이션 마모")), "{:?}", cont);
+        assert!(c.options.iter().filter(|o| o.enabled).all(|o| Action::from_key(&o.key).unwrap().conservativeness() >= 2));
+        assert!(c.needs_attention, "an inspect-or-worse decision asks the operator");
+        assert!(apply_operator_choice(&mut r, Action::Continue).is_err());
+        apply_operator_choice(&mut r, Action::ReplaceTool).unwrap();
+        assert_eq!((r.final_action, r.system_action, r.operator_choice), (Action::ReplaceTool, Some(Action::InspectTool), Some(Action::ReplaceTool)));
+        let c2 = choice_prompt(&r, None, None);
+        assert!(!c2.needs_attention && c2.options[0].key == "inspect_tool" && c2.options.iter().any(|o| o.key == "replace_tool" && o.chosen));
+    }
+
+    #[test]
+    fn a_calm_cut_does_not_raise_a_notification() {
+        let mut r = report(Action::Continue);
+        r.gates[0].severity = 0;
+        let c = choice_prompt(&r, None, None);
+        assert!(!c.needs_attention && c.recommended == "continue");
+        assert_eq!(c.enabled_count(), Action::all().len(), "every action is at least as conservative as continuing");
     }
 }
