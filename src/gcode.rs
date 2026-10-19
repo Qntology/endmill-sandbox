@@ -258,6 +258,41 @@ pub fn stepover_note(profile: &MachiningProfile, pattern: &ToolPathPattern) -> O
     }
 }
 
+/// 합성 경로의 슬롯형 이동(지그재그 포켓의 직선 플런지·첫 패스 슬롯·패스 끝 피치 이동, 슬롯 패턴)이 프리셋의 측면 절삭 ap 를 그대로 쓸 때
+/// 알리는 문구. 측면 절삭용 ap(인코넬 프리셋 1·D)는 제조사의 슬롯 권장(`WorkpieceProps::slot_ap_ratio`, 확인된 소재만)보다 깊고,
+/// 작은 ae 용 칩 얇아짐 보정이 든 프리셋 fz 는 슬롯에서 그대로 칩 두께가 된다 — 2026-10-19 인코넬 포켓의 최종 벽 오차 약 1 mm 중
+/// 공구 휨 0.5 mm 가 이 피치 이동(법선 힘 약 7 kN, 몸체 응력이 정적 강도에 닿음)에서 나왔다
+pub fn slot_note(profile: &MachiningProfile, pattern: &ToolPathPattern) -> Option<String> {
+    let moves = match pattern {
+        ToolPathPattern::PocketZigZag => "직선 플런지·첫 패스 슬롯·패스 끝 피치 이동",
+        ToolPathPattern::Slot { .. } => "슬롯",
+        _ => return None,
+    };
+    let wp = crate::physics::WorkpieceProps::of(&profile.workpiece_setup.effective_material());
+    let lim = wp.slot_ap_ratio?;
+    let d = profile.endmill_setting.diameter_mm.max(0.1);
+    let ap = profile.conditions.axial_doc_mm.min(profile.endmill_setting.loc_mm);
+    if !(ap / d > lim + 1e-9) {
+        return None;
+    }
+    let fz = profile.conditions.feed_per_tooth_mm;
+    let target = (wp.fz_coeff * d).clamp(0.003, 0.25);
+    Some(format!(
+        "{} 패턴의 슬롯형 이동({})은 ap {:.1} mm = {:.2}·D 로 깎습니다 — {} 초경 엔드밀 슬롯 권장 ap 는 제조사 자료 {:.2}·D 이하라 공구 응력·휨·벽 오차가 현장 조건보다 크게 나옵니다{} · 현장에서는 헬리컬·램핑 진입(깊이 0.5·D 이하), 단계 절입, 정삭 윤곽 패스로 포켓 벽 치수를 정합니다",
+        pattern.label(),
+        moves,
+        ap,
+        ap / d,
+        wp.label,
+        lim,
+        if fz > 1.2 * target {
+            format!(" (슬롯에서는 칩 얇아짐이 없어 칩 두께 = 프로그램 fz {:.3} mm, 목표 칩 두께 {:.3} mm 의 {:.1}배)", fz, target, fz / target)
+        } else {
+            String::new()
+        }
+    ))
+}
+
 pub fn pattern_stepover(profile: &MachiningProfile, min_frac: f64, max_frac: f64) -> f64 {
     let d = profile.endmill_setting.diameter_mm.max(0.1);
     let ae = profile.conditions.radial_doc_mm;
@@ -731,5 +766,19 @@ mod tests {
         assert!(stepover_note(&p, &ToolPathPattern::RectangularProfile).is_none());
         p.conditions.radial_doc_mm = 0.3 * p.endmill_setting.diameter_mm;
         assert!(stepover_note(&p, &ToolPathPattern::PocketZigZag).is_none());
+    }
+
+    #[test]
+    fn slot_note_flags_side_milling_depth_on_slot_like_moves_where_vendor_data_exists() {
+        // 인코넬 프리셋: 측면 절삭 ap 1·D 를 슬롯형 이동에 그대로 → 제조사 슬롯 상한 0.75·D 초과, fz 0.06 = 목표 칩 0.036 의 1.7배
+        let mut p = MachiningProfile::from_preset(&MachiningPreset::default_superalloy_roughing(), "t");
+        let n = slot_note(&p, &ToolPathPattern::PocketZigZag).expect("note");
+        assert!(n.contains("1.00·D") && n.contains("0.75·D") && n.contains("1.7배"), "{}", n);
+        assert!(slot_note(&p, &ToolPathPattern::RectangularProfile).is_none(), "side milling at 1·D is within the vendor envelope");
+        p.conditions.axial_doc_mm = 0.5 * p.endmill_setting.diameter_mm;
+        assert!(slot_note(&p, &ToolPathPattern::PocketZigZag).is_none());
+        // 자료를 확인하지 못한 소재는 판정하지 않는다 (추정값으로 경고하지 않음)
+        let al = MachiningProfile::from_preset(&MachiningPreset::default_aluminum_roughing(), "a");
+        assert!(slot_note(&al, &ToolPathPattern::PocketZigZag).is_none());
     }
 }

@@ -566,3 +566,74 @@ fn tool_material_matrix_ranks_like_practice() {
         assert!(c.rank_in_material <= 4, "{} × {} ranks {}", c.use_case, c.tool, c.rank_in_material);
     }
 }
+
+// ---------------------------------------------------------------- 포켓 벽 오차 (얇은 벽 하중·탄성 복원, 슬롯형 이동)
+
+/// 세그먼트가 Y 방향 직선 이동인가 (지그재그 포켓의 패스 끝 피치 이동)
+fn y_move(segs: &[endmill_model::gcode::ToolPathSegment], seg: usize) -> bool {
+    let prev = if seg > 0 { segs[seg - 1].end_point() } else { (0.0, 0.0, 0.0) };
+    let e = segs[seg.min(segs.len() - 1)].end_point();
+    (e.0 - prev.0).abs() < 1e-6 && (e.1 - prev.1).abs() > 1e-6 && (e.2 - prev.2).abs() < 1e-6
+}
+
+#[test]
+fn pocket_skin_carries_only_its_own_chip_force_and_springs_back_within_its_collapse_load() {
+    use endmill_model::loadsim::WallErrorSample;
+    // 2026-10-19 품질 저하 보고: 인코넬 프리셋 pocket_zigzag 의 최종 벽 오차 600~1,013 µm (정상 공구로도). 최악 점(12번째 패스 끝의 피치 이동,
+    // 스톡 가장자리 0.92 mm 스킨, z −6) 1,012.7 = 공구 휨 501.2 + 얇은 벽 458.3 + 마모 45.7 + 소재 열 8.8 − 런아웃 1.3 − 공구 열 0.1.
+    // 얇은 벽 458 µm 는 공구 앞 미절삭 띠를 폭 전체로 깎는 피치 이동의 법선 힘 6.9 kN 전체를 스킨에 걸어 나온 탄성 1.48 mm 를 ±500·t 로
+    // 자른 값이었다 (뿌리 굽힘 12 GPa = 항복의 10배). 그 힘은 공구 앞 덩어리가 면내로 받고, 벽이 돌아오는 몫은 전소성 하중까지다
+    let run = |name: &str| {
+        let p = preset(name);
+        let ctx = CutContext::from_profile(&p);
+        let (_v, r, segs) = endmill_model::viewport::build_report_prog(&p, "pocket_zigzag", &ctx, &mut |_| true).unwrap();
+        (ctx, r, segs)
+    };
+    let collapse_cap_ok = |ctx: &CutContext, w: &WallErrorSample, bulk_c: f64| {
+        // 경로의 σy 는 그때 소재 온도에서 — 가장 찬(가장 단단한) 온도로 잰 상한을 넘지 않아야 한다
+        let sy = ctx.wp.flow_stress(0.0, 1.0, ctx.env.ambient_c.min(bulk_c));
+        w.workpiece_um.abs() <= 1.5 * sy / w.wall_sigma_per_n.max(1e-12) / w.wall_k_n_mm * 1000.0 + 1e-6
+    };
+    let (ctx, r, segs) = run("인코넬");
+    let finals: Vec<&WallErrorSample> = r.wall_errors.iter().filter(|w| w.final_wall).collect();
+    let skin_steps: Vec<&&WallErrorSample> = finals.iter().filter(|w| w.wall_k_n_mm > 0.0 && y_move(&segs, w.seg)).collect();
+    let worst = finals.iter().max_by(|a, b| a.total_um.abs().partial_cmp(&b.total_um.abs()).unwrap()).expect("final walls");
+    println!(
+        "[WALL] 인코넬 포켓 · 최종 벽 {}점 (스킨 피치 이동 {}점) · 최대 {:.1} µm (seg {} 공구 휨 {:.1} + 얇은 벽 {:.1} + 마모 {:.1}) · 얇은 벽 휨 최대 {:.1} µm",
+        finals.len(),
+        skin_steps.len(),
+        r.max_wall_error_um,
+        worst.seg,
+        worst.deflection_um,
+        worst.workpiece_um,
+        worst.wear_um,
+        r.max_workpiece_defl_um
+    );
+    for w in r.warnings.iter().filter(|w| w.contains("슬롯형") || w.contains("얇은 벽")) {
+        println!("[WALL]    {}", w);
+    }
+    assert!(skin_steps.len() >= 50, "the stepover moves form the side skins: {}", skin_steps.len());
+    assert!(
+        skin_steps.iter().all(|w| w.workpiece_um == 0.0 && w.wall_stress_mpa == 0.0),
+        "the stepover's chip force goes into the uncut stock ahead, not into the skin beside it: {:?}",
+        skin_steps.iter().map(|w| (w.seg, w.workpiece_um)).filter(|x| x.1 != 0.0).take(5).collect::<Vec<_>>()
+    );
+    // 스킨 형상(두께·강성)은 남는다 — 그 스킨을 따라 깎는 2차 보정 예측이 쓴다
+    assert!(skin_steps.iter().all(|w| w.wall_mm > 0.5 && w.wall_mm < 1.5 && w.wall_k_n_mm > 0.0));
+    assert!(finals.iter().filter(|w| w.wall_k_n_mm > 0.0).all(|w| collapse_cap_ok(&ctx, w, r.bulk_c)));
+    // 남는 최악 오차는 슬롯형 이동(ap 1·D, 법선 힘 6~7 kN)의 공구 휨이다 — 공구 끝 강성 13.8 N/µm 는 실측 대역이라 경로 쪽 문제이고, 경고가 남는다
+    assert!(worst.workpiece_um.abs() < 1.0 && worst.deflection_um > 400.0, "{:?}", (worst.deflection_um, worst.workpiece_um));
+    assert!(r.max_wall_error_um < 650.0, "was 968.6 µm (Stop) with the skin term: {:.1}", r.max_wall_error_um);
+    assert!(r.warnings.iter().any(|w| w.contains("슬롯형 이동") && w.contains("0.75·D")), "{:#?}", r.warnings);
+    // 탄소강 프리셋: 끝까지 깎아 마지막 패스가 위쪽 스킨을 측면 절삭(벽 쪽 띠만)으로 만든다 — 그 벽은 지금처럼 힘을 받아 휘고(띠와 벽이 한 몸),
+    // 피치 이동이 만든 옆 스킨은 휘지 않는다. 예전 최대 533 µm 중 324 µm 가 피치 이동의 스킨 휨이었다
+    let (cs, rs, ss) = run("탄소강");
+    let thin: Vec<&WallErrorSample> = rs.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).collect();
+    println!("[WALL] 탄소강 포켓 · 최종 얇은 벽 {}점 · 최대 벽 오차 {:.1} µm · 얇은 벽 휨 최대 {:.1} µm", thin.len(), rs.max_wall_error_um, rs.max_workpiece_defl_um);
+    assert!(thin.iter().any(|w| !y_move(&ss, w.seg) && w.workpiece_um > 1.0), "side milling along a skin still bends it");
+    assert!(thin.iter().filter(|w| y_move(&ss, w.seg)).all(|w| w.workpiece_um == 0.0));
+    assert!(thin.iter().all(|w| collapse_cap_ok(&cs, w, rs.bulk_c)));
+    assert!(rs.max_wall_error_um < 300.0, "{:.1}", rs.max_wall_error_um);
+    // 슬롯 자료를 확인하지 못한 소재는 경고하지 않는다
+    assert!(!rs.warnings.iter().any(|w| w.contains("슬롯형 이동")));
+}

@@ -1259,6 +1259,28 @@ pub fn build(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSimReport, 
             format!("공구 끝 컴플라이언스 {:.3} µm/N 중 홀더({:.0} N/µm)·스핀들({:.0} N/µm) 몫 {:.0}% — 공구 보 굽힘이 휨을 거의 다 정한다", total_c, t.holder_stiffness_n_per_um, t.spindle_stiffness_n_per_um, deflection.holder_share * 100.0),
         );
     }
+    // 얇은 벽 항복: 벽에 걸린 힘이 뿌리를 항복시킨 최종 벽 — 벽 오차에는 전소성 하중까지의 탄성 복원만 들어간다 (`loadsim::wall_springback_um`)
+    {
+        let sigma_y = ctx.wp.flow_stress(0.0, 1.0, rep.bulk_c).max(1.0);
+        let thin: Vec<&crate::loadsim::WallErrorSample> = rep.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).collect();
+        let worst = thin.iter().map(|w| w.wall_stress_mpa).fold(0.0, f64::max);
+        if worst > sigma_y {
+            let n = thin.iter().filter(|w| w.wall_stress_mpa > sigma_y).count();
+            flag(
+                &mut flags,
+                "thin_wall_yield",
+                1,
+                worst / sigma_y,
+                "< 1 (탄성)",
+                format!(
+                    "최종 얇은 벽 {}점에서 벽 뿌리 굽힘 응력이 항복 응력 {:.0} MPa 의 최대 {:.1}배 — 그 벽은 영구 변형(휨·꺾임)돼 치수 오차가 아니라 불량이고, 벽 오차에는 전소성 하중(1.5·σy)까지의 탄성 복원만 들어갔다. 벽 쪽 절입을 줄이고 단계 절입·지지를 남기는 순서로 바꿀 것",
+                    n,
+                    sigma_y,
+                    worst / sigma_y
+                ),
+            );
+        }
+    }
 
     // ---- 표면조도 ----
     let group = crate::pairref::WpGroup::of(&ctx.wp);
@@ -1822,6 +1844,42 @@ pub fn unknown_items(profile: &MachiningProfile, ctx: &CutContext, rep: &LoadSim
         format!("고정 휨 {:.2} µm · 얇은 벽 휨", nominal.fixture_deflection_um),
         "정삭 위치에서 탭·밀기 시험",
     );
+    {
+        let thin: Vec<&crate::loadsim::WallErrorSample> = rep.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).collect();
+        if !thin.is_empty() {
+            let sigma_y = ctx.wp.flow_stress(0.0, 1.0, rep.bulk_c).max(1.0);
+            let unloaded = thin.iter().filter(|w| w.wall_stress_mpa <= 0.0).count();
+            let yielded = thin.iter().filter(|w| w.wall_stress_mpa > sigma_y).count();
+            add(
+                "thin_wall_load",
+                format!(
+                    "얇은 벽 최소 {:.2} mm (최종 벽 {}점): 칩이 붙은 소재가 벽 재료면 공구 법선 힘 전체, 벽 법선 방향으로 15 mm 넘게 이어진 덩어리면 0 ({}점) · 탄성 복원은 전소성 하중 1.5·σy (σy {:.0} MPa) 까지",
+                    thin.iter().map(|w| w.wall_mm).fold(f64::INFINITY, f64::min),
+                    thin.len(),
+                    unloaded,
+                    sigma_y
+                ),
+                "벽과 덩어리가 힘을 나눠 받는 몫 0~100 % (두 강성의 비 — 유한요소로만 정함, 미절삭 소재 1~5 mm 앞이면 벽 강성 ×4~115) · 판 폭 b = ap + 2a 는 강성 등가 폭과 ±15 % 이나 뿌리 응력은 Roark 판 해(응력 폭 1.6~2.0·a)로 1.3~1.5배 클 수 있음 · 벽 위끝 휨은 가운데 높이의 약 2.5배 (벽 오차는 가운데 높이) · 벽 자유 끝 강성 ×0.37 · 로트 σy ±10 % (IN718 시효재 0.2 % 내력 최소 1,034 MPa)",
+                format!("얇은 벽 휨 최대 {:.1} µm · 항복 넘은 최종 벽 {}점 (그 벽은 영구 변형 — 치수가 아니라 불량)", rep.max_workpiece_defl_um, yielded),
+                "정삭 전후 벽 두께를 마이크로미터로 재고, 다이얼 게이지를 대고 벽을 밀어 강성 확인 (또는 그 벽만 유한요소 해석)",
+            );
+        }
+    }
+    if rep.pattern == "pocket_zigzag" {
+        // 스킨 두께는 힘을 받았든 아니든 최종 얇은 벽의 형상으로 (피치 이동이 만든 스킨은 덩어리 판정으로 휨 0 이라 `thin_wall_mm` 에 안 잡힌다)
+        let skin = rep.wall_errors.iter().filter(|w| w.final_wall && w.wall_k_n_mm > 0.0).map(|w| w.wall_mm).fold(f64::INFINITY, f64::min);
+        add(
+            "pocket_path_strategy",
+            "합성 지그재그 포켓 — 프리셋 ap 를 한 번에 직선 플런지, 첫 패스 슬롯(ae = D)·패스 끝 피치 이동(공구 앞 띠를 폭 전체로 깎는 슬롯형)이 최종 벽을 만들고 정삭 윤곽 패스가 없음, 스톡 가장자리에 1 mm 스킨".into(),
+            "CAM 포켓 황삭은 램핑·헬리컬 진입, 단계 절입(슬롯 ap 는 소재·공구별 제조사 권장), 벽에 정삭 여유를 남긴 뒤 정삭 윤곽 패스로 벽 치수를 정함",
+            format!(
+                "최종 벽 오차·Ra 가 황삭 벽 기준 — 피치 이동의 공구 휨이 벽 오차를 정함 (이 작업 최종 벽 공구 휨 최대 {:.0} µm{})",
+                rep.wall_errors.iter().filter(|w| w.final_wall).map(|w| w.deflection_um.abs()).fold(0.0, f64::max),
+                if skin.is_finite() { format!(", 스톡 가장자리 스킨 {:.2} mm", skin) } else { String::new() }
+            ),
+            "실제 CAM G-code 를 불러와 시뮬레이션 (정삭 벽 치수는 사각형 프로파일 패턴으로 평가)",
+        );
+    }
     add(
         "lot_hardness",
         format!("{} 대표 경도 {:.0} HRC", ctx.wp.label, ctx.wp.hardness_hrc),

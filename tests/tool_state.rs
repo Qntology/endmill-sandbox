@@ -286,7 +286,17 @@ fn tool_instance_accumulates_across_jobs_records_passes_and_resets() {
     assert!((j2.report.vb_start_mm - t1.vb_band_mm).abs() < 1e-9, "{} vs {}", j2.report.vb_start_mm, t1.vb_band_mm);
     assert!((j2.report.wear_age0_min - t1.cut_min).abs() < 1e-9, "break-in continues from the tool's real cutting minutes: {} vs {}", j2.report.wear_age0_min, t1.cut_min);
     assert!(j2.comp.draft.refs.as_ref().map(|r| r.n == 1).unwrap_or(false), "second job must find the first job (one reference per job)");
-    assert!(j2.log.life.as_ref().map(|l| l.history_n > j1.log.life.as_ref().map(|x| x.history_n).unwrap_or(0)).unwrap_or(false));
+    // 두 번째 작업의 수명 예측은 공구 개체의 누적 이력(첫 작업과 그 2차의 마모점)에서 이어진다. 예측 격자 점 수(history_n)는 이력 길이를
+    // 작업 시간의 1/8 또는 1/4 간격으로 다시 샘플한 값이라, 이력이 작업 두 개 길이면 둘 다 9점이 될 수 있다 (이력/간격이 8 경계) — 이력 자체를 본다
+    let (l1, l2) = (j1.log.life.as_ref().expect("life forecast, job 1"), j2.log.life.as_ref().expect("life forecast, job 2"));
+    assert!(
+        j1.log.prior_points == 0 && j2.log.prior_points > 0 && l2.t_now_min > l1.t_now_min + 0.9 * j1.report.cut_time_min,
+        "job 2 continues the tool's history: prior {} → {}, now {:.2} → {:.2} min",
+        j1.log.prior_points,
+        j2.log.prior_points,
+        l1.t_now_min,
+        l2.t_now_min
+    );
     assert!(j2.comp.draft.state_text.contains("reused"));
     let out2 = record(&store, &mut row2, &p, &j2, &j2.comp, "T2", None, false);
     let t2 = out2.tool.clone().unwrap();

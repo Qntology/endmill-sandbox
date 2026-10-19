@@ -120,8 +120,12 @@ fn tiny_laya(dir: &PathBuf) -> LayaAdvisor {
     LayaAdvisor::load(dir, &dev).unwrap()
 }
 
+/// 티타늄 프리셋 포켓은 2차를 계획하지 않고 보류하며 1차는 건드리지 않는다. 예전에는 '1차 벽이 항복했다'(1차 유효성 게이트 3등급)가 보류 이유였지만
+/// 그 항복은 피치 이동의 슬롯형 법선 힘 전체를 스톡 가장자리 1 mm 스킨에 걸었던 모델 결함이었다 (`loadsim::cut_zone_in_bulk`, docs/pocket-wall-error.md).
+/// 지금 이 포켓의 1차 벽은 탄성 범위(벽 응력/항복 약 0.1)이고, 공차 ±10 µm 에서 2차 휨 불확도가 공차 절반을 넘어 모든 절삭 선택지가 막혀 보류한다.
+/// 1차 벽이 실제로 항복하면 1차 결과가 무효라는 판정 경로는 같은 1차 결과의 얇은 벽 구간 응력을 항복 위로 올려 따로 본다
 #[test]
-fn titanium_pocket_holds_when_pass_one_walls_yield_without_touching_pass_one() {
+fn titanium_pocket_holds_without_touching_pass_one_and_yielded_walls_invalidate_pass_one() {
     let p = preset("티타늄");
     let dir = temp_dir("ti");
     let mut sds = SdsStore::open(&dir.join("sds"));
@@ -148,20 +152,45 @@ fn titanium_pocket_holds_when_pass_one_walls_yield_without_touching_pass_one() {
     assert!(d.need && d.zones.iter().any(|z| z.needs));
     assert!(d.gates.iter().any(|g| g.id == "overcut_pass1" && g.severity == 2));
     let p1 = d.gates.iter().find(|g| g.id == "pass1_validity").expect("pass1 gate");
-    assert_eq!(p1.severity, 3, "{}", p1.message);
-    assert!(p1.blocks.contains(&CompAction::Execute) && p1.blocks.contains(&CompAction::ExecuteReduced) && p1.blocks.contains(&CompAction::Split));
+    assert!(p1.severity <= 1 && p1.value < 1.0 && p1.blocks.is_empty(), "pass-one walls stay elastic: {}", p1.message);
     assert!(r.report.seg_walls.iter().any(|s| s.wall_stress_mpa > 0.0));
-    assert!(!d.allowed.contains(&CompAction::ToolChange));
+    let defl = d.gates.iter().find(|g| g.id == "pass2_deflection").expect("deflection gate");
+    assert_eq!(defl.severity, 3, "{}", defl.message);
+    assert!(defl.blocks.contains(&CompAction::Execute) && defl.blocks.contains(&CompAction::ExecuteReduced) && defl.blocks.contains(&CompAction::Split));
+    assert!(!d.allowed.iter().any(|a| a.cuts()));
     assert_eq!(o.decision.final_action, CompAction::Hold);
     assert!(o.decision.operator_confirm);
     assert!(o.program_text.is_empty() && o.segments.is_empty());
-    assert!(o.notes.iter().any(|n| n.contains("1차 조건을 고쳐")));
+    assert!(o.notes.iter().any(|n| n.contains("보류")));
     let pass1 = endmill_model::gcode::GCodeGenerator::program_from_segments(&p, &r.segments, "P1").to_text();
     assert!(!pass1.contains("COMP2") && !pass1.contains("G04"));
     let status = sds.status(400);
     let wear = status.ledgers.iter().find(|l| l.ledger == "wear").unwrap();
     assert!(wear.run_observations > 0);
     assert!(!sds.gate_rates(&wearcomp::wear_scope(&p)).is_empty());
+    // 같은 1차 결과에서 얇은 벽 구간의 뿌리 응력이 항복을 넘었다면: 탄성 복원 가정이 깨져 1차 결과 자체가 무효 → 모든 절삭 선택지를 막고
+    // '1차 조건을 고쳐 다시 계산' 으로 보류, 1차 프로그램은 그대로
+    let (ctx, _) = endmill_model::pipeline::calibrated_context(&p, Some(&sds));
+    let sigma_y = ctx.wp.flow_stress(0.0, 1.0, ctx.env.ambient_c);
+    let mut yielded = r.report.clone();
+    let mut n = 0;
+    for s in yielded.seg_walls.iter_mut().filter(|s| s.wall_k_n_mm > 0.0) {
+        s.wall_stress_mpa = 1.5 * sigma_y;
+        n += 1;
+    }
+    assert!(n > 0, "the pocket has thin-wall segments");
+    let opts = CompOptions::default();
+    let dy = wearcomp::evaluate(&p, &ctx, &yielded, &r.log, &opts, None);
+    let decy = wearcomp::consult(&dy, None, None, false);
+    let oy = wearcomp::finalize(&p, &ctx, &yielded, &r.segments, &r.log, &dy, &decy, &opts);
+    let p1y = dy.gates.iter().find(|g| g.id == "pass1_validity").expect("pass1 gate");
+    assert_eq!(p1y.severity, 3, "{}", p1y.message);
+    assert!(p1y.blocks.contains(&CompAction::Execute) && p1y.blocks.contains(&CompAction::ExecuteReduced) && p1y.blocks.contains(&CompAction::Split));
+    assert!(!dy.allowed.contains(&CompAction::ToolChange));
+    assert_eq!(oy.decision.final_action, CompAction::Hold);
+    assert!(oy.decision.operator_confirm);
+    assert!(oy.program_text.is_empty() && oy.segments.is_empty());
+    assert!(oy.notes.iter().any(|n| n.contains("1차 조건을 고쳐")), "{:?}", oy.notes);
 }
 #[test]
 fn aluminum_profile_within_tolerance_skips_and_saves_logs() {

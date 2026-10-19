@@ -604,11 +604,9 @@ fn eval_pass(env: &Env, tool: &ToolGeometry, zone: &SegWallStat, ae_mm: f64, fz:
     let steps = ((6.0 * pitch / eng.span().max(1e-6)).ceil() as usize).clamp(48, 360);
     let f = physics::mechanistic_forces(tool, &co, fz, env.rpm, &eng, steps, 10);
     let (defl, away) = loadsim::wall_deflection(tool, ctx.calib.deflection, &f, &eng).unwrap_or((0.0, 0.0));
-    let wall = if zone.wall_k_n_mm > 0.0 {
-        (away / zone.wall_k_n_mm * 1000.0).clamp(-500.0 * zone.wall_mm.max(0.01), 500.0 * zone.wall_mm.max(0.01))
-    } else {
-        0.0
-    };
+    // 1차 경로와 같은 식: 벽 뿌리 전소성 하중까지만 탄성 복원 (σy 는 아래 얇은 벽 게이트와 같은 온도)
+    let sigma_y = ctx.wp.flow_stress(0.0, 1.0, ctx.env.ambient_c + env.bulk_excess);
+    let wall = loadsim::wall_springback_um(away, zone.wall_k_n_mm, zone.wall_sigma_per_n, sigma_y, zone.wall_mm);
     let chatter = crate::dynamics::stability_margin(tool, &co, &eng, f.h_mean_mm, env.rpm, ap, ctx.calib.deflection, vce, ctx.wp.process_damping);
     let th = physics::thermal_preheated(ctx, &co, &f, vce, env.rpm, &eng, env.body.mass_kg, env.body.area_m2, env.bulk_excess);
     let wr = physics::wear_at(ctx, &f, &th, vce, fz.max(1e-6), &eng, env.reference, tool.flank_wear_mm);

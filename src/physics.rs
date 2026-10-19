@@ -120,6 +120,10 @@ pub struct WorkpieceProps {
     /// 길들이기 크기의 절삭속도 지수 (Ti·Ni 는 속도가 오르면 초기 날끝 손상이 커진다). 0 이면 속도 무관
     #[serde(default)]
     pub breakin_vc_exp: f64,
+    /// 초경 엔드밀 슬롯(ae = D) 권장 ap/D 의 상한 — 제조사 자료로 확인한 소재만 (없으면 판정하지 않음, `gcode::slot_note`).
+    /// 측면 절삭용 `ap_ratio` 를 슬롯형 이동에 그대로 쓰는 합성 경로가 이 값을 넘으면 경고한다
+    #[serde(default)]
+    pub slot_ap_ratio: Option<f64>,
 }
 
 fn default_kr_floor() -> f64 {
@@ -273,6 +277,7 @@ impl WorkpieceProps {
             breakin_vb_um: 30.0,
             breakin_tau_min: 2.0,
             breakin_vc_exp: 0.0,
+            slot_ap_ratio: None,
         };
         match m {
             WorkpieceMaterial::Aluminum => WorkpieceProps {
@@ -593,6 +598,9 @@ impl WorkpieceProps {
                 breakin_vb_um: 50.0,
                 breakin_tau_min: 1.0,
                 breakin_vc_exp: 0.5,
+                // Ni 계(S3) 초경 엔드밀 슬롯 ap: Kennametal HARVI II TE 5날 Ø12 R1 (이 프리셋 공구와 같은 급) 0.75·D · Seco JHP780 0.6·D ·
+                // Helical HEV-5 0.25~0.5·D · Mitsubishi VQN6MVRB 0.5·D · Haas HTPM 0.5·D · OSG AE-VMS 0.25·D, 슬롯 fz 0.03~0.04 mm (Ø12) — 상한 0.75
+                slot_ap_ratio: Some(0.75),
                 ..base("inconel", "인코넬 718")
             },
             WorkpieceMaterial::SuperAlloy => WorkpieceProps {
@@ -647,6 +655,8 @@ impl WorkpieceProps {
                 breakin_vb_um: 50.0,
                 breakin_tau_min: 1.0,
                 breakin_vc_exp: 0.5,
+                // 제조사 슬롯 자료의 Ni 계 내열합금 묶음(S3)과 같은 값 (인코넬 참조)
+                slot_ap_ratio: Some(0.75),
                 ..base("superalloy", "수퍼알로이")
             },
             WorkpieceMaterial::CFRP => WorkpieceProps {
