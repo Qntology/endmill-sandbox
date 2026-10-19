@@ -386,6 +386,9 @@ pub struct WallErrorSample {
     /// 같은 절삭을 새 날(플랭크 마모 없음)로 깎았을 때의 Ra — 마모 배수만 뺀 값
     #[serde(default)]
     pub ra_fresh_um: f64,
+    /// 멈춘 작업(정지·파손)에서 실행하지 못한 남은 경로가 다시 깎을 벽 — 미절삭 소재의 경계라 부품 벽이 아니다 (`final_wall` 에서 뺌)
+    #[serde(default)]
+    pub uncut_boundary: bool,
 }
 
 /// 손상 공구로 깎은 최종 벽의 한 점 (뷰포트 표시용, 내려 표본)
@@ -623,6 +626,10 @@ pub fn quality_loss(walls: &[WallErrorSample], wear_at_limit_um: f64, tool_d_mm:
         out.worst_ra_um,
         if out.good_points > 0 { format!(" (정상 공구로 깎은 벽 평균 {:.2} µm)", out.good_ra_mean_um) } else { " (정상 공구로 깎은 최종 벽 없음)".to_string() }
     ));
+    let uncut = walls.iter().filter(|w| w.uncut_boundary).count();
+    if uncut > 0 {
+        out.notes.push(format!("멈춘 작업: 남은 경로가 다시 깎을 미절삭 경계 벽 {}점은 최종 벽에서 뺌 — 부품 벽이 아니라 남은 경로가 깎아 낼 소재의 경계", uncut));
+    }
     out.notes.push("치수: 반경 마모 중 수명 한계(VB) 수준을 넘는 몫을 손상 공구 탓으로 봄 — 벽 위치 오차(전체)는 휨·열·런아웃을 함께 담아 참고로만".into());
     out.notes.push(format!(
         "조도: 같은 절삭을 새 날로 깎았을 때(마모 배수만 뺌)와 견줌. 치핑 위험은 누적 치핑 확률 {:.0}% 이상(날 확인 권장) — 이가 빠진 날이 남기는 자국은 수치로 내지 않고 위치와 확률로만 표시",
@@ -1070,6 +1077,9 @@ pub struct LoadSimReport {
     pub final_wall_count: usize,
     #[serde(default)]
     pub transient_wall_count: usize,
+    /// 멈춘 작업에서 남은 경로가 다시 깎을 미절삭 경계 벽 점 수 — 최종 벽에서 빼 `transient_wall_count` 에 들어 있다 (끝난 작업은 0)
+    #[serde(default)]
+    pub uncut_boundary_count: usize,
     #[serde(default)]
     pub vb_start_mm: f64,
     #[serde(default)]
@@ -1444,6 +1454,106 @@ fn flag_final_walls(grid: &StockGrid, walls: &mut [WallErrorSample]) {
     }
 }
 
+/// 멈춘 작업(정지·파손)에서 실행하지 못한 남은 경로 — 공구 끝이 지나갈 3차원 선분들. 직선·플런지는 그대로 한 선분이고, 원호는 현의 처짐이
+/// `sag_mm` 이하가 되게 나눈다. 급이송과 이송 0 은 시뮬레이션처럼 깎지 않으므로 뺀다. `stop_at` = (멈춘 세그먼트, 그 세그먼트에서 실행한
+/// 비율 0~1) — 비율은 `ToolPathSegment::polyline_from` 의 매개변수와 같다 (원호는 각도·높이 모두 선형).
+fn remainder_path(segments: &[ToolPathSegment], start: (f64, f64, f64), stop_at: (usize, f64), sag_mm: f64) -> Vec<[(f64, f64, f64); 2]> {
+    let (k0, t0) = stop_at;
+    let mut out = Vec::new();
+    let mut prev = start;
+    for (k, seg) in segments.iter().enumerate() {
+        let s = prev;
+        let e = seg.end_point();
+        prev = e;
+        let ta = if k == k0 { t0.clamp(0.0, 1.0) } else { 0.0 };
+        if k < k0 || ta >= 1.0 - 1e-12 || !seg.feed().map(|f| f > 0.0).unwrap_or(false) || seg.length_from(s) <= 1e-9 {
+            continue;
+        }
+        match seg.arc_sweep(s) {
+            Some((cx, cy, ra, sweep)) => {
+                let a0 = (s.1 - cy).atan2(s.0 - cx);
+                let at = |t: f64| {
+                    let a = a0 + sweep * t;
+                    (cx + ra * a.cos(), cy + ra * a.sin(), s.2 + (e.2 - s.2) * t)
+                };
+                let chord = (8.0 * ra * sag_mm.max(1e-6)).sqrt().max(1e-3);
+                let n = (ra * sweep.abs() * (1.0 - ta) / chord).ceil().max(1.0) as usize;
+                let mut last = at(ta);
+                for i in 1..=n {
+                    let p = at(ta + (1.0 - ta) * i as f64 / n as f64);
+                    out.push([last, p]);
+                    last = p;
+                }
+            }
+            None => out.push([(s.0 + (e.0 - s.0) * ta, s.1 + (e.1 - s.1) * ta, s.2 + (e.2 - s.2) * ta), e]),
+        }
+    }
+    out
+}
+
+/// 선분 a→b 를 따라 공구 끝 높이가 `z_cut` 보다 낮은 구간에서 공구 축이 점 (x, y) 에 가장 가까이 오는 수평 거리 (그런 구간이 없으면 None).
+/// 끝 높이는 선분 매개변수에 선형이라 '낮은 구간' 은 하나의 매개변수 구간이고, 그 안의 최근접점은 닫힌 식이다.
+fn tip_reach(seg: &[(f64, f64, f64); 2], x: f64, y: f64, z_cut: f64) -> Option<f64> {
+    let [a, b] = *seg;
+    let dz = b.2 - a.2;
+    let (mut s0, mut s1) = (0.0f64, 1.0f64);
+    if dz.abs() < 1e-12 {
+        if a.2 >= z_cut {
+            return None;
+        }
+    } else {
+        let sc = (z_cut - a.2) / dz;
+        if dz > 0.0 {
+            s1 = s1.min(sc);
+        } else {
+            s0 = s0.max(sc);
+        }
+        if s0 >= s1 {
+            return None;
+        }
+    }
+    let (ux, uy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = ux * ux + uy * uy;
+    let s = if l2 > 1e-18 { (((x - a.0) * ux + (y - a.1) * uy) / l2).clamp(s0, s1) } else { s0 };
+    Some((x - (a.0 + s * ux)).hypot(y - (a.1 + s * uy)))
+}
+
+/// 멈춘 작업의 최종 벽 후보에서 남은 경로가 다시 깎을 벽(미절삭 소재의 경계)을 뺀다. 남은 경로의 공구 — 반경 r 원통, 벽 점을 공구 축에서
+/// r 에 둔 것과 같은 기준 — 가 벽 점 높이(z_mid, 벽이 덮는 높이 범위의 가운데) 아래까지 내려간 채로 벽 점을 `tol` 넘게 덮으면 그 벽은
+/// 깎여 나가 부품 벽이 아니다 (`flag_final_walls` 가 벽 너머 소재 높이를 z_mid 와 견주는 것과 같은 높이 기준). 같은 윤곽을 더 깊게 다시
+/// 지나는 패스(층 내림·헬릭스의 다음 바퀴)는 벽 점까지 거리가 정확히 r 이라 `tol` 로 남긴다 — 그 아래에 새 벽을 만들 뿐이다. 뺀 점 수를 돌려준다
+fn exclude_uncut_boundary(walls: &mut [WallErrorSample], rest: &[[(f64, f64, f64); 2]], r: f64, tol: f64) -> usize {
+    if rest.is_empty() {
+        return 0;
+    }
+    // 수평 칸 색인: 선분마다 (경계 상자 + r) 가 걸치는 칸에 넣는다 — 벽 점에서 r 안에 오는 선분은 그 점이 든 칸에 반드시 있다
+    let bin = (2.0 * r).max(1.0);
+    let key = |x: f64, y: f64| ((x / bin).floor() as i64, (y / bin).floor() as i64);
+    let mut index: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, [a, b]) in rest.iter().enumerate() {
+        let lo = key(a.0.min(b.0) - r, a.1.min(b.1) - r);
+        let hi = key(a.0.max(b.0) + r, a.1.max(b.1) + r);
+        for kx in lo.0..=hi.0 {
+            for ky in lo.1..=hi.1 {
+                index.entry((kx, ky)).or_default().push(i);
+            }
+        }
+    }
+    let reach = r - tol;
+    let mut n = 0;
+    for w in walls.iter_mut().filter(|w| w.final_wall) {
+        let Some(near) = index.get(&key(w.x, w.y)) else {
+            continue;
+        };
+        if near.iter().any(|&i| tip_reach(&rest[i], w.x, w.y, w.z_mid).is_some_and(|d| d < reach)) {
+            w.final_wall = false;
+            w.uncut_boundary = true;
+            n += 1;
+        }
+    }
+    n
+}
+
 fn wall_pieces(v: &[&WallErrorSample], t0: f64, t1: f64) -> Vec<WallPiece> {
     let mut sorted: Vec<&&WallErrorSample> = v.iter().collect();
     sorted.sort_by(|a, b| a.t_s.partial_cmp(&b.t_s).unwrap_or(std::cmp::Ordering::Equal));
@@ -1793,7 +1903,8 @@ pub fn simulate_segments_prog(
     let mut max_temp = 0.0f64;
     let mut max_defl = 0.0f64;
     let mut plunges = 0usize;
-    let mut prev = (0.0, 0.0, profile.endmill_setting.loc_mm + 10.0);
+    let path_start = (0.0, 0.0, profile.endmill_setting.loc_mm + 10.0);
+    let mut prev = path_start;
     let ha = ctx.coolant.workpiece_h() * body.area_m2;
     let mc_wp = body.mass_kg * ctx.wp.specific_heat;
     // VB → 반경 후퇴 (경사각 보정 포함, `physics::radial_per_vb`)
@@ -1843,6 +1954,8 @@ pub fn simulate_segments_prog(
     // 플랭크 랜드가 코팅을 뚫은 시점을 한 번 남긴다 (공구마다)
     let mut coat_noted = false;
     let mut stop = false;
+    // 멈춘 곳: (세그먼트, 그 세그먼트에서 실행한 비율) — 남은 경로가 다시 깎을 벽을 최종 벽에서 빼는 데 쓴다
+    let mut stop_at: Option<(usize, f64)> = None;
     // 수명 판정에 닿았지만 '지금 절삭을 마칠 때까지' 미룬 정지·교체 (사유, 원인 키 life_end · chipping)
     let mut pending_eol: Option<(String, &'static str)> = None;
     let mut cf_acc = [0.0f64; 6];
@@ -1988,6 +2101,7 @@ pub fn simulate_segments_prog(
         match policy {
             ToolLifePolicy::Stop => {
                 stop = true;
+                stop_at = Some((0, 0.0));
                 tl.stopped_at_s = Some(0.0);
                 tl.stopped_seg = Some(0);
             }
@@ -2678,6 +2792,7 @@ pub fn simulate_segments_prog(
                             },
                             chip_p,
                             ra_fresh_um: ra_fresh,
+                            uncut_boundary: false,
                         });
                     }
                 }
@@ -2767,6 +2882,8 @@ pub fn simulate_segments_prog(
                 }
             }
             if stop {
+                // 이 점까지 실행 — `polyline_from` 의 점 pi 는 매개변수 (pi + 1) / 점 수
+                stop_at = Some((si, (pi + 1) as f64 / n_pts));
                 break;
             }
         }
@@ -2777,6 +2894,8 @@ pub fn simulate_segments_prog(
             }
         }
         if stop {
+            // 이 세그먼트를 마친 뒤 멈췄으면 남은 경로는 다음 세그먼트부터
+            stop_at.get_or_insert((si, 1.0));
             // 도달하지 못한 세그먼트는 정지 시각에서 길이 0 으로 둔다 (세그먼트별 벽 통계·타임라인용)
             for s in seg_start_s.iter_mut().skip(si + 1) {
                 *s = t;
@@ -2903,6 +3022,16 @@ pub fn simulate_segments_prog(
         }
     }
     flag_final_walls(&grid, &mut wall_errors);
+    // 멈춘 작업: 마지막에 깎인 벽 중 남은 경로가 다시 깎을 미절삭 경계는 부품 벽이 아니다 — 끝난 작업은 남은 경로가 없어 그대로
+    let rest = if stop { remainder_path(segments, path_start, stop_at.unwrap_or((0, 0.0)), 0.025 * grid.cell) } else { Vec::new() };
+    let uncut_count = exclude_uncut_boundary(&mut wall_errors, &rest, r, 0.25 * grid.cell);
+    if uncut_count > 0 {
+        warnings.push(format!(
+            "[공구 수명] 남은 경로가 다시 깎을 미절삭 경계 벽 {}점(벽 위치 오차 최대 {:.1} µm)은 최종 벽에서 뺌 — 벽 오차·조도 통계와 품질 저하 보고는 다 깎인 부품 벽만 셈",
+            uncut_count,
+            wall_errors.iter().filter(|w| w.uncut_boundary).map(|w| w.total_um.abs()).fold(0.0, f64::max)
+        ));
+    }
     let quality = quality_loss(&wall_errors, vb_limit * tan_clear * 1000.0, ctx.tool.diameter_mm);
     let final_count = wall_errors.iter().filter(|w| w.final_wall).count();
     let transient_count = wall_errors.len() - final_count;
@@ -2931,7 +3060,8 @@ pub fn simulate_segments_prog(
     }
     let (heat_packets, heat_field) = heat.finish(6000);
     let episodes = build_episodes(&samples, ctx, profile);
-    let stat_walls: Vec<&WallErrorSample> = if final_count > 0 { wall_errors.iter().filter(|w| w.final_wall).collect() } else { wall_errors.iter().collect() };
+    // 최종 벽이 없으면 모든 벽 표본으로 — 다만 미절삭 경계는 그때도 넣지 않는다 (부품 벽이 아님)
+    let stat_walls: Vec<&WallErrorSample> = if final_count > 0 { wall_errors.iter().filter(|w| w.final_wall).collect() } else { wall_errors.iter().filter(|w| !w.uncut_boundary).collect() };
     let (wall_ra_mean, wall_ra_p90, wall_ra_max, wall_wav_max) = {
         let mut ra: Vec<f64> = stat_walls.iter().map(|w| w.ra_um).filter(|v| *v > 0.0).collect();
         ra.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -3064,6 +3194,7 @@ pub fn simulate_segments_prog(
         wear_log: wear_acc.finish(),
         final_wall_count: final_count,
         transient_wall_count: transient_count,
+        uncut_boundary_count: uncut_count,
         wall_ra_mean_um: wall_ra_mean,
         wall_ra_p90_um: wall_ra_p90,
         wall_ra_max_um: wall_ra_max,
@@ -3375,6 +3506,111 @@ mod tests {
         let deeper = g.cut(12.0, 0.5 - 3.0, -8.0, 3.0, ToolNose::Square, (1.0, 0.0), false, &mut fe, 0.0, (&mut a, &mut b), 0.0);
         // 같은 발자국을 2 mm 더 깊이 내려가면 처음 체적(깊이 6 mm)의 1/3 이 더 지워진다
         assert!((deeper.volume / (first.volume / 3.0) - 1.0).abs() < 0.05, "deeper {} vs first {}", deeper.volume, first.volume);
+    }
+
+    /// 남은 경로는 멈춘 점에서 시작하고(직선은 한 선분 그대로), 급이송·이송 0 은 깎지 않으니 빼며, 원호는 현의 처짐 한도 안으로 나눈다
+    #[test]
+    fn remainder_path_starts_at_the_stop_point_and_cuts_only_with_feed_moves() {
+        use ToolPathSegment as S;
+        let segs = vec![
+            S::Rapid { x: 0.0, y: 0.0, z: 10.0 },
+            S::Plunge { x: 0.0, y: 0.0, z_start: 10.0, z_end: -5.0, feed: 100.0 },
+            S::Linear { x: 20.0, y: 0.0, z: -5.0, feed: 500.0 },
+            S::Linear { x: 20.0, y: 0.0, z: 2.0, feed: 0.0 },
+            S::Rapid { x: 30.0, y: 0.0, z: 2.0 },
+            S::ArcCCW { x: 20.0, y: 10.0, z: -5.0, i: -10.0, j: 0.0, feed: 500.0 },
+        ];
+        let start = (0.0, 0.0, 36.0);
+        let sag = 0.004;
+        let rest = remainder_path(&segs, start, (2, 0.5), sag);
+        assert_eq!(rest[0], [(10.0, 0.0, -5.0), (20.0, 0.0, -5.0)], "the stopped line resumes where the tool stopped, as one exact piece");
+        // 원호: (30, 0) → (20, 10), 중심 (20, 0), 반경 10 — 현 끝점은 원 위, 높이는 각도에 선형, 처짐 ≤ sag.
+        // 멈춘 직선 다음은 원호뿐이다: 이송 0 으로 올라가는 이동과 급이송은 깎지 않는다
+        let arc = &rest[1..];
+        assert!(!arc.is_empty() && arc.iter().all(|[a, b]| ((a.0 - 20.0).hypot(a.1) - 10.0).abs() < 1e-9 && ((b.0 - 20.0).hypot(b.1) - 10.0).abs() < 1e-9));
+        assert!(arc[0][0].0 > 29.999 && arc[0][0].1.abs() < 1e-9 && (arc[0][0].2 - 2.0).abs() < 1e-9, "the arc starts where the rapid left the tool");
+        let last = arc[arc.len() - 1][1];
+        assert!((last.0 - 20.0).abs() < 1e-9 && (last.1 - 10.0).abs() < 1e-9 && (last.2 + 5.0).abs() < 1e-9);
+        for [a, b] in arc.iter() {
+            let mid = ((a.0 + b.0) / 2.0 - 20.0).hypot((a.1 + b.1) / 2.0);
+            assert!(10.0 - mid <= sag + 1e-12, "chord sag {:.5} mm", 10.0 - mid);
+        }
+        // 세그먼트를 마친 뒤 멈췄으면 다음 세그먼트부터, 작업 시작 전에 멈췄으면 경로 전체
+        assert_eq!(remainder_path(&segs, start, (2, 1.0), sag)[0][0].0, 30.0);
+        assert_eq!(remainder_path(&segs, start, (0, 0.0), sag)[0], [(0.0, 0.0, 10.0), (0.0, 0.0, -5.0)]);
+        assert!(remainder_path(&segs, start, (5, 1.0), sag).is_empty());
+    }
+
+    /// 공구 끝이 벽 점 높이보다 낮은 구간에서만 수평 거리를 잰다 — 경사 이동은 그 구간이 선분의 일부다
+    #[test]
+    fn tip_reach_measures_only_where_the_tip_is_below_the_wall_point() {
+        let ramp = [(0.0, 0.0, 0.0), (10.0, 0.0, -10.0)];
+        // z −5 아래는 x > 5 쪽 절반 — 점 (2, 3) 에 가장 가까운 곳은 (5, 0)
+        assert!((tip_reach(&ramp, 2.0, 3.0, -5.0).unwrap() - 18f64.sqrt()).abs() < 1e-12);
+        assert!((tip_reach(&ramp, 2.0, 3.0, 1.0).unwrap() - 3.0).abs() < 1e-12, "the whole ramp is below a higher wall point");
+        assert!(tip_reach(&ramp, 2.0, 3.0, -10.0).is_none(), "the tip never goes below the bottom of the ramp");
+        let rising = [(10.0, 0.0, -10.0), (0.0, 0.0, 0.0)];
+        assert!((tip_reach(&rising, 2.0, 3.0, -5.0).unwrap() - 18f64.sqrt()).abs() < 1e-12, "direction does not matter");
+        let level = [(0.0, 0.0, -6.0), (10.0, 0.0, -6.0)];
+        assert!(tip_reach(&level, 5.0, 1.0, -6.0).is_none() && (tip_reach(&level, 12.0, 0.0, -3.0).unwrap() - 2.0).abs() < 1e-12);
+        let plunge = [(4.0, 4.0, 10.0), (4.0, 4.0, -12.0)];
+        assert!((tip_reach(&plunge, 4.0, 7.0, -6.0).unwrap() - 3.0).abs() < 1e-12);
+    }
+
+    /// 남은 경로가 벽 너머 소재를 깎아 낼 벽(지그재그의 다음 줄이 덮는 마지막 줄의 벽)만 최종 벽에서 빠지고,
+    /// 같은 윤곽을 더 깊이 다시 지나는 패스·벽보다 높은 패스·이미 최종이 아닌 벽은 그대로다
+    #[test]
+    fn walls_the_rest_of_the_path_cuts_away_leave_the_final_walls() {
+        let wall = |x: f64, y: f64, z_mid: f64, final_wall: bool| WallErrorSample {
+            x,
+            y,
+            nx: 0.0,
+            ny: 1.0,
+            z_mid,
+            t_s: 0.0,
+            deflection_um: 0.0,
+            wear_um: 0.0,
+            thermal_tool_um: 0.0,
+            thermal_wp_um: 0.0,
+            total_um: 100.0,
+            workpiece_um: 0.0,
+            seg: 0,
+            final_wall,
+            ap_mm: 12.0,
+            down: false,
+            wall_mm: 0.0,
+            wall_k_n_mm: 0.0,
+            wall_stress_mpa: 0.0,
+            wall_sigma_per_n: 0.0,
+            runout_um: 0.0,
+            ra_um: 0.0,
+            waviness_um: 0.0,
+            tool_no: 1,
+            life_used: 0.0,
+            tool_state: 0,
+            chip_p: 0.0,
+            ra_fresh_um: 0.0,
+            uncut_boundary: false,
+        };
+        let (r, tol) = (6.0, 0.05);
+        // 줄 y = 0 (끝 z −12, 벽 y = 6) 다음 줄 y = 2.4 가 남았다
+        let rest = vec![[(0.0, 2.4, -12.0), (40.0, 2.4, -12.0)]];
+        let mut w = vec![wall(20.0, 6.0, -6.0, true), wall(20.0, -6.0, -6.0, true), wall(20.0, 6.0, -6.0, false), wall(43.0, 6.0, -6.0, true), wall(46.5, 6.0, -6.0, true)];
+        assert_eq!(exclude_uncut_boundary(&mut w, &rest, r, tol), 2);
+        assert!(!w[0].final_wall && w[0].uncut_boundary, "the next row cuts 2.4 mm past the last row's wall");
+        assert!(w[1].final_wall && !w[1].uncut_boundary, "the far wall of the first row stays");
+        assert!(!w[2].final_wall && !w[2].uncut_boundary, "a wall that was already re-cut is left alone");
+        assert!(!w[3].final_wall, "past the row end the tool's round front still reaches it");
+        assert!(w[4].final_wall, "beyond the reach of the round front");
+        // 같은 윤곽을 더 깊이: 거리 정확히 r — 아래에 새 벽을 만들 뿐 이 벽은 남는다
+        let deeper = vec![[(0.0, 0.0, -24.0), (40.0, 0.0, -24.0)]];
+        let mut w = vec![wall(20.0, 6.0, -6.0, true)];
+        assert_eq!(exclude_uncut_boundary(&mut w, &deeper, r, tol), 0);
+        // 벽 가운데 높이보다 높은 패스 (면 깎기 1 mm): 벽 위쪽만 스칠 뿐 벽 점은 남는다
+        let skim = vec![[(0.0, 2.4, -1.0), (40.0, 2.4, -1.0)]];
+        assert_eq!(exclude_uncut_boundary(&mut w, &skim, r, tol), 0);
+        assert!(w[0].final_wall);
+        assert_eq!(exclude_uncut_boundary(&mut w, &[], r, tol), 0, "a finished run has no rest");
     }
 }
 
