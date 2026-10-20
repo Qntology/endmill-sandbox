@@ -561,7 +561,7 @@ impl WorkpieceProps {
                 mc: 0.23,
                 rake_deg: 10.0,
                 adhesion: 1.1,
-                wear_activation_k: 6500.0,
+                wear_activation_k: 2500.0,
                 thermal_factor: 0.7,
                 melt_c: 1650.0,
                 bue_range_c: None,
@@ -591,8 +591,8 @@ impl WorkpieceProps {
                 matrix_hv: 340.0,
                 hard_phase_hv: 0.0,
                 hard_phase_frac: 0.0,
-                wear_activation_high_k: 20000.0,
-                wear_transition_c: 850.0,
+                wear_activation_high_k: 16000.0,
+                wear_transition_c: 550.0,
                 mech_shares: [0.10, 0.45, 0.40, 0.05],
                 lift_factor: 1.3,
                 // Krc/Ktc: Ø12 4날 초경 엔드밀 실측 0.5 (Ktc 2000·Krc 1000 N/mm², Kte 41·Kre 77 N/mm — Li 외 2014, J. Vibroeng. 16:2657, Ti6Al4V), TC4 볼 실측 0.37
@@ -2146,6 +2146,19 @@ pub fn reference_state(ctx: &CutContext) -> WearReference {
     }
 }
 
+/// 기준 상태의 열 해석 (진단용 — `examples/bench_probe`). `coolant` 를 주면 기준 상태의 냉각만 바꿔 본다.
+/// 돌려주는 값: (열 해석, fz, 물림, 회전수, Vc)
+pub fn reference_thermal(ctx: &CutContext, coolant: Option<&CoolantConfig>) -> (ThermalResult, f64, Engagement, f64, f64) {
+    let (mut rctx, fz, eng, rpm) = reference_setup(ctx);
+    if let Some(c) = coolant {
+        rctx.coolant = CoolantState::from_config_env(c, &rctx.env);
+    }
+    let co = cutting_coeffs(&rctx);
+    let f = mechanistic_forces(&rctx.tool, &co, fz, rpm, &eng, 48, 8);
+    let th = thermal(&rctx, &co, &f, rctx.wp.ref_vc, rpm, &eng, 1.0, 0.03);
+    (th, fz, eng, rpm, rctx.wp.ref_vc)
+}
+
 pub fn substrate_softening(ctx: &CutContext, t_c: f64) -> f64 {
     if ctx.tool.substrate_max_c >= 800.0 {
         return 1.0;
@@ -2268,7 +2281,7 @@ fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: 
     let b = crate::pairref::breakin(ctx, vce);
     let vb_b = b.vb_mm;
     let tau = (b.tau_min * kappa.max(1e-6)).max(1e-9);
-    let ds = (linear / 150.0).max(1e-9);
+    let ds_full = (linear / 150.0).max(1e-9);
     let mut out = RawTrajectory {
         s: Vec::new(),
         vb: Vec::new(),
@@ -2304,9 +2317,13 @@ fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: 
                 out.phase3_s = Some(s);
             }
         }
-        let next = vb + rate * ds;
+        // 길들이기 항은 걸음마다 정확히 적분하고(지수 항의 걸음 안 증가분), 길들이기 구간(4τ)은 τ/4 이하 걸음으로 걷는다. 예전에는
+        // 고정 걸음(선형 수명/150)의 앞쪽 오일러였다 — 수명이 긴 칸은 걸음이 시상수보다 길어 첫 걸음에 길들이기 크기의 몇 배가 쌓였다
+        // (52 HRC 볼 정삭 PHM2010 칸: 길들이기 37 µm · τ 0.22 에 걸음 1.18 → 첫 걸음 198 µm, 판정 VB 0.2 mm 에 거의 닿음)
+        let ds = if s < 4.0 * tau { ds_full.min(0.25 * tau) } else { ds_full };
+        let next = vb + steady * ds + vb_b * ((-s / tau).exp() - (-(s + ds) / tau).exp());
         if life.is_none() && next >= limit {
-            life = Some(s + (limit - vb) / rate.max(1e-12));
+            life = Some(s + ds * (limit - vb) / (next - vb).max(1e-12));
         }
         vb = next;
         s += ds;

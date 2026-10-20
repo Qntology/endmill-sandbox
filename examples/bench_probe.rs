@@ -17,17 +17,43 @@ fn main() {
         return;
     }
     let t = tools.iter().find(|t| t.key == args[0]).expect("공구 key");
-    let c = cuts.iter().find(|c| c.key == args[1]).expect("조건 key");
-    let scales: Vec<f64> = if args.len() > 2 { args[2..].iter().filter_map(|s| s.parse().ok()).collect() } else { vec![1.0] };
-    for k in scales {
-        let p = benchmark::cell_profile(t, c, &[(Param::Vc, k)]);
+    let mut cut = cuts.iter().find(|c| c.key == args[1]).expect("조건 key").clone();
+    // "cool:dry|flood|mist|air|tt" 는 그 조건의 냉각만 바꾼다
+    for a in args[2..].iter().filter_map(|s| s.strip_prefix("cool:")) {
+        if let Some(m) = endmill_model::profile::CoolantMethod::from_key(a) {
+            cut.coolant = m;
+        }
+    }
+    let c = &cut;
+    // 배수: "1.5" (Vc) 또는 "fz:2.2" · "ae:0.5" · "ap:2" · "vc:1.5"
+    let parse = |s: &String| -> Option<(Param, f64)> {
+        let (p, v) = match s.split_once(':') {
+            Some((k, v)) => (
+                match k {
+                    "fz" => Param::Fz,
+                    "ae" => Param::Ae,
+                    "ap" => Param::Ap,
+                    _ => Param::Vc,
+                },
+                v,
+            ),
+            None => (Param::Vc, s.as_str()),
+        };
+        v.parse().ok().map(|x| (p, x))
+    };
+    let mut scales: Vec<(Param, f64)> = args[2..].iter().filter(|s| !s.starts_with("cool:")).filter_map(parse).collect();
+    if scales.is_empty() {
+        scales.push((Param::Vc, 1.0));
+    }
+    for (param, k) in scales {
+        let p = benchmark::cell_profile(t, c, &[(param, k)]);
         let mut ctx = CutContext::from_profile(&p);
         ctx.wp.vb_criterion_mm = c.vb_criterion_mm;
         let body = ThermalBody::of_setup(&p.workpiece_setup, &ctx.wp);
         let a = physics::analyze_cut(&ctx, &p.conditions, c.down, body);
         let r = physics::reference_state(&ctx);
-        let pr = benchmark::predict(t, c, &[(Param::Vc, k)]);
-        println!("==== {} × {} · Vc ×{:.2} ({})", t.key, c.key, k, ctx.wp.label);
+        let pr = benchmark::predict(t, c, &[(param, k)]);
+        println!("==== {} × {} · {} ×{:.2} ({})", t.key, c.key, param.key(), k, ctx.wp.label);
         println!(
             "  공구 Ø{:.1} z{} 경사 {:.1}° 여유 {:.1}° 날끝 {:.1} µm 코팅 {} 모재 {} · 적합도 마모 ×{:.2}",
             ctx.tool.diameter_mm, ctx.tool.flutes, ctx.tool.rake_deg, ctx.tool.clearance_deg, ctx.tool.edge_radius_um, ctx.tool.coating.family, ctx.tool.substrate, ctx.tool.fit_wear
@@ -76,6 +102,21 @@ fn main() {
         for m in a.wear.mechanisms.iter() {
             println!("    {:<10} 몫 {:.3} · 기준 대비 ×{:.3}", m.key, m.share, m.ratio);
         }
+        let (rt, rfz, reng, rrpm, rvc) = physics::reference_thermal(&ctx, None);
+        let (rd, ..) = physics::reference_thermal(&ctx, Some(&endmill_model::profile::CoolantConfig::dry()));
+        println!(
+            "  기준 상태: Ø10 4날 AlTiN · Vc {:.0} rpm {:.0} fz {:.4} ap {:.1} ae {:.1} · 냉각 {:?} 계면 {:.0} °C (건식 {:.0}, 냉각 효과 {:.2}) · 건식으로 바꾸면 {:.0} °C",
+            rvc,
+            rrpm,
+            rfz,
+            reng.ap_mm,
+            reng.ae_mm,
+            ctx.wp.reference_coolant().method,
+            rt.interface_c,
+            rt.interface_dry_c,
+            rt.cooling.effectiveness,
+            rd.interface_c
+        );
         println!(
             "  궤적: 선형 수명 {:.2} · 길들이기 {:.0} µm / {:.2} min · κ {:.3} · 가속 ×{:.2} · 채터 여유 {:.2} (×{:.2})",
             a.trajectory.linear_life_min,
@@ -86,5 +127,12 @@ fn main() {
             a.stability.margin,
             a.wear.chatter_factor
         );
+        let tr = &pr.trajectory;
+        let life = tr.time_at(c.vb_criterion_mm).max(1e-6);
+        let pts: Vec<String> = [0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25]
+            .iter()
+            .map(|f| format!("{:.2}·T {:.0} µm", f, tr.vb_at(f * life) * 1000.0))
+            .collect();
+        println!("  VB 궤적 (T = {:.2} min): {}", life, pts.join(" · "));
     }
 }

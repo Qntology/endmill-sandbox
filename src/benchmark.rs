@@ -750,102 +750,158 @@ const LC: WorkpieceMaterial = WorkpieceMaterial::LowCarbonSteel;
 const TI: WorkpieceMaterial = WorkpieceMaterial::Titanium;
 const CR41: WorkpieceMaterial = WorkpieceMaterial::AlloySteel { hardness_hrc: 20 };
 const H13: WorkpieceMaterial = WorkpieceMaterial::AlloySteel { hardness_hrc: 52 };
+const SS: WorkpieceMaterial = WorkpieceMaterial::StainlessSteel;
+const NI: WorkpieceMaterial = WorkpieceMaterial::Inconel;
 
-/// 논문 공구 (행). 괄호 안 '가정' 은 논문이 밝히지 않아 둔 값
+/// 논문 공구 (행). 괄호 안 '가정' 은 논문이 밝히지 않아 둔 값. 2026-10-20 에 논문 원문(표)으로 공구를 다시 확인했다 —
+/// Liu (Ø10 4날 가정 → 표 2 의 Ø12 · 경사 4° · 여유 8° · R0.5), Matuszak (Ø16 → Ø20 2날 · R1.0), Hovsepian (M2 HSS 가정 → 분말 HSS S290 ·
+/// W-DLC 3 µm · fz 0.165 · ae 2), Dewes (Ø8 TiAlN → Ø6 TiCN 볼), Tatar (각진 날 → R0.4 인서트)
 pub fn paper_tools() -> Vec<RefTool> {
     use ToolNose::{Ball, Square};
-    use ToolSubstrate::{Carbide, CarbideUltraFine, Hss};
+    use ToolSubstrate::{Carbide, CarbideUltraFine, HssCobalt};
+    let cr = |r: f64| ToolNose::CornerRadius { radius_mm: r };
+    let mut harvi = setting("Grguraš HARVI II Ø6", "PAPER-GRG", 6.0, 5, 13.0, 40.0, Some("AlTiN"), Carbide, None, None, None, Square, 25.0);
+    harvi.variable_pitch = true;
     vec![
         rt(
             "kar_1018_insert",
             "Ø19.05 1날 무코팅 초경 인서트 (경사 0° · 헬릭스 0° · 여유 15°)",
-            "Karandikar·Abbas·Schmitz 2013/2014, Karandikar·Schmitz·Smith 2021 — Kennametal KICR073SD30333C + 9.53 mm 사각 무코팅 인서트. 날끝 반경·돌출 60 mm 가정",
+            "Karandikar·Abbas·Schmitz 2013/2014 · Karandikar·Schmitz·Smith 2021 — Kennametal KICR073SD30333C + 107888126 C9 JC 무코팅 9.53 mm 사각 인서트 (작은 날끝 챔퍼, 경사면 Ra 310 nm), 건식. 날끝 반경·코너 R·돌출 60 mm 가정",
             setting("Karandikar 1018 인서트", "PAPER-KAR1018", 19.05, 1, 9.5, 0.0, None, Carbide, Some(0.0), Some(15.0), None, Square, 60.0),
             &LC,
         ),
         rt(
             "tatar_r390",
-            "Ø12 PVD 초미립 인서트 커터 (Sandvik R390-012A12-07L, 날끝 날카로움)",
-            "Tatar·Sjöberg·Andersson 2020 — 날 수 1·경사 +12°·여유 10°·축 경사 10°·날끝 8 µm 가정 (일정 h_max 시험이라 날 수는 수명에 거의 무관)",
-            setting("Tatar R390", "PAPER-TATAR", 12.0, 1, 6.8, 10.0, Some("TiAlN"), CarbideUltraFine, Some(12.0), Some(10.0), Some(8.0), Square, 40.0),
+            "Ø12 PVD TiAlN 미립 인서트 커터 1날 (R390-012A12-07L · 390R-070204E-ML S30T · R0.4)",
+            "Tatar·Sjöberg·Andersson 2020 — 인서트 1개, 연삭 날·날카로운 날·양의 경사(값 없음), 코너 R0.4 (ISO 코드). 경사 +12° · 여유 10° · 날끝 8 µm 가정",
+            setting("Tatar R390", "PAPER-TATAR", 12.0, 1, 6.8, 10.0, Some("TiAlN"), CarbideUltraFine, Some(12.0), Some(10.0), Some(8.0), cr(0.4), 40.0),
             &TI,
         ),
         rt(
             "liu_ti_em",
-            "Ø10 4날 TiAlN 초경 엔드밀 (가정)",
-            "Liu·Zhang·Luo·Zhang 2019 — 공구를 찾지 못해 같은 그룹 류의 Ø10 4날 TiAlN 35° 로 가정 (체적 비는 지름에 거의 무관)",
-            setting("Liu Ti 엔드밀", "PAPER-LIU", 10.0, 4, 22.0, 35.0, Some("TiAlN"), Carbide, None, None, None, Square, 35.0),
+            "Ø12 4날 TiAlN 초경 엔드밀 (헬릭스 35° · 경사 4° · 여유 8° · R0.5)",
+            "Liu·Zhang·Luo·Zhang 2019 표 2 — TiAlN 3 µm, 공구 65 HRC. 날 길이 26 mm · 날끝 반경(Ti 기본) · 돌출 40 mm 가정",
+            setting("Liu Ti 엔드밀", "PAPER-LIU", 12.0, 4, 26.0, 35.0, Some("TiAlN"), Carbide, Some(4.0), Some(8.0), None, cr(0.5), 40.0),
             &TI,
         ),
         rt(
             "matuszak_ti",
-            "Ø16 2날 TiAlN 인서트 커터 (가정)",
-            "Matuszak·Zaleski·Zyśko 2023 — 공구 미확인, ae 7.5 · fz 0.2 · ap 0.5 에 맞춘 가정 공구",
-            setting("Matuszak Ti 커터", "PAPER-MAT", 16.0, 2, 8.0, 10.0, Some("TiAlN"), Carbide, None, None, None, Square, 45.0),
+            "Ø20 2날 인서트 커터 (Seco R217.21-1820.0-LP06.2A · LPHT060310ER-E05 MM4500 · R1.0)",
+            "Matuszak·Zaleski·Zyśko 2023 — 인서트 코팅·경사·여유 미기재 (TiAlN 계열 · Ti 기본 형상 가정), 코너 R1.0 (ISO 코드), 돌출 50 mm 가정",
+            setting("Matuszak Ti 커터", "PAPER-MAT", 20.0, 2, 6.0, 10.0, Some("TiAlN"), Carbide, None, None, None, cr(1.0), 50.0),
+            &TI,
+        ),
+        rt(
+            "luo_ti_apmt",
+            "Ø16 인서트 커터 (Mitsubishi APMT1135PDER-M2 VP15TF, 2날 가정 · R0.8)",
+            "Luo·Wang·Wu·Zhang 2017 — VP15TF (PVD (Al,Ti)N 미립 초경), 인서트 수·경사·여유 미기재 (2날 · Ti 기본 형상 가정)",
+            setting("Luo Ti 커터", "PAPER-LUO", 16.0, 2, 11.0, 10.0, Some("TiAlN"), CarbideUltraFine, None, None, None, cr(0.8), 50.0),
+            &TI,
+        ),
+        rt(
+            "uddin_bare",
+            "Ø12 4날 무코팅 초경 엔드밀 (Hanita D014, 헬릭스 30°)",
+            "Uddin·Pham·Sarhan 외 2017 — 축 경사 6° · 2차 여유 15° (반경 경사·1차 여유·날끝은 Ti 기본값 가정)",
+            setting("Uddin 무코팅", "PAPER-UDDIN-B", 12.0, 4, 26.0, 30.0, None, Carbide, None, None, None, Square, 45.0),
+            &TI,
+        ),
+        rt(
+            "uddin_tialn",
+            "Ø12 4날 PVD TiAlN 초경 엔드밀 (Kennametal KCPM15, 헬릭스 30°)",
+            "Uddin 외 2017 — 무코팅 공구와 같은 형상으로 둠 (제조사가 달라 실제로는 다를 수 있음)",
+            setting("Uddin TiAlN", "PAPER-UDDIN-C", 12.0, 4, 26.0, 30.0, Some("TiAlN"), Carbide, None, None, None, Square, 45.0),
             &TI,
         ),
         rt(
             "grig_al_bare",
-            "Ø6 3날 무코팅 초경 (WC-10Co)",
-            "Grigoriev·Volosova·Fedorov 외 2020 — 6WH10F 모재. 헬릭스 40°·형상은 알루미늄 기본값 가정",
+            "Ø6 3날 무코팅 초경 (6WH10F, WC90/Co10)",
+            "Grigoriev·Volosova·Fedorov 외 2020 — HRA 92.1. 헬릭스 40° · 형상(표 3 이미지)은 알루미늄 기본값 가정",
             setting("Grigoriev Al 무코팅", "PAPER-GRIG-AL", 6.0, 3, 13.0, 40.0, None, Carbide, None, None, None, Square, 25.0),
             &AL,
         ),
         rt(
             "grig_al_dlc",
-            "Ø6 3날 DLC (PECVD) 초경",
-            "Grigoriev 외 2020 — 같은 공구에 PECVD DLC",
+            "Ø6 3날 PECVD DLC (a-C:H 2.6 µm) 초경",
+            "Grigoriev 외 2020 — 같은 공구에 PECVD a-C:H 2.6 ± 0.2 µm (33 GPa). 샌드박스 DLC 계열(두께 2 µm)로 둠",
             setting("Grigoriev Al DLC", "PAPER-GRIG-AL", 6.0, 3, 13.0, 40.0, Some("DLC"), Carbide, None, None, None, Square, 25.0),
             &AL,
         ),
         rt(
             "grig_st_bare",
-            "Ø6 5날 무코팅 초경 (WC-10Co)",
-            "Grigoriev 외 2020 — 41Cr4 용 5날. 헬릭스 40°·형상은 합금강 기본값 가정",
+            "Ø6 5날 무코팅 초경 (6WH10F)",
+            "Grigoriev 외 2020 — 41Cr4 용 5날. 헬릭스 40° · 형상은 합금강 기본값 가정",
             setting("Grigoriev 41Cr4 무코팅", "PAPER-GRIG-ST", 6.0, 5, 13.0, 40.0, None, Carbide, None, None, None, Square, 25.0),
             &CR41,
         ),
         rt(
             "grig_st_dlc",
-            "Ø6 5날 DLC (PECVD) 초경",
-            "Grigoriev 외 2020 — 같은 공구에 PECVD DLC",
+            "Ø6 5날 PECVD DLC 초경",
+            "Grigoriev 외 2020 — 같은 공구에 PECVD a-C:H",
             setting("Grigoriev 41Cr4 DLC", "PAPER-GRIG-ST", 6.0, 5, 13.0, 40.0, Some("DLC"), Carbide, None, None, None, Square, 25.0),
             &CR41,
         ),
         rt(
             "hov_hss_bare",
-            "Ø25 3날 무코팅 HSS (가정)",
-            "Hovsepian 외 2006 — HSS 공구 · 24,000 rpm · ap 4. 지름(Vc 1,884 에서 역산)·날 수·이송·ae 는 가정 (확신도 낮음)",
-            setting("Hovsepian HSS 무코팅", "PAPER-HOV", 25.0, 3, 40.0, 30.0, None, Hss, None, None, None, Square, 60.0),
+            "Ø25 무코팅 분말 HSS S290 엔드밀 (HRC 68~70, Co 11 %, 3날 가정)",
+            "Hovsepian 외 2006 · Luo 외 2005 — PM-HSS S290 (C2.0 W14.5 Co11 V5). 날 수·헬릭스·경사 미기재 (3날 · 30° · 알루미늄 기본 형상 가정)",
+            setting("Hovsepian HSS 무코팅", "PAPER-HOV", 25.0, 3, 40.0, 30.0, None, HssCobalt, None, None, None, Square, 60.0),
             &AL,
         ),
         rt(
             "hov_hss_dlc",
-            "Ø25 3날 DLC HSS (가정)",
-            "Hovsepian 외 2006 — DLC 코팅 HSS",
-            setting("Hovsepian HSS DLC", "PAPER-HOV", 25.0, 3, 40.0, 30.0, Some("DLC"), Hss, None, None, None, Square, 60.0),
+            "Ø25 W-DLC 3 µm 분말 HSS",
+            "Hovsepian 외 2006 — W 함유 DLC (스퍼터+PECVD, HK 28 GPa, μ 0.12). 샌드박스 DLC 계열로 둠",
+            setting("Hovsepian HSS DLC", "PAPER-HOV", 25.0, 3, 40.0, 30.0, Some("DLC"), HssCobalt, None, None, None, Square, 60.0),
             &AL,
         ),
         rt(
             "hov_hss_tialn",
-            "Ø25 3날 TiAlCrYN HSS (TiAlN 계열로 둠, 가정)",
+            "Ø25 TiAlCrYN 3 µm 분말 HSS (TiAlN 계열로 둠)",
             "Hovsepian 외 2006 — TiAlCrYN (샌드박스 코팅 표에 없어 TiAlN 계열)",
-            setting("Hovsepian HSS TiAlCrYN", "PAPER-HOV", 25.0, 3, 40.0, 30.0, Some("TiAlN"), Hss, None, None, None, Square, 60.0),
+            setting("Hovsepian HSS TiAlCrYN", "PAPER-HOV", 25.0, 3, 40.0, 30.0, Some("TiAlN"), HssCobalt, None, None, None, Square, 60.0),
             &AL,
         ),
         rt(
             "dewes_ball",
-            "Ø8 2날 TiAlN 초경 볼 (가정)",
-            "Dewes·Ng·Chua·Newton·Aspinwall 1999 — 초경 볼 엔드밀 · H13 52 HRC. 지름·날 수·코팅 가정",
-            setting("Dewes 볼", "PAPER-DEWES", 8.0, 2, 8.0, 30.0, Some("TiAlN"), CarbideUltraFine, None, None, None, Ball, 30.0),
+            "Ø6 TiCN 초경 볼 (2날 가정)",
+            "Dewes·Ng·Chua·Newton·Aspinwall 1999 — Ø6 TiCN 코팅 솔리드 초경 볼, H13 52 HRC, 건식. 날 수·헬릭스·돌출 가정",
+            setting("Dewes 볼", "PAPER-DEWES", 6.0, 2, 6.0, 30.0, Some("TiCN"), Carbide, None, None, None, Ball, 25.0),
+            &H13,
+        ),
+        rt(
+            "phm_ball",
+            "Ø6 3날 초경 볼 (PHM2010, 코팅 미기재 → AlTiN 가정)",
+            "PHM Society 2010 Data Challenge — Röders RFM760, 건식. 코팅·헬릭스·경사·날끝 미기재 (AlTiN · 30° · 고경도 기본 형상 가정)",
+            setting("PHM2010 볼", "PAPER-PHM", 6.0, 3, 6.0, 30.0, Some("AlTiN"), Carbide, None, None, None, Ball, 25.0),
             &H13,
         ),
         rt(
             "li_ti_slot",
-            "Ø12 4날 초경 (Li 2014 계수 식별 공구, 형상 가정)",
-            "Li·Zhao·Li·He 2014 — 슬롯 시험으로 식별한 Ti6Al4V 계수. 공구 형상·코팅은 Ti 기본값 가정",
-            setting("Li Ti 슬롯", "PAPER-LI", 12.0, 4, 26.0, 30.0, None, Carbide, None, None, None, Square, 40.0),
+            "Ø12 4날 초경 (Li 2014 공구 1, 헬릭스 30° · 여유 9° · 돌출 70)",
+            "Li·Zhao·Li·He 2014 — 경사·코팅 미기재 (Ti 기본 경사 · 무코팅 가정). 계수 식별 속도·이송 미기재",
+            setting("Li Ti 슬롯", "PAPER-LI", 12.0, 4, 30.0, 30.0, None, Carbide, None, Some(9.0), None, Square, 70.0),
             &TI,
+        ),
+        rt(
+            "tym_naco",
+            "Ø12 4날 nACo3 (AlTiSiN 3 µm) 초미립 초경 (경사 8° · 여유 6° · 날끝 9 µm)",
+            "Tymczyszyn·Szajna·Mrówka-Nowotnik 2025 — MK12 (0.18 µm, Co 12 %), 헬릭스 35~38°, 드래그 마무리 날끝 8~10 µm, 코너 챔퍼 0.25 (R 없음). 돌출 45 mm 가정",
+            setting("Tymczyszyn nACo", "PAPER-TYM", 12.0, 4, 26.0, 36.5, Some("nACo"), CarbideUltraFine, Some(8.0), Some(6.0), Some(9.0), Square, 45.0),
+            &SS,
+        ),
+        rt(
+            "grg_harvi",
+            "Ø6 5날 PVD AlTiN 초경 (Kennametal HARVI II UCDE0600A5ASA · KC643)",
+            "Grguraš·Kern·Pušavec 2019 — 부등 분할. 헬릭스 40° · 형상은 인코넬 기본값 가정",
+            harvi,
+            &NI,
+        ),
+        rt(
+            "hisam_r217",
+            "Ø16 2날 무코팅 초경 인서트 커터 (SECO R217.69-1616.3-10-2A · XOEX10T308FR-E05 · R0.8 · 여유 15°)",
+            "Hisam 외 2024 — 경사·헬릭스·날끝 미기재 (축 10° · 인코넬 기본 경사·날끝 가정)",
+            setting("Hisam R217", "PAPER-HISAM", 16.0, 2, 10.0, 10.0, None, Carbide, None, Some(15.0), None, cr(0.8), 50.0),
+            &NI,
         ),
     ]
 }
@@ -872,25 +928,39 @@ fn rc(key: &'static str, tool: &'static str, label: &'static str, source: &'stat
 
 /// 논문 소재·조건 (열). ap/D·ae/D 는 논문 공구 지름 기준
 pub fn paper_cuts() -> Vec<RefCut> {
-    use CoolantMethod::{Dry, Flood};
+    use CoolantMethod::{AirBlast, Dry, Flood, Mist};
     let d19 = 19.05;
     vec![
-        rc("kar1018_090", "kar_1018_insert", "AISI 1018 · Vc 89.8 · fz 0.06 · ap 3 · ae 4.7 (25 %) · 하향 · 건식(가정) · FWW 0.3", "Karandikar 외 2013/2014 — 1,500 rpm", LC, 89.8, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
+        rc("kar1018_090", "kar_1018_insert", "AISI 1018 · Vc 89.8 · fz 0.06 · ap 3 · ae 4.7 (25 %) · 하향 · 건식 · FWW 0.3", "Karandikar 외 2013/2014 — 1,500 rpm", LC, 89.8, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
+        rc("kar1018_114", "kar_1018_insert", "AISI 1018 · Vc 113.7 (1,900 rpm)", "Karandikar·Schmitz·Abbas 2012 (J. Manuf. Syst. 31:403) — 같은 공구·조건", LC, 113.7, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
         rc("kar1018_224", "kar_1018_insert", "AISI 1018 · Vc 224.4 (3,750 rpm)", "Karandikar 외 2013/2014", LC, 224.4, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
         rc("kar1018_374", "kar_1018_insert", "AISI 1018 · Vc 374.0 (6,250 rpm)", "Karandikar 외 2013/2014", LC, 374.0, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
+        rc("kar1018_449", "kar_1018_insert", "AISI 1018 · Vc 448.8 (7,500 rpm)", "Karandikar 외 2013 — 반복 3회", LC, 448.8, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
         rc("kar2021_150", "kar_1018_insert", "AISI 1018 · Vc 149.6 · fz 0.06 · ap 2 · ae 25 % (2,500 rpm)", "Karandikar·Schmitz·Smith 2021 (ap·fz·ae 는 같은 그룹 자료)", LC, 149.6, 0.06, 2.0 / d19, 0.25, None, Dry, 0.3),
         rc("kar2021_299", "kar_1018_insert", "AISI 1018 · Vc 299.2 (5,000 rpm)", "Karandikar·Schmitz·Smith 2021", LC, 299.2, 0.06, 2.0 / d19, 0.25, None, Dry, 0.3),
-        rc("tatar_ti", "tatar_r390", "Ti-6Al-4V · Vc 110 · h_max 0.05 · ap 1.5 · ae 25 % · 습식 · VB 0.2", "Tatar 외 2020 — 완전 요인 시험의 가운데 칸 (Vc 100~120, ae 10~70 %)", TI, 110.0, 0.05, 1.5 / 12.0, 0.25, Some(0.05), Flood, 0.2),
-        rc("liu_ti_t1", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 60 · fz 0.1 · ap 2 · ae 0.2 mm (시험 1)", "Liu 외 2019", TI, 60.0, 0.1, 0.2, 0.02, None, Dry, 0.2),
-        rc("liu_ti_t5", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 130 · ae 0.4 mm (시험 5)", "Liu 외 2019", TI, 130.0, 0.1, 0.2, 0.04, None, Dry, 0.2),
-        rc("liu_ti_t9", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 200 · ae 0.6 mm (시험 9)", "Liu 외 2019", TI, 200.0, 0.1, 0.2, 0.06, None, Dry, 0.2),
-        rc("mat_ti_70", "matuszak_ti", "Ti-6Al-4V · Vc 70 · fz 0.2 · ap 0.5 · ae 7.5 · 냉각(가정) · VB 0.3(가정)", "Matuszak 외 2023", TI, 70.0, 0.2, 0.5 / 16.0, 7.5 / 16.0, None, Flood, 0.3),
-        rc("grig_al", "grig_al_bare", "AlCuMg2 · Vc 188.4 · fz 0.068 · ap 2 · ae 0.5 · 건식(가정) · VB 0.4", "Grigoriev 외 2020 — F 2,000 mm/min", AL, 188.4, 0.0667, 2.0 / 6.0, 0.5 / 6.0, None, Dry, 0.4),
-        rc("grig_41cr4", "grig_st_bare", "41Cr4 · Vc 188.4 · fz 0.015 · ap 2 · ae 0.2 · 건식(가정) · VB 0.4", "Grigoriev 외 2020 — F 750 mm/min", CR41, 188.4, 0.015, 2.0 / 6.0, 0.2 / 6.0, None, Dry, 0.4),
-        rc("hov_al7010", "hov_hss_bare", "Al7010 · Vc 1,884 · fz 0.1 · ap 4 · ae 25 % (fz·ae 가정) · 건식 · VB 0.23", "Hovsepian 외 2006", AL, 1884.0, 0.1, 4.0 / 25.0, 0.25, None, Dry, 0.23),
-        rc("dewes_h13", "dewes_ball", "H13 52 HRC · Vc 200 · fz 0.1 · ap 0.5 · ae 0.5 (fz·ap·ae 가정) · 건식", "Dewes 외 1999 — Vc 200 m/min 까지 계면 198~385 °C", H13, 200.0, 0.1, 0.5 / 8.0, 0.5 / 8.0, None, Dry, 0.15),
+        rc("tatar_ti", "tatar_r390", "Ti-6Al-4V · Vc 110 · h_max 0.05 · ap 1.5 · ae 25 % · 습식 · 노치 0.2", "Tatar 외 2020 — 완전 요인 시험의 가운데 (Vc 100~120, ae 10~70 %)", TI, 110.0, 0.05, 1.5 / 12.0, 0.25, Some(0.05), Flood, 0.2),
+        rc("liu_ti_t1", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 60 · fz 0.1 · ap 2 · ae 0.2 mm (시험 1)", "Liu 외 2019 표 4", TI, 60.0, 0.1, 2.0 / 12.0, 0.2 / 12.0, None, Dry, 0.2),
+        rc("liu_ti_t2", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 60 · ae 0.4 mm (시험 2)", "Liu 외 2019 표 4", TI, 60.0, 0.1, 2.0 / 12.0, 0.4 / 12.0, None, Dry, 0.2),
+        rc("liu_ti_t5", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 130 · ae 0.4 mm (시험 5)", "Liu 외 2019 표 4", TI, 130.0, 0.1, 2.0 / 12.0, 0.4 / 12.0, None, Dry, 0.2),
+        rc("liu_ti_t9", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 200 · ae 0.6 mm (시험 9)", "Liu 외 2019 표 4", TI, 200.0, 0.1, 2.0 / 12.0, 0.6 / 12.0, None, Dry, 0.2),
+        rc("mat_ti_70", "matuszak_ti", "Ti-6Al-4V · Vc 70 · fz 0.2 · ap 0.5 · ae 7.5 · 냉각 미기재(플러드 가정) · VB3 0.5 (균일 0.3 상당)", "Matuszak 외 2023 — Ø20 2날", TI, 70.0, 0.2, 0.5 / 20.0, 7.5 / 20.0, None, Flood, 0.3),
+        rc("luo_ti_60", "luo_ti_apmt", "Ti-6Al-4V · Vc 60.3 · fz 0.05 · ap 2 · ae 1 · 수용성 · VB 0.3", "Luo·Wang·Wu·Zhang 2017", TI, 60.29, 0.05, 2.0 / 16.0, 1.0 / 16.0, None, Flood, 0.3),
+        rc("luo_ti_90", "luo_ti_apmt", "Ti-6Al-4V · Vc 90.4 · fz 0.05 · ap 2 · ae 1 · 수용성 · VB 0.3", "Luo 외 2017", TI, 90.43, 0.05, 2.0 / 16.0, 1.0 / 16.0, None, Flood, 0.3),
+        rc("uddin_ti", "uddin_bare", "Ti-6Al-4V 건식 · Vc 80 · fz 0.05 · ap 10 · ae 1 · VB 0.3", "Uddin 외 2017 — 이송 표기가 방법 0.2 mm/rev 대 결과 0.1 mm/rev 로 충돌 (방법 쪽)", TI, 80.0, 0.05, 10.0 / 12.0, 1.0 / 12.0, None, Dry, 0.3),
         rc("li_ti_slot05", "li_ti_slot", "Ti-6Al-4V 슬롯 · Vc 50 (가정) · fz 0.05 · ap 1", "Li 외 2014 계수 식별 조건(슬롯)", TI, 50.0, 0.05, 1.0 / 12.0, 1.0, None, Dry, 0.2),
         rc("li_ti_slot10", "li_ti_slot", "Ti-6Al-4V 슬롯 · Vc 50 (가정) · fz 0.10 · ap 1", "Li 외 2014", TI, 50.0, 0.10, 1.0 / 12.0, 1.0, None, Dry, 0.2),
+        rc("grig_al", "grig_al_bare", "AlCuMg2 · Vc 188.4 · fz 0.068 · 축 0.5 (t) · 반경 2 (B) · 건식 · VB 0.4", "Grigoriev 외 2020 — 봉 끝면 밀링, F 2,000 mm/min. 깊이 t = 축 · 폭 B = 반경으로 읽음 (반대 해석도 가능, 확신도 낮음)", AL, 188.4, 0.0667, 0.5 / 6.0, 2.0 / 6.0, None, Dry, 0.4),
+        rc("grig_41cr4", "grig_st_bare", "41Cr4 (210 HB) · Vc 188.4 · fz 0.015 · 축 0.2 (t) · 반경 2 (B) · 건식 · VB 0.4", "Grigoriev 외 2020 — F 750 mm/min", CR41, 188.4, 0.015, 0.2 / 6.0, 2.0 / 6.0, None, Dry, 0.4),
+        rc("hov_al7010", "hov_hss_bare", "Al7010-T7651 · 24,000 rpm (Vc 1,884) · fz 0.165 · ap 4 · ae 2 · 건식 · VB 0.23", "Hovsepian 외 2006 + Luo 외 2005 (같은 실험실·공구·판정)", AL, 1884.0, 0.165, 4.0 / 25.0, 2.0 / 25.0, None, Dry, 0.23),
+        rc("dewes_h13", "dewes_ball", "H13 52 HRC · Vc 200 · fz 0.1 · ap 0.5 · ae 0.5 (fz·ap·ae 가정) · 건식", "Dewes 외 1999 — Ø6 TiCN 볼, 계면 200~400 °C", H13, 200.0, 0.1, 0.5 / 6.0, 0.5 / 6.0, None, Dry, 0.15),
+        rc("phm2010", "phm_ball", "'스테인리스' HRC52 (경화강으로 둠) 볼 정삭 · 10,400 rpm · fz 0.0498 · ap(Z) 0.2 · ae(Y) 0.125 · 건식", "PHM Society 2010 Data Challenge — 315컷 × 약 108 mm (컷 길이 추정)", H13, 196.0, 0.0498, 0.2 / 6.0, 0.125 / 6.0, None, Dry, 0.2),
+        rc("tym_316l", "tym_naco", "AISI 316L · Vc 120 · fz 0.06 · ap 18 · ae 1 · 압축 공기 6 bar · VB 0.2", "Tymczyszyn·Szajna·Mrówka-Nowotnik 2025", SS, 120.0, 0.06, 18.0 / 12.0, 1.0 / 12.0, None, AirBlast, 0.2),
+        rc("grg_316l_dry", "grg_harvi", "AISI 316L · Vc 80 · fz 0.029 · ap 9 · ae 1.8 · 건식 · VB 0.3", "Grguraš·Kern·Pušavec 2019", SS, 80.0, 0.029, 9.0 / 6.0, 1.8 / 6.0, None, Dry, 0.3),
+        rc("grg_316l_flood", "grg_harvi", "AISI 316L · 같은 조건 · 플러드", "Grguraš 외 2019", SS, 80.0, 0.029, 9.0 / 6.0, 1.8 / 6.0, None, Flood, 0.3),
+        rc("grg_in718_dry", "grg_harvi", "IN718 (36 HRC) · Vc 40 · fz 0.019 · ap 9 · ae 1.8 · 건식 · VB 0.3", "Grguraš 외 2019", NI, 40.0, 0.019, 9.0 / 6.0, 1.8 / 6.0, None, Dry, 0.3),
+        rc("grg_in718_mql", "grg_harvi", "IN718 · 같은 조건 · MQL", "Grguraš 외 2019", NI, 40.0, 0.019, 9.0 / 6.0, 1.8 / 6.0, None, Mist, 0.3),
+        rc("grg_in718_flood", "grg_harvi", "IN718 · 같은 조건 · 플러드", "Grguraš 외 2019", NI, 40.0, 0.019, 9.0 / 6.0, 1.8 / 6.0, None, Flood, 0.3),
+        rc("hisam_in718", "hisam_r217", "IN718 37 HRC · Vc 75 · fz 0.10 · ap 4 · ae 1 · 하향 · 플러드 · VB 0.2", "Hisam 외 2024 — 3 × 3 시험의 가운데 (4회)", NI, 75.0, 0.10, 4.0 / 16.0, 1.0 / 16.0, None, Flood, 0.2),
     ]
 }
 
@@ -908,19 +978,33 @@ pub fn absolutes() -> Vec<Absolute> {
     let f10 = linear_force_mean(4, 12.0, 1.0, 12.0, 0.10, true, li);
     vec![
         ab("kar1018_090", "kar_1018_insert", "kar1018_090", LifeMin, 255.3, 127.7, 510.6, Medium, "FWW 0.3 mm 까지 255.3 분 (1,500 rpm) — Karandikar 외 2014 Precis. Eng. part 1 (2013 MST 와 같은 시험 설정)"),
+        ab("kar1018_114", "kar_1018_insert", "kar1018_114", LifeMin, 164.0, 82.0, 328.0, Medium, "164 분 (1,900 rpm, 단일 시험) — Karandikar·Schmitz·Abbas 2012"),
         ab("kar1018_224", "kar_1018_insert", "kar1018_224", LifeMin, 35.5, 17.8, 71.0, Medium, "35.5 분 (3,750 rpm)"),
-        ab("kar1018_374", "kar_1018_insert", "kar1018_374", LifeMin, 8.5, 4.25, 17.0, Medium, "8.5 분 (6,250 rpm)"),
+        ab("kar1018_374", "kar_1018_insert", "kar1018_374", LifeMin, 8.5, 4.25, 17.0, Medium, "8.5 분 (6,250 rpm, 재시험 8.6)"),
+        ab("kar1018_449", "kar_1018_insert", "kar1018_449", LifeMin, 3.03, 1.52, 6.07, Medium, "반복 3회 2.6 · 3.3 · 3.2 분 (평균 3.03, 7,500 rpm)"),
         ab("kar2021_150", "kar_1018_insert", "kar2021_150", LifeMin, 63.5, 31.8, 127.0, Medium, "반복 3회 50.1 · 68.5 · 72.0 분 (평균 63.5) — Karandikar·Schmitz·Smith 2021"),
         ab("kar2021_299", "kar_1018_insert", "kar2021_299", LifeMin, 9.8, 4.9, 19.7, Medium, "반복 3회 8.5 · 11.5 · 9.5 분 (평균 9.8)"),
-        ab("grig_al_bare", "grig_al_bare", "grig_al", LifeMin, 99.0, 49.5, 198.0, Low, "VB 0.4 mm 까지 99 분 (무코팅) — 냉각과 B 2 mm·t 0.5 mm 의 축·반경 구분이 본문 미확인이라 낮음"),
+        ab("tatar_ti", "tatar_r390", "tatar_ti", LifeMin, 51.0, 25.5, 102.0, Medium, "회귀 ln T = 25.99 − 1.000·ln ae(% Dc) − 4.008·ln Vc 의 가운데 (ae 25 %, Vc 110) 51 분 — 측정 ae 20 % 79/58 · 35 % 37/30 분 사이. 판정은 노치 마모 0.2 mm (VB 아님)"),
+        ab("liu_t1", "liu_ti_em", "liu_ti_t1", LifeMin, 303.3, 151.7, 606.6, Medium, "Liu 외 2019 표 4: 시험 1 303.3 분 (77,280 mm³)"),
+        ab("liu_t5", "liu_ti_em", "liu_ti_t5", LifeMin, 4.25, 2.13, 8.5, Medium, "시험 5 4.25 분 (4,692 mm³ — 예전 비교의 그림 캡션 2,760 mm³ 대신 표 4)"),
+        ab("liu_t9", "liu_ti_em", "liu_ti_t9", LifeMin, 0.60, 0.30, 1.2, Medium, "시험 9 0.60 분 (1,518 mm³)"),
+        ab("mat_ti_70", "matuszak_ti", "mat_ti_70", LifeMin, 70.0, 23.3, 210.0, Low, "Vc 70 에서 70 분 (VB3 0.5 · 냉각 미기재 · 인서트 형상 가정)"),
+        ab("luo_ti_60", "luo_ti_apmt", "luo_ti_60", LifeMin, 125.0, 41.7, 375.0, Low, "Vc 60.29 · fz 0.05: 125 분 (인서트 수·형상 가정이라 ×/÷3)"),
+        ab("luo_ti_90", "luo_ti_apmt", "luo_ti_90", LifeMin, 79.0, 26.3, 237.0, Low, "Vc 90.43 · fz 0.05: 79 분"),
+        ab("uddin_bare", "uddin_bare", "uddin_ti", LifeMin, 37.7, 18.9, 113.0, Low, "무코팅 VB 0.3 까지 16 m — fz 0.05 면 37.7 분, 결과 문장의 0.1 mm/rev 면 75 분 (두 해석을 덮는 대역)"),
+        ab("grig_al_bare", "grig_al_bare", "grig_al", LifeMin, 99.0, 49.5, 198.0, Low, "VB 0.4 mm 까지 99 분 (무코팅) — B 2 mm·t 0.5 mm 의 축·반경 구분이 본문에 없어 낮음"),
         ab("grig_al_dlc", "grig_al_dlc", "grig_al", LifeMin, 342.0, 171.0, 684.0, Low, "VB 0.4 mm 까지 342 분 (DLC, 3.45배)"),
-        ab("grig_st_bare", "grig_st_bare", "grig_41cr4", LifeMin, 32.0, 16.0, 64.0, Low, "VB 0.4 mm 까지 32 분 (무코팅)"),
-        ab("grig_st_dlc", "grig_st_dlc", "grig_41cr4", LifeMin, 36.0, 18.0, 72.0, Low, "DLC 는 무코팅보다 4 분 이하 김 (≈36 분)"),
-        ab("liu_t1_vmr", "liu_ti_em", "liu_ti_t1", LifeVolumeCm3, 77.28, 25.8, 231.8, Low, "수명 끝 제거 체적 77,280 mm³ (시험 1) — 공구 가정이라 ×/÷3"),
-        ab("liu_t5_vmr", "liu_ti_em", "liu_ti_t5", LifeVolumeCm3, 2.76, 0.92, 8.28, Low, "2,760 mm³ (시험 5)"),
-        ab("liu_t9_vmr", "liu_ti_em", "liu_ti_t9", LifeVolumeCm3, 1.656, 0.552, 4.97, Low, "1,656 mm³ (시험 9)"),
-        ab("mat_ti_70", "matuszak_ti", "mat_ti_70", LifeMin, 70.0, 23.3, 210.0, Low, "Vc 70 에서 가장 긴 수명 70 분 (판정 VB3 값 미확인, 공구 가정)"),
-        ab("dewes_h13_t", "dewes_ball", "dewes_h13", InterfaceC, 300.0, 198.0, 600.0, Low, "공작물에 심은 열전대 198~301 °C (0°) · 247~385 °C (60°) — 샌드박스 값은 공구–칩 계면이라 이보다 높아야 해 상한은 리서치 정리의 측정법 보정 대역 600 °C"),
+        ab("grig_st_bare", "grig_st_bare", "grig_41cr4", LifeMin, 32.0, 16.0, 64.0, Low, "VB 0.4 mm 까지 32 분 (무코팅, 17.5 분에 VB 182 µm)"),
+        ab("grig_st_dlc", "grig_st_dlc", "grig_41cr4", LifeMin, 35.0, 17.5, 70.0, Low, "DLC 35 분 (17.5 분에 VB 152 µm)"),
+        ab("hov_bare", "hov_hss_bare", "hov_al7010", LifeMin, 36.0, 18.0, 72.0, Low, "무코팅 분말 HSS 36 분 (Luo 2005 의 같은 값) — 날 수 가정"),
+        ab("dewes_h13_t", "dewes_ball", "dewes_h13", InterfaceC, 300.0, 198.0, 600.0, Low, "공작물 열전대 198~301 °C (0°) · 247~385 °C (60°) — 샌드박스 값은 공구–칩 계면이라 이보다 높아야 해 상한은 리서치 정리의 측정법 보정 대역 600 °C"),
+        ab("phm_vb_150", "phm_ball", "phm2010", VbAtMm(10.43), 0.1065, 0.07, 0.16, Low, "컷 150 (약 10.4 min — 컷 길이 108 mm 추정) 최대 날 VB c1 101.2 · c4 97.7 · c6 120.5 µm (평균 106.5)"),
+        ab("phm_vb_315", "phm_ball", "phm2010", VbAtMm(21.9), 0.206, 0.14, 0.30, Low, "컷 315 (약 21.9 min) 최대 날 VB 172.7 · 210.9 · 234.7 µm (평균 206)"),
+        ab("tym_316l_life", "tym_naco", "tym_316l", LifeMin, 150.0, 75.0, 300.0, Medium, "VB 0.20 mm @ 150 분 — 같은 배치 공구 5개 편차 5 % 이내"),
+        ab("tym_316l_vb120", "tym_naco", "tym_316l", VbAtMm(120.0), 0.15, 0.10, 0.22, Medium, "120 분 VB ≈ 0.15 mm"),
+        ab("grg_316l_dry", "grg_harvi", "grg_316l_dry", LifeMin, 25.9, 13.0, 51.8, Medium, "316L 건식 25.9 분 (VB 0.3)"),
+        ab("grg_in718_flood", "grg_harvi", "grg_in718_flood", LifeMin, 6.0, 3.0, 12.0, Medium, "IN718 플러드 6.0 분 (건식 2.3 · MQL 3.8)"),
+        ab("hisam_in718", "hisam_r217", "hisam_in718", LifeMin, 14.4, 7.2, 28.8, Medium, "가운데 칸 4회 14.9 · 16.0 · 13.3 · 13.3 분 (평균 14.4, VB 0.2)"),
         ab("li_slot05_f", "li_ti_slot", "li_ti_slot05", ForceVectorMeanN, f05, 0.75 * f05, 1.25 * f05, Medium, "Ktc 2000 · Krc 1000 N/mm² · Kte 41 · Kre 77 N/mm 로 되돌린 평균 힘 (fz 0.05) — 계수 모델 정확도 ±25 % (Budak 1996)"),
         ab("li_slot10_f", "li_ti_slot", "li_ti_slot10", ForceVectorMeanN, f10, 0.75 * f10, 1.25 * f10, Medium, "같은 계수, fz 0.10"),
         ab("ti_kr", "li_ti_slot", "li_ti_slot10", RadialRatio, 0.5, 0.29, 0.55, Medium, "Krc/Ktc 0.5 (Li 2014) — 다른 실측 0.37 (Tian 2026 볼) · 0.29 (Budak 1996 직교 변환) 까지 대역"),
@@ -938,11 +1022,16 @@ pub fn ratios() -> Vec<Ratio> {
     use Quantity::*;
     vec![
         ra("grig_al_dlc_gain", ("grig_al_dlc", "grig_al"), ("grig_al_bare", "grig_al"), LifeMin, 3.45, 2.5, 4.5, Medium, "AlCuMg2: DLC / 무코팅 = 342 / 99 분"),
-        ra("grig_st_dlc_gain", ("grig_st_dlc", "grig_41cr4"), ("grig_st_bare", "grig_41cr4"), LifeMin, 1.12, 0.9, 1.3, Medium, "41Cr4: DLC 는 무코팅보다 4 분 이하 김 (철계에서 탄소 코팅 이득 거의 없음)"),
-        ra("hov_dlc_gain", ("hov_hss_dlc", "hov_al7010"), ("hov_hss_bare", "hov_al7010"), LifeMin, 3.5, 2.5, 5.0, Low, "Al7010: DLC ≈ TiAlN/VN, 무코팅의 3.5배 (조건 일부 가정)"),
-        ra("hov_tialn_gain", ("hov_hss_tialn", "hov_al7010"), ("hov_hss_bare", "hov_al7010"), LifeMin, 1.52, 1.1, 2.1, Low, "Al7010: TiAlCrYN = 무코팅 × 3.5 / 2.3"),
-        ra("liu_vmr_t1_t5", ("liu_ti_em", "liu_ti_t1"), ("liu_ti_em", "liu_ti_t5"), LifeVolumeCm3, 28.0, 14.0, 56.0, Medium, "제거 체적 77,280 / 2,760 mm³ — Vc 60→130 · ae 0.2→0.4 (같은 공구라 지름 가정이 거의 약분)"),
-        ra("liu_vmr_t5_t9", ("liu_ti_em", "liu_ti_t5"), ("liu_ti_em", "liu_ti_t9"), LifeVolumeCm3, 1.67, 0.9, 3.0, Medium, "2,760 / 1,656 mm³ — Vc 130→200 · ae 0.4→0.6"),
+        ra("grig_al_vb72", ("grig_al_dlc", "grig_al"), ("grig_al_bare", "grig_al"), VbAtMm(72.0), 0.194, 0.12, 0.30, Medium, "72 분 VB: DLC 48.7 / 무코팅 250.5 µm"),
+        ra("grig_st_dlc_gain", ("grig_st_dlc", "grig_41cr4"), ("grig_st_bare", "grig_41cr4"), LifeMin, 1.09, 0.9, 1.3, Medium, "41Cr4: DLC 35 / 무코팅 32 분 (철계에서 탄소 코팅 이득 거의 없음)"),
+        ra("hov_dlc_gain", ("hov_hss_dlc", "hov_al7010"), ("hov_hss_bare", "hov_al7010"), LifeMin, 4.36, 3.0, 6.3, Medium, "Al7010: W-DLC 157 / 무코팅 36 분 (그림 캡션의 시간 — 본문 결론의 3.4~3.5배와 다름)"),
+        ra("hov_tialn_gain", ("hov_hss_tialn", "hov_al7010"), ("hov_hss_bare", "hov_al7010"), LifeMin, 1.36, 1.0, 1.9, Medium, "Al7010: TiAlCrYN 49 / 무코팅 36 분 (Luo 2005 와 같은 값)"),
+        ra("liu_t1_t5", ("liu_ti_em", "liu_ti_t1"), ("liu_ti_em", "liu_ti_t5"), LifeMin, 71.4, 36.0, 143.0, Medium, "수명 303.3 / 4.25 분 — Vc 60→130 · ae 0.2→0.4 (같은 공구, 기준 앵커가 약분)"),
+        ra("liu_t5_t9", ("liu_ti_em", "liu_ti_t5"), ("liu_ti_em", "liu_ti_t9"), LifeMin, 7.08, 3.5, 14.2, Medium, "4.25 / 0.60 분 — Vc 130→200 · ae 0.4→0.6"),
+        ra("uddin_tialn_vb", ("uddin_tialn", "uddin_ti"), ("uddin_bare", "uddin_ti"), VbAtMm(23.6), 0.686, 0.5, 0.9, Low, "절삭 10 m (fz 0.05 면 23.6 분) VB: TiAlN 0.144 / 무코팅 0.21 mm"),
+        ra("grg_in718_flood_dry", ("grg_harvi", "grg_in718_flood"), ("grg_harvi", "grg_in718_dry"), LifeMin, 2.61, 1.7, 4.0, Medium, "IN718 플러드 6.0 / 건식 2.3 분"),
+        ra("grg_in718_mql_dry", ("grg_harvi", "grg_in718_mql"), ("grg_harvi", "grg_in718_dry"), LifeMin, 1.65, 1.1, 2.5, Medium, "IN718 MQL 3.8 / 건식 2.3 분"),
+        ra("grg_316l_flood_dry", ("grg_harvi", "grg_316l_flood"), ("grg_harvi", "grg_316l_dry"), LifeMin, 14.5, 14.5, 1000.0, Low, "316L 플러드 > 375 분 (시험 중단) / 건식 25.9 분 → 14.5배 이상 (하한)"),
     ]
 }
 
@@ -951,7 +1040,7 @@ fn se(id: &'static str, tool: &'static str, cut: &'static str, quantity: Quantit
     Sensitivity { id, tool, cut, quantity, param, from, to, value, lo, hi, confidence, basis }
 }
 
-/// 민감도 — 수명의 속도·반경 절입 기울기 (Taylor 지수 n 이면 d ln T / d ln Vc = −1/n)
+/// 민감도 — 수명의 속도·반경 절입·이송 기울기 (Taylor 지수 n 이면 d ln T / d ln Vc = −1/n), 힘의 속도 기울기
 pub fn sensitivities() -> Vec<Sensitivity> {
     use Confidence::{Low, Medium};
     use Quantity::*;
@@ -959,10 +1048,17 @@ pub fn sensitivities() -> Vec<Sensitivity> {
         se("kar_taylor_lo", "kar_1018_insert", "kar1018_224", LifeMin, Param::Vc, 89.8 / 224.4, 1.0, -2.15, -2.8, -1.5, Medium, "1018 무코팅 초경 Vc 89.8→224.4: 255.3→35.5 분"),
         se("kar_taylor_hi", "kar_1018_insert", "kar1018_224", LifeMin, Param::Vc, 1.0, 374.0 / 224.4, -2.80, -3.5, -2.1, Medium, "Vc 224.4→374.0: 35.5→8.5 분"),
         se("kar21_taylor", "kar_1018_insert", "kar2021_150", LifeMin, Param::Vc, 1.0, 2.0, -2.69, -3.3, -2.1, Medium, "Vc 149.6→299.2: 63.5→9.8 분 (로지스틱 맞춤 n 0.378 → −2.65)"),
+        se("kar_taylor_wide", "kar_1018_insert", "kar1018_090", LifeMin, Param::Vc, 1.0, 448.8 / 89.8, -2.76, -3.3, -2.2, Medium, "Vc 89.8→448.8 (5배): 255.3 → 3.03 분, 14점 회귀 −2.74 (발표 n 0.33~0.46)"),
         se("tatar_vc", "tatar_r390", "tatar_ti", LifeMin, Param::Vc, 100.0 / 110.0, 120.0 / 110.0, -4.0, -5.5, -2.5, Medium, "ln T = b0 + b1·ln ae + b2·ln Vc, Vc 1 % 오르면 수명 4 % 감소 (24 응답 회귀)"),
         se("tatar_ae", "tatar_r390", "tatar_ti", LifeMin, Param::Ae, 0.4, 2.8, -1.0, -1.5, -0.5, Medium, "h_max 0.05 일정, ae 10→70 % D: 1 % 늘면 수명 1 % 감소"),
-        se("mat_vc", "matuszak_ti", "mat_ti_70", LifeMin, Param::Vc, 1.0, 250.0 / 70.0, -3.3, -4.5, -2.0, Low, "Vc 70 에서 70 분, 250 에서 VB3 0.5 mm 까지 약 1 분 (판정 값이 달라 확신도 낮음)"),
+        se("liu_vc", "liu_ti_em", "liu_ti_t2", LifeMin, Param::Vc, 1.0, 200.0 / 60.0, -3.50, -4.5, -2.3, Medium, "ae 0.4: Vc 60→130→200 에서 59.6 → 4.25 → 0.87 분 (같은 표의 ae 0.2 −2.37 · ae 0.6 −4.29 를 대역으로)"),
+        se("mat_vc", "matuszak_ti", "mat_ti_70", LifeMin, Param::Vc, 1.0, 250.0 / 70.0, -3.3, -4.5, -2.0, Low, "Vc 70 에서 70 분, 250 에서 VB3 0.5 mm 까지 약 1 분"),
+        se("luo_vc", "luo_ti_apmt", "luo_ti_60", LifeMin, Param::Vc, 1.0, 1.5, -1.13, -2.0, -0.5, Low, "Ti 수용성 · fz 0.05: Vc 60.29 → 90.43 에서 125 → 79 분 (단일 시험 2점) — 저속에서는 Taylor 기울기가 완만"),
+        se("luo_fz", "luo_ti_apmt", "luo_ti_90", LifeMin, Param::Fz, 1.0, 0.11 / 0.05, -2.03, -3.0, -1.0, Low, "Ti Vc 90.43: fz 0.05 → 0.11 에서 79 → 16 분 (단일 시험 2점) — 칩 두께가 수명에 주는 효과"),
+        se("hisam_vc", "hisam_r217", "hisam_in718", LifeMin, Param::Vc, 50.0 / 75.0, 100.0 / 75.0, -1.54, -2.4, -0.8, Medium, "IN718 12점 회귀 ln T = 6.95 − 1.54·ln Vc − 0.91·ln fz (R² 0.79), fz 별 −1.19 ~ −2.24"),
+        se("hisam_fz", "hisam_r217", "hisam_in718", LifeMin, Param::Fz, 0.5, 1.5, -0.91, -1.6, -0.4, Medium, "같은 회귀의 fz 기울기 (Vc 별 −0.49 ~ −1.50)"),
         se("dewes_t_vc", "dewes_ball", "dewes_h13", InterfaceRiseC, Param::Vc, 0.5, 1.0, 0.4, 0.1, 0.8, Medium, "계면 온도는 Vc 와 함께 오르고 고속에서 줄지 않음 (Dewes 1999), 플랭크 온도는 속도와 함께 빠르게 오름 (Hosokawa 2000)"),
+        se("klippel_ti_force", "li_ti_slot", "li_ti_slot10", ForceMeanN, Param::Vc, 1.5, 5.0, -0.124, -0.20, -0.05, Medium, "Ti6Al4V 준직교 건식 (Klippel 외 2024, 날끝 37.5 µm): h 0.1 에서 Fc 195.9 → 168.3 N/mm (Vc 74→254) · h 0.2 −0.130 — 밀링 칸의 평균 합력으로 비교"),
     ]
 }
 
