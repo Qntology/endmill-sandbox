@@ -95,14 +95,16 @@
 
 ## 5. 다음 단계 (재개 순서)
 
-1. 조사 에이전트 결과(`docs/wip/research-notes.md`)를 읽고 1018 JC 상수 확정 → `TODO-JC` 교체.
+1. `docs/wip/research-notes.md` (Ti · 강 · 고경도 · 스테인리스/IN718 · Al/CFRP 중간 보고)를 읽고 1018 JC 상수 확정 → `TODO-JC` 교체
+   (후보: Buchely 2019 1018 고유값 대 Johnson·Cook 1983 1006 대용), 벤치마크의 잘못된 가정 바로잡기 (Liu 공구 Ø12·경사 4°·여유 8°, Matuszak Ø20 2날,
+   Hovsepian fz 0.165·ae 2·W-DLC 3 µm, Dewes Ø6 TiCN 볼, Karandikar 속도 3점 추가, Liu 시험 체적 1,656 → 표 4 의 1,518).
 2. 전체 시험 실행 → 깨진 시험이 있으면 원인 확인 (수정이 물리적으로 맞으면 시험 근거를 갱신, 아니면 되돌림).
 3. 새 N:N 열·행 추가 (자료가 갖춰진 것만): 316L/304 스테인리스 (Tymczyszyn 2025 등), IN718 (Tan 2021 등), 고경도 수명 (PHM2010 HRC52 볼 —
    10,400 rpm · 1,555 mm/min · ae 0.125 · ap 0.2 · 315컷×108 mm, VB 진행), D2/D6 속도–수명, Ti 추가 (Uddin 2017 코팅비 등), 힘 (Sun 2023 C45 계수 · Klippel 2022 Ck45/Ti 직교 데이터베이스의 속도 기울기).
 4. 물리 보완 후보 (위 4장) 를 하나씩: 넣고 → 전체 벤치마크·시험 → 다른 칸이 무너지면 되돌리고 기록.
 5. 문서: `docs/literature-benchmark.md` 에 2차 보완 절, README, `docs/content.md` 벤치마크 절 갱신 → `Cargo.lock` 되돌리고 commit · push.
 
-## 6. 조사 범위 (에이전트 5개, 일시정지 시 중간 보고 요청)
+## 6. 조사 범위 (에이전트 5개 — 일시정지 때 중간 보고를 받아 `docs/wip/research-notes.md` 에 모두 기록함)
 
 1. Ti-6Al-4V: Tatar 2020 · Matuszak 2023 · Liu 2019 (공구 표·시험 9개) · Uddin 2017 · Kuczmaszewski 2017 · Abbas 2021 · Colantonio 2025 · Li 2014 조건 + 밀링 온도 실측(속도별) + 습식/건식 수명비.
 2. 강: Karandikar 2013/2014/2021 상세 · 1018 vs 1045 물성(JC·kc·경도·펄라이트) · Grigoriev 2020 (B·t, 냉각, 수명) · Sun 2023 · Kovalčík 2022 · Klippel 2022 · Hosokawa 2000.
