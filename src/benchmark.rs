@@ -905,7 +905,7 @@ pub fn paper_tools() -> Vec<RefTool> {
             setting("Hisam R217", "PAPER-HISAM", 16.0, 2, 10.0, 10.0, None, Carbide, None, Some(15.0), None, cr(0.8), 50.0),
             &NI,
         ),
-        // ---- 기준 상태 근처의 독립 실측 (앵커 확인용으로 찾은 자료 — 앵커는 바꾸지 않았고 검증 열로 쓴다, `docs/wip/research-notes.md` 6장)
+        // ---- 기준 상태 근처의 독립 실측 (앵커 확인용으로 찾은 자료 — 앵커는 바꾸지 않았고 검증 열로 쓴다, `docs/literature-benchmark-sources.md` 6장)
         rt(
             "gross_tialn",
             "Ø6 4날 TiAlN 초경 (Kennametal)",

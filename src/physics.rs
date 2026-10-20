@@ -561,6 +561,12 @@ impl WorkpieceProps {
                 mc: 0.23,
                 rake_deg: 10.0,
                 adhesion: 1.1,
+                // 마모 활성화 두 영역 (`tribology::arrhenius`): 550 °C 아래 2,500 K · 위 16,000 K. 예전 값(850 °C 아래 6,500 K · 위 20,000 K)은 강의
+                // Usui 구조를 빌린 것으로, Ti 수명의 속도 기울기가 고온에서 너무 둔하고 (Tatar −2.4 · Liu −1.7, 실측 −4.0 · −3.5) 저온 플러드에서 너무
+                // 가팔랐다 (Luo −3.0, 실측 −1.1). 위 영역은 ETH 2025 (MM Science Journal, Ti-6Al-4V 무코팅 WC-6Co 건식 직교 Vc 150~300)의 Usui 플랭크
+                // C₂ 15,909 K (물리 기반 맞춤, 다항 맞춤 16,978 K · Ti 속 C 확산 16,104 K), 아래 영역은 같은 논문이 정리한 문헌 범위 2,500~20,000 K 의
+                // 아래 끝 (저속의 응착·마찰 지배). 전환 550 °C 는 이 모델의 계면 온도 눈금에서 기울기가 갈리는 자리 (Luo 430~490 °C 대 Tatar 540~570 °C)라
+                // 기울기 자료에서 정한 상수다 — 500 / 600 °C 로 바꿔 본 결과는 `docs/literature-benchmark.md` 8장
                 wear_activation_k: 2500.0,
                 thermal_factor: 0.7,
                 melt_c: 1650.0,

@@ -134,5 +134,15 @@ fn main() {
             .map(|f| format!("{:.2}·T {:.0} µm", f, tr.vb_at(f * life) * 1000.0))
             .collect();
         println!("  VB 궤적 (T = {:.2} min): {}", life, pts.join(" · "));
+        // 궤적 표본점의 VB 별 계면 온도·합력 (마모 랜드 → 발열 되먹임)
+        let temps: Vec<String> = tr
+            .vb_mm
+            .iter()
+            .zip(tr.temp_c.iter())
+            .zip(tr.force_n.iter())
+            .step_by((tr.vb_mm.len() / 8).max(1))
+            .map(|((v, t), f)| format!("{:.0} µm {:.0} °C {:.0} N", v * 1000.0, t, f))
+            .collect();
+        println!("  VB 별 계면·합력: {}", temps.join(" · "));
     }
 }
