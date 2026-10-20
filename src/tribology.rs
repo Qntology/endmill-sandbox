@@ -432,6 +432,21 @@ fn dissolution_onset_c(chem: WpChem, coat: &CoatingTribology) -> f64 {
     }
 }
 
+/// 코팅·초경 산화의 활성화 온도 Q/R (K). TiN 박막 공기 중 400~700 °C 포물선 산화 156.6 kJ/mol (Oxidation Behavior of Nanostructure Sputtered
+/// Titanium Nitride Thin Films, CAST KMITL) → 18,800 K. 질화물 코팅·WC 산화는 대략 150~250 kJ/mol 대역이라 같은 값을 쓴다 (확신도 보통)
+pub const OXIDATION_ACTIVATION_K: f64 = 18_800.0;
+
+/// 산화 개시 온도 `onset_c` 에서 절반이 되는 산화 진행 정도 (0~1). 산화 속도는 열 활성(Arrhenius)이라 개시 온도 아래에서는 exp(−Q/RT) 꼬리로
+/// 빠르게 사라지고, 위에서는 보호층이 소모된 상태로 포화한다 — 1/T 에 대한 로지스틱.
+/// 예전에는 온도에 대한 로지스틱(폭 45 K)이라 개시 100 K 아래에서도 10 % 가 남았다: 개시 350 °C 인 DLC 가 254 °C (건식 알루미늄 정삭)
+/// 에서 산화 마모를 기준의 2.4배로 받아 DLC 의 알루미늄 이득(실측 3.45배)이 1.04배로 사라졌다. Arrhenius 꼬리로는 같은 자리에서 0.5 %
+pub fn oxidation_progress(t_c: f64, onset_c: f64) -> f64 {
+    let t = (t_c + 273.15).max(1.0);
+    let on = (onset_c + 273.15).max(1.0);
+    let x = (OXIDATION_ACTIVATION_K * (1.0 / t - 1.0 / on)).clamp(-60.0, 60.0);
+    1.0 / (1.0 + x.exp())
+}
+
 pub fn tribofilm_factor(coat: &CoatingTribology, chem: WpChem, t_c: f64) -> f64 {
     if coat.chem.al && coat.protective_oxide && !matches!(chem, WpChem::Aluminum | WpChem::CarbonFiber) {
         1.0 - 0.3 * sigmoid((t_c - 800.0) / 60.0)
@@ -492,7 +507,7 @@ pub fn pair_coat(coat: &CoatingTribology, wp: &WorkpieceProps, t_c: f64) -> Pair
         diffusion: diffusion * film,
         dissolution,
         abrasion: abrasion_index(effective_hardness(coat, t_c), wp, t_c),
-        oxidation: coat.oxidation * sigmoid((t_c - coat.oxidation_c) / 45.0),
+        oxidation: coat.oxidation * oxidation_progress(t_c, coat.oxidation_c),
     }
 }
 

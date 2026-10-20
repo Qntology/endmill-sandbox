@@ -299,7 +299,9 @@ pub fn parse_material(raw: &str, hrc: Option<u8>) -> Result<MaterialParse, Strin
         (&["waspaloy", "hastelloy", "rene", "superalloy", "수퍼알로이", "슈퍼알로이", "stellite"], WorkpieceMaterial::SuperAlloy, "수퍼알로이"),
         (&["titanium", "ti6al4v", "ti64", "gr5", "티타늄"], WorkpieceMaterial::Titanium, "티타늄"),
         (&["cfrp", "carbonfiber", "탄소섬유"], WorkpieceMaterial::CFRP, "CFRP"),
-        (&["carbonsteel", "s45c", "s50c", "s55c", "sm45c", "1045", "1050", "c45", "ss400", "탄소강", "mildsteel"], WorkpieceMaterial::CarbonSteel, "탄소강"),
+        // 저탄소강·연강 (C ≤ 0.25 %) — '탄소강' 보다 먼저 본다 ('저탄소강' 이 '탄소강' 을 포함)
+        (&["lowcarbon", "저탄소강", "연강", "mildsteel", "ss400", "s15c", "s20c", "s10c", "sm400", "1018", "1020", "1015", "1010", "a36", "c15", "c22"], WorkpieceMaterial::LowCarbonSteel, "저탄소강"),
+        (&["carbonsteel", "s45c", "s50c", "s55c", "sm45c", "1045", "1050", "c45", "탄소강"], WorkpieceMaterial::CarbonSteel, "탄소강"),
     ];
     for (keys, m, name) in table.iter() {
         if keys.iter().any(|k| t == *k || t.contains(k)) {
@@ -319,6 +321,7 @@ pub fn material_from_key(key: &str, hrc: Option<u8>) -> Result<WorkpieceMaterial
     match key.trim() {
         "aluminum" => Ok(WorkpieceMaterial::Aluminum),
         "carbon_steel" => Ok(WorkpieceMaterial::CarbonSteel),
+        "low_carbon_steel" => Ok(WorkpieceMaterial::LowCarbonSteel),
         "alloy_steel" => Ok(WorkpieceMaterial::AlloySteel {
             hardness_hrc: hrc.ok_or_else(|| "합금강/금형강은 경도(HRC)를 입력해야 합니다".to_string())?,
         }),

@@ -1288,6 +1288,7 @@
 	              <select id="cw-material">
 	                <option value="aluminum">알루미늄</option>
 	                <option value="carbon_steel">탄소강</option>
+	                <option value="low_carbon_steel">저탄소강 (S15C·1018)</option>
 	                <option value="stainless">스테인리스</option>
 	                <option value="alloy_steel">합금강·금형강 (HRC)</option>
 	                <option value="titanium">티타늄</option>
@@ -1923,6 +1924,7 @@
 	          <select id="calc-workpiece">
 	            <option value="aluminum">알루미늄 합금</option>
 	            <option value="carbon_steel">탄소강</option>
+	            <option value="low_carbon_steel">저탄소강 (S15C·1018)</option>
 	            <option value="alloy_steel">합금강·금형강 (HRC)</option>
 	            <option value="stainless">스테인리스강</option>
 	            <option value="titanium" selected>티타늄 합금</option>
@@ -3045,7 +3047,7 @@
 	};
 	const DEPTH_PALETTE_LABEL = { contact: '접촉 (흰색→남색→청록→노랑)', terrain: '지형 (모래→청록→남색)', thermal: '열 (연노랑→적→자주)', ocean: '해양 (하늘→심청)', mono: '흑백 (밝음→어두움)' };
 	const DEPTH_MARK_LABEL = { dots: '작은 점', boxes: '작은 박스', lines: '짧은 선 (해칭)' };
-	const MATERIAL_FAMILY_LABEL = { aluminum: '알루미늄', carbon_steel: '탄소강', alloy_steel: '합금강·금형강', stainless: '스테인리스', titanium: '티타늄', inconel: '인코넬', superalloy: '내열 초합금', cfrp: 'CFRP' };
+	const MATERIAL_FAMILY_LABEL = { aluminum: '알루미늄', carbon_steel: '탄소강', low_carbon_steel: '저탄소강', alloy_steel: '합금강·금형강', stainless: '스테인리스', titanium: '티타늄', inconel: '인코넬', superalloy: '내열 초합금', cfrp: 'CFRP' };
 	const DEPTH_BUCKETS = 24;
 
 	function vpPaletteRGB(name, k) {

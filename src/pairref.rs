@@ -26,7 +26,8 @@ impl WpGroup {
     pub fn of(wp: &WorkpieceProps) -> Self {
         match wp.key.as_str() {
             "aluminum" => Self::Aluminum,
-            "carbon_steel" => Self::CarbonSteel,
+            // 저탄소강은 같은 탄소강 그룹 (공구 창·수명 말기·편차 표가 같다 — 차이는 소재 물성에서 온다)
+            "carbon_steel" | "low_carbon_steel" => Self::CarbonSteel,
             "stainless" => Self::Stainless,
             "titanium" => Self::Titanium,
             "inconel" | "superalloy" => Self::Nickel,

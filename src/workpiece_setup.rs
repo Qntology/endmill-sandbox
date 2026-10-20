@@ -269,6 +269,7 @@ impl WorkpieceSetup {
         match &self.effective_material() {
             WorkpieceMaterial::Aluminum => "알루미늄 합금".into(),
             WorkpieceMaterial::CarbonSteel => "탄소강 (S45C)".into(),
+            WorkpieceMaterial::LowCarbonSteel => "저탄소강 (S15C·AISI 1018)".into(),
             WorkpieceMaterial::AlloySteel { hardness_hrc } => format!("합금강 (HRC {})", hardness_hrc),
             WorkpieceMaterial::StainlessSteel => "스테인리스강 (SUS304)".into(),
             WorkpieceMaterial::Titanium => "티타늄 (Ti-6Al-4V)".into(),

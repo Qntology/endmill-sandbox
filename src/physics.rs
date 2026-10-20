@@ -130,6 +130,11 @@ pub struct WorkpieceProps {
     /// 벽 정삭을 상향(업)밀링으로 — 제조사가 그 소재에 상향을 지시할 때만 (없으면 하향: Sandvik · Iscar · Harvey 의 첫 선택)
     #[serde(default)]
     pub finish_up_milling: bool,
+    /// 마모 상수(기준 상태 수명 앵커)를 빌려 오는 같은 공구–피삭재 화학계의 소재. 저탄소강은 C45 와 같은 Fe 기지 · Fe₃C 경질상 · WC–Co 공구라
+    /// Usui 마모식의 상수가 같다고 보고, 기준 상태(속도·칩·냉각·수명 앵커)를 C45 로 둔다 — 두 소재의 수명 차이는 앵커가 아니라
+    /// 소재 물성(유동 응력 → 계면 온도, 시멘타이트 체적 → 연삭)이 만든다 (`reference_setup`). 없으면 자기 기준 상태
+    #[serde(default)]
+    pub wear_anchor: Option<WorkpieceMaterial>,
 }
 
 fn default_kr_floor() -> f64 {
@@ -286,6 +291,7 @@ impl WorkpieceProps {
             slot_ap_ratio: None,
             ramp_deg: None,
             finish_up_milling: false,
+            wear_anchor: None,
         };
         match m {
             WorkpieceMaterial::Aluminum => WorkpieceProps {
@@ -367,6 +373,31 @@ impl WorkpieceProps {
                 ramp_deg: Some(1.2),
                 ..base("carbon_steel", "탄소강 (S45C)")
             },
+            WorkpieceMaterial::LowCarbonSteel => {
+                let anchor = Self::of(&WorkpieceMaterial::CarbonSteel);
+                WorkpieceProps {
+                    density: 7870.0,
+                    // 명목값: HRC 는 20 아래에서 정의되지 않는다 (AISI 1018 냉간 인발 126~143 HB, C45 의 15 는 약 190 HB)
+                    hardness_hrc: 10.0,
+                    // Sandvik 재질 그룹 P1.1 (비합금강 C ≤ 0.25 %) kc1 1500 N/mm² · mc 0.25 — C45 가 속한 P1.2 (C 0.25~0.55 %) 는 1600
+                    kc11: 1500.0,
+                    mc: 0.25,
+                    // TODO-JC: 1018 Johnson-Cook 상수 (자료 확인 중) — 임시로 Johnson·Cook 1983 의 1006 강
+                    jc: Some(JohnsonCook::new(350.0, 275.0, 0.36, 0.022, 1.0, 1538.0)),
+                    melt_c: 1520.0,
+                    // 페라이트 기지 (1018 냉간 인발 126 HB ≈ 131 HV)
+                    matrix_hv: 135.0,
+                    // 경질상은 펄라이트 속 시멘타이트 Fe₃C: 체적 분율 ≈ C 질량 % / 6.67 × (ρ 페라이트/ρ Fe₃C 1.03) — 0.18 % C → 0.028 (C45 의 0.07 과 같은 식)
+                    hard_phase_frac: 0.028,
+                    // 마모 상수는 C45 의 기준 상태에 묶는다 (`wear_anchor`) — 수명 앵커·기구 몫도 C45 것
+                    ref_life_min: anchor.ref_life_min,
+                    mech_shares: anchor.mech_shares,
+                    wear_anchor: Some(WorkpieceMaterial::CarbonSteel),
+                    slot_ap_ratio: anchor.slot_ap_ratio,
+                    ramp_deg: anchor.ramp_deg,
+                    ..base("low_carbon_steel", "저탄소강 (S15C·AISI 1018)")
+                }
+            }
             WorkpieceMaterial::AlloySteel { hardness_hrc } => {
                 let h = *hardness_hrc as f64;
                 // Sandvik MC 표 (h = 1 mm, 경사 0°): 50 HRC 3090, 55 HRC 3690, 60 HRC 4330, 63 HRC 4750 (65 HRC 는 외삽 4950).
@@ -2068,6 +2099,11 @@ pub struct WearReference {
 
 fn reference_setup(ctx: &CutContext) -> (CutContext, f64, Engagement, f64) {
     let mut rctx = ctx.clone();
+    // 같은 화학계 소재의 마모 상수를 쓰는 소재 (저탄소강 → C45): 기준 상태를 앵커 소재로 둔다 — 기준 대비 기구 배수가 두 소재의
+    // 물성 차이(계면 온도·경질상)를 그대로 담는다
+    if let Some(anchor) = ctx.wp.wear_anchor.as_ref() {
+        rctx.wp = WorkpieceProps::of(anchor);
+    }
     rctx.env = ShopEnvironment::standard();
     rctx.coolant = CoolantState::from_config_env(&rctx.wp.reference_coolant(), &rctx.env);
     rctx.calib = Calibration::default();

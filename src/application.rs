@@ -73,6 +73,7 @@ impl Industry {
             ],
             Self::GeneralMachining => vec![
                 WorkpieceMaterial::CarbonSteel,
+                WorkpieceMaterial::LowCarbonSteel,
                 WorkpieceMaterial::Aluminum,
                 WorkpieceMaterial::StainlessSteel,
             ],

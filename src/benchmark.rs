@@ -746,7 +746,7 @@ fn rt(key: &'static str, label: &'static str, source: &'static str, s: EndMillMo
 }
 
 const AL: WorkpieceMaterial = WorkpieceMaterial::Aluminum;
-const C45: WorkpieceMaterial = WorkpieceMaterial::CarbonSteel;
+const LC: WorkpieceMaterial = WorkpieceMaterial::LowCarbonSteel;
 const TI: WorkpieceMaterial = WorkpieceMaterial::Titanium;
 const CR41: WorkpieceMaterial = WorkpieceMaterial::AlloySteel { hardness_hrc: 20 };
 const H13: WorkpieceMaterial = WorkpieceMaterial::AlloySteel { hardness_hrc: 52 };
@@ -761,7 +761,7 @@ pub fn paper_tools() -> Vec<RefTool> {
             "Ø19.05 1날 무코팅 초경 인서트 (경사 0° · 헬릭스 0° · 여유 15°)",
             "Karandikar·Abbas·Schmitz 2013/2014, Karandikar·Schmitz·Smith 2021 — Kennametal KICR073SD30333C + 9.53 mm 사각 무코팅 인서트. 날끝 반경·돌출 60 mm 가정",
             setting("Karandikar 1018 인서트", "PAPER-KAR1018", 19.05, 1, 9.5, 0.0, None, Carbide, Some(0.0), Some(15.0), None, Square, 60.0),
-            &C45,
+            &LC,
         ),
         rt(
             "tatar_r390",
@@ -875,11 +875,11 @@ pub fn paper_cuts() -> Vec<RefCut> {
     use CoolantMethod::{Dry, Flood};
     let d19 = 19.05;
     vec![
-        rc("kar1018_090", "kar_1018_insert", "AISI 1018 · Vc 89.8 · fz 0.06 · ap 3 · ae 4.7 (25 %) · 하향 · 건식(가정) · FWW 0.3", "Karandikar 외 2013/2014 — 1,500 rpm", C45, 89.8, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
-        rc("kar1018_224", "kar_1018_insert", "AISI 1018 · Vc 224.4 (3,750 rpm)", "Karandikar 외 2013/2014", C45, 224.4, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
-        rc("kar1018_374", "kar_1018_insert", "AISI 1018 · Vc 374.0 (6,250 rpm)", "Karandikar 외 2013/2014", C45, 374.0, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
-        rc("kar2021_150", "kar_1018_insert", "AISI 1018 · Vc 149.6 · fz 0.06 · ap 2 · ae 25 % (2,500 rpm)", "Karandikar·Schmitz·Smith 2021 (ap·fz·ae 는 같은 그룹 자료)", C45, 149.6, 0.06, 2.0 / d19, 0.25, None, Dry, 0.3),
-        rc("kar2021_299", "kar_1018_insert", "AISI 1018 · Vc 299.2 (5,000 rpm)", "Karandikar·Schmitz·Smith 2021", C45, 299.2, 0.06, 2.0 / d19, 0.25, None, Dry, 0.3),
+        rc("kar1018_090", "kar_1018_insert", "AISI 1018 · Vc 89.8 · fz 0.06 · ap 3 · ae 4.7 (25 %) · 하향 · 건식(가정) · FWW 0.3", "Karandikar 외 2013/2014 — 1,500 rpm", LC, 89.8, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
+        rc("kar1018_224", "kar_1018_insert", "AISI 1018 · Vc 224.4 (3,750 rpm)", "Karandikar 외 2013/2014", LC, 224.4, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
+        rc("kar1018_374", "kar_1018_insert", "AISI 1018 · Vc 374.0 (6,250 rpm)", "Karandikar 외 2013/2014", LC, 374.0, 0.06, 3.0 / d19, 4.7 / d19, None, Dry, 0.3),
+        rc("kar2021_150", "kar_1018_insert", "AISI 1018 · Vc 149.6 · fz 0.06 · ap 2 · ae 25 % (2,500 rpm)", "Karandikar·Schmitz·Smith 2021 (ap·fz·ae 는 같은 그룹 자료)", LC, 149.6, 0.06, 2.0 / d19, 0.25, None, Dry, 0.3),
+        rc("kar2021_299", "kar_1018_insert", "AISI 1018 · Vc 299.2 (5,000 rpm)", "Karandikar·Schmitz·Smith 2021", LC, 299.2, 0.06, 2.0 / d19, 0.25, None, Dry, 0.3),
         rc("tatar_ti", "tatar_r390", "Ti-6Al-4V · Vc 110 · h_max 0.05 · ap 1.5 · ae 25 % · 습식 · VB 0.2", "Tatar 외 2020 — 완전 요인 시험의 가운데 칸 (Vc 100~120, ae 10~70 %)", TI, 110.0, 0.05, 1.5 / 12.0, 0.25, Some(0.05), Flood, 0.2),
         rc("liu_ti_t1", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 60 · fz 0.1 · ap 2 · ae 0.2 mm (시험 1)", "Liu 외 2019", TI, 60.0, 0.1, 0.2, 0.02, None, Dry, 0.2),
         rc("liu_ti_t5", "liu_ti_em", "Ti-6Al-4V 건식 · Vc 130 · ae 0.4 mm (시험 5)", "Liu 외 2019", TI, 130.0, 0.1, 0.2, 0.04, None, Dry, 0.2),
