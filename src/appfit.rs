@@ -7,7 +7,8 @@
 //!    큰 여유각은 쐐기각(90° − 경사 − 여유)이 창의 가장 얇은 쐐기보다 얇아진 만큼만 약함으로 센다 (경사가 작으면 상쇄). 작은 여유각이
 //!    VB 를 빨리 키우는 몫은 마모 랜드 기하(`physics::flank_geometry_factor`)가 맡아 마모 배수에는 넣지 않는다 (구성인선·조도 배수에는 남김).
 //!  * 피삭재 경도 계수 h (Al 0.1 · CFRP 0.2 · 탄소강 0.4 · 합금강·스테인리스 0.6 · Ti 0.7 · Ni 1.0 · 고경도 1.5)로
-//!    마모 수명 배수 L = exp(−0.5·h·Σd_weak − 0.1·Σd_blunt) (0.02~1), 치핑 위험 배수 exp(1.5·h·Σd_weak),
+//!    마모 수명 배수 L = exp(−0.5·h·Σd_weak − 0.1·d_blunt(헬릭스)) (0.02~1) — 경사·날끝 반경의 무딘 쪽은 절삭 계수·계면 온도가 이미 마모율에
+//!    넣으므로 여기서 빼고, 여유각은 마모 랜드 기하가 맡는다 —, 치핑 위험 배수 exp(1.5·h·Σd_weak),
 //!    구성인선·응착 배수 1 + 0.5·β·Σd_blunt, 조도 배수 1 + β·Σd_blunt (β: Al 1.0 · CFRP 0.8 · 스테인리스 0.6 · Ti 0.4 · Ni·탄소강 0.3 · 그 밖 0.1).
 //!  * 날 수: 측면 가공 창보다 많으면 칩 배출이 나빠지고(연한 소재일수록), 슬롯에서 창보다 많으면 칩 막힘 → 파손 위험 ∝ (Z − Z_max)·ap/D.
 //!  * 헬릭스: 창 밖이면 마모·칩 배출이 조금 나빠지고, CFRP 에서 높은 헬릭스는 층간 박리(품질) 위험.
@@ -177,8 +178,14 @@ pub fn evaluate(tool: &ToolGeometry, wp: &WorkpieceProps, slotting: bool) -> App
 
 pub fn evaluate_with(tool: &ToolGeometry, wp: &WorkpieceProps, slotting: bool, ap_over_d: f64) -> AppFit {
     let g = WpGroup::of(wp);
-    let w = window(g);
+    let mut w = window(g);
     let hard = wp.hardness_hrc;
+    if g == WpGroup::Hardened {
+        // 고경도 창의 경사 −15~0° 는 58~62 HRC 자료다. 45~55 HRC 공구는 작은 양의 경사(+5 → 0°)를 쓰고, 소재 기본 경사
+        // (`WorkpieceProps::of` 의 8 − 0.5·(HRC − 40) — 52 HRC 2°)도 그 규칙이다. 상한을 같은 규칙으로 올려 기본 형상이 자기 창에서
+        // '날이 약함' 벌점을 받지 않게 한다 (예전: 52 HRC 기본 볼 엔드밀이 마모 ×1.35 · 치핑 ×2.5)
+        w.rake_deg.1 = w.rake_deg.1.max(8.0 - 0.5 * (hard - 40.0));
+    }
     let ball = tool.nose == ToolNose::Ball;
     let mut items: Vec<FitItem> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
@@ -278,7 +285,11 @@ pub fn evaluate_with(tool: &ToolGeometry, wp: &WorkpieceProps, slotting: bool, a
     }
     let sum_weak: f64 = items.iter().map(|i| i.d_weak).sum();
     let sum_blunt: f64 = items.iter().map(|i| i.d_blunt).sum();
-    let sum_blunt_wear: f64 = items.iter().filter(|i| i.key != "clearance").map(|i| i.d_blunt).sum();
+    // 무딘 쪽 마모 배수에는 물리 해석이 따로 계산하지 않는 항목(헬릭스 — 칩 배출·진입 충격)만 넣는다. 경사각이 작거나 날끝 반경이 크면 커지는
+    // 절삭력·발열은 절삭 계수(경사 → 전단각·kc, 날끝 반경 → kte·최소 칩)와 계면 온도가 이미 받아 마모율에 들어간다 — 같은 몫을 여기서 또 곱하면
+    // 두 번 센다 (예: Ti 에서 경사 4° 엔드밀 ×1.22, 경사 0° 인서트 ×1.11 가 덧붙었다 — 논문 공구가 자기 조건에서 받은 벌점).
+    // 여유각은 마모 랜드 기하(`physics::flank_geometry_factor`)가 맡는다. 무딘 쪽은 구성인선·조도 배수와 판정에는 그대로 남는다
+    let sum_blunt_wear: f64 = items.iter().filter(|i| i.key == "helix").map(|i| i.d_blunt).sum();
     let h = w.hardness;
     let mut wear = (0.5 * h * sum_weak + 0.1 * sum_blunt_wear).exp();
     let mut chip = (1.5 * h * sum_weak).exp();

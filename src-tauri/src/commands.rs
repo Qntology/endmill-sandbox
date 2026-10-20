@@ -80,6 +80,7 @@ fn workpiece_to_string(w: &WorkpieceMaterial) -> String {
     match w {
         WorkpieceMaterial::Aluminum => "알루미늄 합금".into(),
         WorkpieceMaterial::CarbonSteel => "탄소강".into(),
+        WorkpieceMaterial::LowCarbonSteel => "저탄소강".into(),
         WorkpieceMaterial::AlloySteel { hardness_hrc } => format!("합금강 (HRC {})", hardness_hrc),
         WorkpieceMaterial::StainlessSteel => "스테인리스강".into(),
         WorkpieceMaterial::Titanium => "티타늄 합금".into(),

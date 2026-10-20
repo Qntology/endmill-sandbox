@@ -130,6 +130,11 @@ pub struct WorkpieceProps {
     /// 벽 정삭을 상향(업)밀링으로 — 제조사가 그 소재에 상향을 지시할 때만 (없으면 하향: Sandvik · Iscar · Harvey 의 첫 선택)
     #[serde(default)]
     pub finish_up_milling: bool,
+    /// 마모 상수(기준 상태 수명 앵커)를 빌려 오는 같은 공구–피삭재 화학계의 소재. 저탄소강은 C45 와 같은 Fe 기지 · Fe₃C 경질상 · WC–Co 공구라
+    /// Usui 마모식의 상수가 같다고 보고, 기준 상태(속도·칩·냉각·수명 앵커)를 C45 로 둔다 — 두 소재의 수명 차이는 앵커가 아니라
+    /// 소재 물성(유동 응력 → 계면 온도, 시멘타이트 체적 → 연삭)이 만든다 (`reference_setup`). 없으면 자기 기준 상태
+    #[serde(default)]
+    pub wear_anchor: Option<WorkpieceMaterial>,
 }
 
 fn default_kr_floor() -> f64 {
@@ -286,6 +291,7 @@ impl WorkpieceProps {
             slot_ap_ratio: None,
             ramp_deg: None,
             finish_up_milling: false,
+            wear_anchor: None,
         };
         match m {
             WorkpieceMaterial::Aluminum => WorkpieceProps {
@@ -367,6 +373,33 @@ impl WorkpieceProps {
                 ramp_deg: Some(1.2),
                 ..base("carbon_steel", "탄소강 (S45C)")
             },
+            WorkpieceMaterial::LowCarbonSteel => {
+                let anchor = Self::of(&WorkpieceMaterial::CarbonSteel);
+                WorkpieceProps {
+                    density: 7870.0,
+                    // 명목값: HRC 는 20 아래에서 정의되지 않는다 (AISI 1018 냉간 인발 126~143 HB, C45 의 15 는 약 190 HB)
+                    hardness_hrc: 10.0,
+                    // Sandvik 재질 그룹 P1.1 (비합금강 C ≤ 0.25 %) kc1 1500 N/mm² · mc 0.25 — C45 가 속한 P1.2 (C 0.25~0.55 %) 는 1600
+                    kc11: 1500.0,
+                    mc: 0.25,
+                    // AISI 1018 Johnson-Cook (Buchely 외 2019, J. Eng. Mater. Technol. 141:021012 — 표 5, 기준 변형률 속도 0.63 /s, Tm 1793 K).
+                    // 인장(저변형) 맞춤이라 냉간 가공재의 A 가 크다: 절삭 변형률에서 유동 응력이 C45 의 약 1.09배인데 Kienzle 비는 0.90~0.94 —
+                    // JC 는 전단면 온도·연화 비에만 쓰이고 저탄소 대용(Johnson·Cook 1983 의 1006 강)으로 바꿔도 1018 칸 수명이 2 % 안에서 같다
+                    jc: Some(JohnsonCook { a: 738.76, b: 392.78, n: 0.6145, c: 0.0233, m: 1.1433, t_melt_c: 1519.85, rate_ref: 0.6297 }),
+                    melt_c: 1520.0,
+                    // 페라이트 기지 (1018 냉간 인발 126 HB ≈ 131 HV)
+                    matrix_hv: 135.0,
+                    // 경질상은 펄라이트 속 시멘타이트 Fe₃C: 체적 분율 ≈ C 질량 % / 6.67 × (ρ 페라이트/ρ Fe₃C 1.03) — 0.18 % C → 0.028 (C45 의 0.07 과 같은 식)
+                    hard_phase_frac: 0.028,
+                    // 마모 상수는 C45 의 기준 상태에 묶는다 (`wear_anchor`) — 수명 앵커·기구 몫도 C45 것
+                    ref_life_min: anchor.ref_life_min,
+                    mech_shares: anchor.mech_shares,
+                    wear_anchor: Some(WorkpieceMaterial::CarbonSteel),
+                    slot_ap_ratio: anchor.slot_ap_ratio,
+                    ramp_deg: anchor.ramp_deg,
+                    ..base("low_carbon_steel", "저탄소강 (S15C·AISI 1018)")
+                }
+            }
             WorkpieceMaterial::AlloySteel { hardness_hrc } => {
                 let h = *hardness_hrc as f64;
                 // Sandvik MC 표 (h = 1 mm, 경사 0°): 50 HRC 3090, 55 HRC 3690, 60 HRC 4330, 63 HRC 4750 (65 HRC 는 외삽 4950).
@@ -528,7 +561,13 @@ impl WorkpieceProps {
                 mc: 0.23,
                 rake_deg: 10.0,
                 adhesion: 1.1,
-                wear_activation_k: 6500.0,
+                // 마모 활성화 두 영역 (`tribology::arrhenius`): 550 °C 아래 2,500 K · 위 16,000 K. 예전 값(850 °C 아래 6,500 K · 위 20,000 K)은 강의
+                // Usui 구조를 빌린 것으로, Ti 수명의 속도 기울기가 고온에서 너무 둔하고 (Tatar −2.4 · Liu −1.7, 실측 −4.0 · −3.5) 저온 플러드에서 너무
+                // 가팔랐다 (Luo −3.0, 실측 −1.1). 위 영역은 ETH 2025 (MM Science Journal, Ti-6Al-4V 무코팅 WC-6Co 건식 직교 Vc 150~300)의 Usui 플랭크
+                // C₂ 15,909 K (물리 기반 맞춤, 다항 맞춤 16,978 K · Ti 속 C 확산 16,104 K), 아래 영역은 같은 논문이 정리한 문헌 범위 2,500~20,000 K 의
+                // 아래 끝 (저속의 응착·마찰 지배). 전환 550 °C 는 이 모델의 계면 온도 눈금에서 기울기가 갈리는 자리 (Luo 430~490 °C 대 Tatar 540~570 °C)라
+                // 기울기 자료에서 정한 상수다 — 500 / 600 °C 로 바꿔 본 결과는 `docs/literature-benchmark.md` 8장
+                wear_activation_k: 2500.0,
                 thermal_factor: 0.7,
                 melt_c: 1650.0,
                 bue_range_c: None,
@@ -558,8 +597,8 @@ impl WorkpieceProps {
                 matrix_hv: 340.0,
                 hard_phase_hv: 0.0,
                 hard_phase_frac: 0.0,
-                wear_activation_high_k: 20000.0,
-                wear_transition_c: 850.0,
+                wear_activation_high_k: 16000.0,
+                wear_transition_c: 550.0,
                 mech_shares: [0.10, 0.45, 0.40, 0.05],
                 lift_factor: 1.3,
                 // Krc/Ktc: Ø12 4날 초경 엔드밀 실측 0.5 (Ktc 2000·Krc 1000 N/mm², Kte 41·Kre 77 N/mm — Li 외 2014, J. Vibroeng. 16:2657, Ti6Al4V), TC4 볼 실측 0.37
@@ -2068,6 +2107,11 @@ pub struct WearReference {
 
 fn reference_setup(ctx: &CutContext) -> (CutContext, f64, Engagement, f64) {
     let mut rctx = ctx.clone();
+    // 같은 화학계 소재의 마모 상수를 쓰는 소재 (저탄소강 → C45): 기준 상태를 앵커 소재로 둔다 — 기준 대비 기구 배수가 두 소재의
+    // 물성 차이(계면 온도·경질상)를 그대로 담는다
+    if let Some(anchor) = ctx.wp.wear_anchor.as_ref() {
+        rctx.wp = WorkpieceProps::of(anchor);
+    }
     rctx.env = ShopEnvironment::standard();
     rctx.coolant = CoolantState::from_config_env(&rctx.wp.reference_coolant(), &rctx.env);
     rctx.calib = Calibration::default();
@@ -2106,6 +2150,19 @@ pub fn reference_state(ctx: &CutContext) -> WearReference {
         raw: raw.map(|v| v.max(1e-12)),
         shares: tribology::normalized_shares(&rctx.wp.mech_shares),
     }
+}
+
+/// 기준 상태의 열 해석 (진단용 — `examples/bench_probe`). `coolant` 를 주면 기준 상태의 냉각만 바꿔 본다.
+/// 돌려주는 값: (열 해석, fz, 물림, 회전수, Vc)
+pub fn reference_thermal(ctx: &CutContext, coolant: Option<&CoolantConfig>) -> (ThermalResult, f64, Engagement, f64, f64) {
+    let (mut rctx, fz, eng, rpm) = reference_setup(ctx);
+    if let Some(c) = coolant {
+        rctx.coolant = CoolantState::from_config_env(c, &rctx.env);
+    }
+    let co = cutting_coeffs(&rctx);
+    let f = mechanistic_forces(&rctx.tool, &co, fz, rpm, &eng, 48, 8);
+    let th = thermal(&rctx, &co, &f, rctx.wp.ref_vc, rpm, &eng, 1.0, 0.03);
+    (th, fz, eng, rpm, rctx.wp.ref_vc)
 }
 
 pub fn substrate_softening(ctx: &CutContext, t_c: f64) -> f64 {
@@ -2230,7 +2287,7 @@ fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: 
     let b = crate::pairref::breakin(ctx, vce);
     let vb_b = b.vb_mm;
     let tau = (b.tau_min * kappa.max(1e-6)).max(1e-9);
-    let ds = (linear / 150.0).max(1e-9);
+    let ds_full = (linear / 150.0).max(1e-9);
     let mut out = RawTrajectory {
         s: Vec::new(),
         vb: Vec::new(),
@@ -2266,9 +2323,13 @@ fn trajectory_raw(ctx: &CutContext, co: &CuttingCoeffs, fz: f64, rpm: f64, eng: 
                 out.phase3_s = Some(s);
             }
         }
-        let next = vb + rate * ds;
+        // 길들이기 항은 걸음마다 정확히 적분하고(지수 항의 걸음 안 증가분), 길들이기 구간(4τ)은 τ/4 이하 걸음으로 걷는다. 예전에는
+        // 고정 걸음(선형 수명/150)의 앞쪽 오일러였다 — 수명이 긴 칸은 걸음이 시상수보다 길어 첫 걸음에 길들이기 크기의 몇 배가 쌓였다
+        // (52 HRC 볼 정삭 PHM2010 칸: 길들이기 37 µm · τ 0.22 에 걸음 1.18 → 첫 걸음 198 µm, 판정 VB 0.2 mm 에 거의 닿음)
+        let ds = if s < 4.0 * tau { ds_full.min(0.25 * tau) } else { ds_full };
+        let next = vb + steady * ds + vb_b * ((-s / tau).exp() - (-(s + ds) / tau).exp());
         if life.is_none() && next >= limit {
-            life = Some(s + (limit - vb) / rate.max(1e-12));
+            life = Some(s + ds * (limit - vb) / (next - vb).max(1e-12));
         }
         vb = next;
         s += ds;

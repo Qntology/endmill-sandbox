@@ -275,7 +275,7 @@ cross-check line in one file), `wear_logs\` (the job CSV/JSON of this run, also 
 | 14 | tool × material N:N matrix — 8 built-in tools × 8 use cases on `MATRIX_PATTERNS` (default rect_profile, pocket_zigzag, helical_pocket) with the physical check `pairmatrix::check` (`[MATRIX-CHECK]`: finite values, no mm/min wear after coating break-through, temperature and VB bounds, the fit cap, diamond/DLC on Fe/Ti/Ni and HSS on 58 HRC judged unsuitable, intended pairs not unsuitable). Any calculation defect fails the step |
 | 15 | ML ops on the GPU backend against the CPU (`tests/gpu_backend.rs`: attention, norms, RoPE, SigLIP patch conv, tiny ModernBERT, matmul time) — skipped on cpu |
 | 16 | Vulkan shader-path parity (`tests/vulkan_backend.rs`) — vulkan only |
-| 17 | literature benchmark — the tools, materials and cutting conditions of the cited papers in the sandbox data, 13 paper tools + 8 built-in tools × 16 paper conditions, 31 comparisons with what the papers measured (`tests/literature_benchmark.rs`, `[BENCH]` lines; see [docs/literature-benchmark.md](docs/literature-benchmark.md)) |
+| 17 | literature benchmark — the tools, materials and cutting conditions of the cited papers in the sandbox data, 30 paper tools + 8 built-in tools × 43 paper conditions, 73 comparisons with what the papers measured (`tests/literature_benchmark.rs`, `[BENCH]` lines; see [docs/literature-benchmark.md](docs/literature-benchmark.md)) |
 
 The cutting simulation runs on the CPU for every backend, so steps 02–14 and 17 must give the same results everywhere; the
 backend only changes the ML parts. Options: `QUICK=1` (skip steps 03, 13, 14), `ONLY=04,11`, `LEAN_LINK=1` (link this
@@ -370,6 +370,11 @@ that have no direct measurement behind them (`pair_reference_low_confidence`).
 | CFRP reference life (AlTiN reference tool, VB 0.2 mm) | 60 min | 5 min | TiAlN in CFRP milling 0.67–1.3 µm VBmax per metre of edge contact → 3–6 min (Ozkan 2020); PVD coatings gone from the edge within ~1 min (Wang et al. 2013); CVD-diamond routers 5–18 min (Hamedanianpour 2013) — the diamond cell was 120 min |
 | CFRP temperature limit (tool-side interface) | 180 °C (resin Tg) | 350 °C | Tg 150–212 °C is a machined-surface value; clean cuts at 300 °C tool-side with a new tool, resin carbonised at 475 °C with a worn one (Delahaigue 2017), resin burning from 315 °C (Kerrigan & O'Donnell 2016) |
 | Carbon-coating friction once oxidised/dissolved | × (1 + over + 2·dissolution), up to ×4 | × (1 + 0.12·max(over, dissolution)), as other non-protective coatings | on steel the coating factor is already 1.0 (coatings change cutting forces 0–6 %); the old ×4 drove a temperature feedback (diamond/DLC on 30 HRC steel 1,046–1,052 °C vs ~600 °C for PVD tools) |
+| Low-carbon steel (AISI 1018 · S15C · SS400) | cut as C45 | own material: kc1.1 1500 / mc 0.25 (Sandvik P1.1), cementite fraction 0.028, ferrite 135 HV, Vc_ref 220 m/min, Johnson–Cook of 1018 (Buchely 2019); wear constants and life anchor taken from C45 (`wear_anchor`) | same Fe / Fe₃C / WC–Co tribosystem; the seven Karandikar 1018 lives went from 0.30–0.61 to 0.45–1.01 of the measured value with the material alone, 0.52–1.10 together with the application-fit fix below |
+| Coating oxidation onset | logistic in temperature (45 K wide — 10 % left 100 K below the onset) | logistic in 1/T with Q/R 18,800 K | TiN film parabolic oxidation 156.6 kJ/mol (400–700 °C); WC–Co oxidation onset 631 °C |
+| Ti-6Al-4V wear activation | 6,500 K below 850 °C, 20,000 K above | 2,500 K below 550 °C, 16,000 K above | ETH 2025 Usui flank constant 15,909 K for Ti-6Al-4V / WC-6Co; literature Ti range 2,500–20,000 K; the slope change between Luo (430–490 °C, −1.1) and Tatar (540–570 °C, −4.0) |
+| Break-in in the wear trajectory | explicit Euler with steps of linear life / 150 | break-in term integrated exactly per step, steps ≤ τ/4 during 4τ | long-life cells stepped over the break-in time constant and piled up several break-ins in one step (PHM2010 cell: 198 µm instead of 37 µm) |
+| Application-fit wear multiplier | exp(0.5·h·Σd_weak + 0.1·Σd_blunt) incl. rake and edge radius | blunt side counts only the helix; hardened rake window upper bound follows the default rake rule 8 − 0.5·(HRC − 40) | a small rake or a large edge radius already raises kc, kte and the interface temperature; the 52 HRC default ball was penalised by its own window |
 
 Interface temperatures of the built-in presets against bands built from published measurements (dry): Al roughing
 262 °C (180–350), Al finishing Vc 300 281 °C (220–380; it used to be 202 °C, colder than Vc 165), Ti-6Al-4V 524 °C
@@ -568,23 +573,42 @@ pocket for 26 minutes past its limit. Every cutting step now runs a tool-life mo
 
 ### Literature Benchmark — paper tools × paper conditions (`src/benchmark.rs`)
 
-* The tools, workpiece materials and cutting conditions of the cited papers (Karandikar et al. 2013/2014/2021 AISI 1018,
-  Tatar et al. 2020 · Liu et al. 2019 · Matuszak et al. 2023 · Li et al. 2014 Ti-6Al-4V, Grigoriev et al. 2020 AlCuMg2 / 41Cr4,
-  Hovsepian et al. 2006 Al7010, Dewes et al. 1999 H13 52 HRC) are written as sandbox tool settings and workpiece materials.
-  13 paper tools + 8 built-in tools × 16 paper conditions = 336 cells, compared with the measured values in 31 comparisons:
-  18 absolute (life, removed volume, interface temperature, mean force, radial ratio, Ra), 6 ratios inside one paper (coating
-  gain, condition change — unknown anchors cancel) and 7 sensitivities (Taylor slope d ln T / d ln Vc, radial-depth slope,
-  temperature-speed slope). Bands: life ×/÷2 (×/÷3 where the tool is assumed), forces ±25 % (Budak et al. 1996).
-* Mismatches were traced to physics, never fitted per cell: the shear-zone temperature (Thermal Model), adhesion activation
-  (Wear Model), the flank-land geometry and a wedge-angle (90° − γ − α) fit rule instead of clearance alone (`appfit`), and the
-  rake rule (Force Model). In band 13 → 15 / 31, median absolute-life error ×8.6 → ×3.0, the three 1018 Taylor slopes
-  −1.80 / −2.46 / −1.92 → −2.04 / −2.39 / −2.18 (measured −2.15 / −2.80 / −2.69). Changes that matched one comparison and
-  broke others were reverted (a Ti activation constant of 12,000 K, a Loewen–Shaw flank-heat partition) and are documented.
-* Open gaps (kept, not forced): Ti speed sensitivity (−2.4 vs −3.3…−4), aluminium light-cut life and DLC gain, thin-chip
-  41Cr4 life, the speed exponent of kc (−0.01 vs −0.18), hardened-steel Taylor slope. Paper values were read from abstracts
-  and excerpts; tool details the papers do not give are marked as assumptions with lower confidence.
-* Run: `cargo run --example lit_benchmark -- <dir>` (CSV/JSON: comparisons, all cells), test `tests/literature_benchmark.rs`
-  (test step 17). Full tables and reasoning: [docs/literature-benchmark.md](docs/literature-benchmark.md).
+* The tools, workpiece materials and cutting conditions of the cited papers are written as sandbox tool settings and workpiece
+  materials and run through the nominal analysis: AISI 1018 (Karandikar et al. 2012–2021), Ti-6Al-4V (Tatar 2020, Liu 2019,
+  Matuszak 2023, Luo 2017, Uddin 2017, Li 2014, Gross 2019, Mohruni 2007, Sharif 2005, Shokrani 2016, Denkena 2022),
+  AlCuMg2 / 41Cr4 (Grigoriev 2020), Al7010 with PM-HSS (Hovsepian 2006), 52 HRC (Dewes 1999, PHM Society 2010 data set),
+  316L / SUS304 (Tymczyszyn 2025, Grguraš 2019, Ohtsuka 2011/2012), IN718 (Grguraš 2019, Hisam 2024, Denkena 2022, Hronek,
+  Vavruska 2022) and the Ti force-speed data of Klippel et al. 2024. 30 paper tools + 8 built-in tools × 43 paper conditions =
+  1,634 cells, compared with the measured values in 73 comparisons: 46 absolute (life, VB after t minutes, interface
+  temperature, mean force, radial ratio, Ra), 12 ratios inside one paper (coating, coolant, rake gain — unknown anchors cancel)
+  and 15 sensitivities (Taylor slope d ln T / d ln Vc, radial-depth and feed slopes, temperature-speed and force-speed slopes).
+  Bands: life ×/÷2 (×/÷3 where the tool is assumed), forces ±25 % (Budak et al. 1996). Paper values were re-read from the full
+  texts and tables in the second pass (tool corrections: Liu Ø12 rake 4° R0.5, Matuszak Ø20 2-insert, Hovsepian PM-HSS
+  fz 0.165 · ae 2, Dewes Ø6 TiCN ball, Tatar notch criterion).
+* Mismatches were traced to physics, never fitted per cell. First pass: shear-zone temperature, adhesion activation,
+  flank-land geometry and wedge-angle fit rule, rake rule. Second pass: a low-carbon steel material (`LowCarbonSteel`,
+  AISI 1018 · S15C · SS400 — wear constants tied to C45 through `wear_anchor`, no new life anchor), an Arrhenius tail for
+  coating oxidation, a two-regime Ti wear activation (2,500 K below 550 °C, 16,000 K above — the ETH 2025 Usui flank
+  constant), exact integration of the break-in term in the wear trajectory (fixed Euler steps longer than the break-in time
+  constant piled up several break-ins in long-life cells) and removal of a double count in the application-fit wear
+  multiplier (rake / edge-radius effects are already in the forces and the interface temperature). In band 27 → 33 / 73,
+  life-slope error median 0.85 → 0.43; all seven AISI 1018 lives and four Taylor slopes in band; Ti speed slopes
+  Tatar −2.43 → −3.92, Liu −1.65 → −2.85, Mohruni −2.40 → −3.76 (measured −4.0, −3.5, −3.95 — Mohruni was not used to set
+  any constant).
+* The life anchors were checked against independent measurements near each reference state instead of being refitted to
+  the benchmark: Ti-6Al-4V 16.8–33 min measured at Vc 70–130 with heavier radial engagement than the reference state
+  (≈ 20–60 min at the reference state; anchor 35 min), IN718 27–46 min (≈ 30–60 min; the 25 min anchor is the conservative
+  lower end), stainless ≈ 30–90 min (45 min) — all kept. These columns were not used to set any constant, so they are an
+  independent check: Ti cells near the reference state come out at 0.52–0.80 of the measured life.
+* Open gaps (kept, not forced): Ti far from the reference state (high speed, very light radial engagement — candidate:
+  engagement-time edge heating), the low-temperature flood speed slope of Ti (Luo −2.53 vs −1.13 measured), chip-load (feed)
+  effect at low speed, uncoated IN718 at light engagement, 316L dry vs wet
+  (≥ 14.5× measured), aluminium DLC gain, PHM2010 steady wear, Ti force-speed slope. Each is documented with its physical
+  reason and what measurement would settle it.
+* Run: `cargo run --example lit_benchmark -- <dir>` (CSV/JSON: comparisons, all cells), inspect one cell with
+  `cargo run --example bench_probe -- <tool> <cut> [1.2 fz:2 ae:0.5 cool:flood]`, test `tests/literature_benchmark.rs`
+  (test step 17). Full tables and reasoning: [docs/literature-benchmark.md](docs/literature-benchmark.md), research log:
+  [docs/literature-benchmark-sources.md](docs/literature-benchmark-sources.md).
 
 ### Physics Cross-Check (MPM) — optional, off by default, not experimentally validated
 

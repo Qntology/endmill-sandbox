@@ -8,6 +8,8 @@ pub enum WorkpieceMaterial {
     Aluminum,
     /// 일반 탄소강 (S45C 등)
     CarbonSteel,
+    /// 저탄소강·연강 (AISI 1018 · S15C · SS400 등, C ≤ 0.25 %) — 페라이트가 대부분이라 C45 보다 무르고 시멘타이트가 적다
+    LowCarbonSteel,
     /// 합금강 / 금형강 (SKD11, HRC 50~60)
     AlloySteel { hardness_hrc: u8 },
     /// 스테인리스강
@@ -27,6 +29,9 @@ impl WorkpieceMaterial {
         match self {
             Self::Aluminum => 300.0,
             Self::CarbonSteel => 180.0,
+            // 같은 공구 수명을 주는 카탈로그 속도의 비: ISO P 그룹 1 (C < 0.25 %, 소둔) 820~980 SFM 대 그룹 2 (C ≥ 0.25 %) 660~820 SFM →
+            // 중간값 비 1.22 (ISCAR Fast Feed 카탈로그 2022) × C45 의 180
+            Self::LowCarbonSteel => 220.0,
             Self::AlloySteel { hardness_hrc } => match hardness_hrc {
                 0..=30 => 150.0,
                 31..=45 => 110.0,
@@ -58,6 +63,7 @@ impl WorkpieceMaterial {
         match self {
             Self::Aluminum => "aluminum".into(),
             Self::CarbonSteel => "carbon_steel".into(),
+            Self::LowCarbonSteel => "low_carbon_steel".into(),
             Self::AlloySteel { hardness_hrc } => format!("alloy_steel_hrc{}", hardness_hrc),
             Self::StainlessSteel => "stainless".into(),
             Self::Titanium => "titanium".into(),
@@ -71,6 +77,7 @@ impl WorkpieceMaterial {
         match self {
             Self::Aluminum => "aluminum",
             Self::CarbonSteel => "carbon_steel",
+            Self::LowCarbonSteel => "low_carbon_steel",
             Self::AlloySteel { .. } => "alloy_steel",
             Self::StainlessSteel => "stainless",
             Self::Titanium => "titanium",
