@@ -382,8 +382,10 @@ impl WorkpieceProps {
                     // Sandvik 재질 그룹 P1.1 (비합금강 C ≤ 0.25 %) kc1 1500 N/mm² · mc 0.25 — C45 가 속한 P1.2 (C 0.25~0.55 %) 는 1600
                     kc11: 1500.0,
                     mc: 0.25,
-                    // TODO-JC: 1018 Johnson-Cook 상수 (자료 확인 중) — 임시로 Johnson·Cook 1983 의 1006 강
-                    jc: Some(JohnsonCook::new(350.0, 275.0, 0.36, 0.022, 1.0, 1538.0)),
+                    // AISI 1018 Johnson-Cook (Buchely 외 2019, J. Eng. Mater. Technol. 141:021012 — 표 5, 기준 변형률 속도 0.63 /s, Tm 1793 K).
+                    // 인장(저변형) 맞춤이라 냉간 가공재의 A 가 크다: 절삭 변형률에서 유동 응력이 C45 의 약 1.09배인데 Kienzle 비는 0.90~0.94 —
+                    // JC 는 전단면 온도·연화 비에만 쓰이고 저탄소 대용(Johnson·Cook 1983 의 1006 강)으로 바꿔도 1018 칸 수명이 2 % 안에서 같다
+                    jc: Some(JohnsonCook { a: 738.76, b: 392.78, n: 0.6145, c: 0.0233, m: 1.1433, t_melt_c: 1519.85, rate_ref: 0.6297 }),
                     melt_c: 1520.0,
                     // 페라이트 기지 (1018 냉간 인발 126 HB ≈ 131 HV)
                     matrix_hv: 135.0,
