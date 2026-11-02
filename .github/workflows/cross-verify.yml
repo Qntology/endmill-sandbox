@@ -1,0 +1,244 @@
+# Linux · macOS · Windows 에서 테스트를 돌리는 CI. logis-center 의 cross-verify.yml 과 같은 구조다.
+#
+# GitHub 호스팅 러너에는 GPU 가 없어서 실제로 돌 수 있는 것만 돌린다.
+#   cpu            : 로컬과 같은 진입점(test_linux.sh cpu / test_cpu.bat)으로 전체 단계 실행
+#   vulkan (Linux) : lavapipe(소프트웨어 Vulkan, CPU 장치) — 빌드 + GPU↔CPU 대조 (15 · 16 단계)
+#   vulkan (macOS) : MoltenVK (macos-15, 가상 M1) — 빌드 + GPU↔CPU 대조 (15 · 16 단계)
+#   vulkan (Win)   : 빌드만 (러너에 소프트웨어 Vulkan ICD 가 없다) — "build only" 로 보고
+#   cuda / rocm    : 타입 검사만 (cargo check). 실행하지 않으며 실행 통과로 보고하지 않는다
+#   app            : src-tauri 타입 검사 (macOS · Windows). Linux 는 뺐다 — Tauri v1 이 쓰는 webkit2gtk-4.0 이
+#                    ubuntu-24.04 에 없고, 그것이 있는 ubuntu-22.04 이미지는 폐기 절차에 들어갔다
+# 절삭 시뮬레이션은 백엔드와 관계없이 CPU 계산이라 02~14 · 17 단계는 cpu 작업에서만 돌린다.
+# 실제 CUDA / ROCm / Windows GPU 실행은 그 GPU 가 달린 self-hosted 러너가 필요하다 (여기서는 다루지 않는다).
+name: cross-verify
+
+on:
+  # 어느 브랜치든 push 마다 전체 대상을 돌린다. 문서만 바뀐 push 는 돌리지 않는다.
+  # head 커밋 메시지의 `[skip ci]` 는 실행을 건너뛰고, `[targets: windows-cpu,mac-cpu]` 만 있는 줄은 그 대상만 돌린다
+  # (바뀌지 않은 대상을 다시 돌리지 않으려는 것). workflow_dispatch 도 같은 목록을 받는다.
+  push:
+    branches: ["**"]
+    paths-ignore: ["**/*.md", "docs/**"]
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "comma list of: mac-cpu, mac-vulkan, mac-app, linux-cpu, linux-vulkan, linux-cuda, linux-rocm, windows-cpu, windows-vulkan, windows-cuda, windows-rocm, windows-app (all = every one)"
+        default: "all"
+
+env:
+  # 모든 OS · 모든 실행에 같은 컴파일러. 올릴 때는 여기 한 곳만 고치면 캐시 키도 따라간다.
+  RUST_VERSION: "1.99.0"
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  # 디버그 정보를 빼야 시험 실행 파일 24개가 러너 디스크와 캐시에 들어간다
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # 시뮬레이션은 반복 계산이라 최적화 없는 빌드로는 너무 느리다. debug-assertions · 오버플로 검사는 그대로 켜져 있다
+  CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        shell: bash
+        env:
+          TARGETS: ${{ inputs.targets || '' }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          # 스크립트의 stdout = 행렬 (GITHUB_OUTPUT), stderr = 사람이 읽는 한 줄 (어느 쪽이든 주석으로 보인다)
+          python3 - > "$RUNNER_TEMP/plan.out" 2> "$RUNNER_TEMP/plan.err" <<'PY' || { echo "::error title=plan::$(cat "$RUNNER_TEMP/plan.err")"; exit 1; }
+          import json, os, re, sys
+          t = os.environ.get("TARGETS", "").strip()
+          if not t:
+              # 토큰만 있는 줄만 인정한다 (`[targets: ...]` 를 언급한 설명문이 대상을 고르면 안 된다). 여러 줄이면 마지막 줄.
+              found = re.findall(r"(?m)^[ \t]*\[targets:[ \t]*([^\]\n]+)\][ \t]*$", os.environ.get("COMMIT_MSG", ""))
+              t = found[-1] if found else "all"
+          t = t.replace(" ", "")
+          want = None if t == "all" else set(t.split(","))
+          inc = [
+            dict(name="mac-cpu", os="macos-15", kind="run", features=""),
+            dict(name="mac-vulkan", os="macos-15", kind="gpu", features="vulkan"),
+            dict(name="mac-app", os="macos-15", kind="app", features=""),
+            dict(name="linux-cpu", os="ubuntu-latest", kind="run", features=""),
+            dict(name="linux-vulkan", os="ubuntu-latest", kind="gpu", features="vulkan"),
+            dict(name="linux-cuda", os="ubuntu-latest", kind="cuda-check", features="cuda"),
+            dict(name="linux-rocm", os="ubuntu-latest", kind="check", features="rocm"),
+            dict(name="windows-cpu", os="windows-latest", kind="run", features=""),
+            dict(name="windows-vulkan", os="windows-latest", kind="build", features="vulkan"),
+            # CUDA 13 + VS 2026 (MSVC 14.51): build.bat 이 빌드하는 조합.
+            # sm_75 가 아니라 sm_80: candle-kernels 0.11.0 의 compatibility.cuh 는 __CUDA_ARCH__ < 800 에서 __hmax_nan 을
+            # 정의하는데 CUDA 13.2 헤더에도 이미 있어서 재정의 오류가 난다.
+            dict(name="windows-cuda", os="windows-latest", kind="cuda-check", features="cuda", cuda="13.2.0", cuda_cap="80"),
+            dict(name="windows-rocm", os="windows-latest", kind="check", features="rocm"),
+            dict(name="windows-app", os="windows-latest", kind="app", features=""),
+          ]
+          unknown = (want or set()) - {i["name"] for i in inc}
+          if unknown:
+              print("unknown targets: " + ",".join(sorted(unknown)) + "  (valid: " + ",".join(i["name"] for i in inc) + ")", file=sys.stderr)
+              sys.exit(1)
+          inc = [i for i in inc if want is None or i["name"] in want]
+          print("targets: " + ",".join(i["name"] for i in inc), file=sys.stderr)
+          print("matrix=" + json.dumps({"include": inc}))
+          PY
+          cat "$RUNNER_TEMP/plan.out" >> "$GITHUB_OUTPUT"
+          echo "::notice title=targets::$(cat "$RUNNER_TEMP/plan.err")"
+
+  cross:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    # 같은 브랜치에서 같은 대상이 다시 돌면 그 대상의 이전 작업만 취소한다 ([targets: ...] 밖의 대상은 끝까지 돈다)
+    concurrency:
+      group: cross-verify-${{ github.ref }}-${{ matrix.name }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      # rocm: 러너에 hipcc 가 없다. 빌드 스크립트가 빈 커널 이미지를 쓴다.
+      CANDLE_ROCM_SKIP_KERNEL_BUILD: "1"
+      # cuda: compute capability 를 알아낼 GPU 가 없어 작업마다 지정한다 (기본 sm_80, Ampere).
+      CUDA_COMPUTE_CAP: ${{ matrix.cuda_cap || '80' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      # 시험 실행 파일은 lancedb 를 정적으로 묶어 하나에 수백 MB 다. 그대로 캐시하면 작업 수 × 수 GB 로 저장소 한도(10 GB)를
+      # 넘겨 서로 밀어내므로, 의존성 산출물만 남기는 rust-cache 를 쓴다. 실패한 작업의 캐시도 저장한다.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+          workspaces: ${{ matrix.kind == 'app' && 'src-tauri -> target' || '. -> target' }}
+          cache-on-failure: true
+      - name: protoc (LanceDB build script)
+        run: |
+          case "$RUNNER_OS" in
+            Windows)
+              choco install protoc -y --no-progress
+              p="$(find /c/ProgramData/chocolatey -iname protoc.exe 2>/dev/null | head -1)"
+              [ -n "$p" ] || { echo "::error title=protoc::protoc.exe not found after choco install"; exit 1; }
+              echo "PROTOC=$(cygpath -w "$p")" >> "$GITHUB_ENV"   # 단계 사이에 PATH 가 갱신된다고 믿지 않는다
+              "$p" --version ;;
+            macOS)   brew install protobuf >/dev/null 2>&1 || brew install protobuf ;;
+            *)       sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler ;;
+          esac
+      - name: Cargo.lock matches Cargo.toml (warning only)
+        if: matrix.name == 'linux-cpu'
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null || \
+            echo "::warning title=Cargo.lock::Cargo.toml 과 맞지 않아 빠진 의존성은 실행마다 최신 버전으로 풀린다. 갱신한 Cargo.lock 을 커밋할 것"
+      - name: macOS — MoltenVK
+        if: matrix.name == 'mac-vulkan'
+        # candle 은 /opt/homebrew/lib 의 libvulkan.dylib 을 스스로 찾는다 (SIP 가 DYLD_* 를 지워도 된다)
+        run: |
+          brew install molten-vk vulkan-loader vulkan-tools >/dev/null 2>&1 || brew install molten-vk vulkan-loader vulkan-tools
+          echo "VK_ICD_FILENAMES=$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
+      - name: software Vulkan (lavapipe)
+        if: matrix.name == 'linux-vulkan'
+        run: |
+          sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools
+          icd="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+      - name: CUDA toolkit (apt nvcc for the kernel build; no GPU)
+        if: matrix.name == 'linux-cuda'
+        run: sudo apt-get install -y -qq nvidia-cuda-toolkit
+      - name: CUDA toolkit 13 (Windows; no GPU)
+        if: matrix.name == 'windows-cuda'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: ${{ matrix.cuda }}
+          method: network
+      - name: nvcc flags for CUDA 13 (CCCL needs the standard preprocessor; same as build.bat)
+        if: matrix.name == 'windows-cuda'
+        run: echo "NVCC_PREPEND_FLAGS=-Xcompiler /Zc:preprocessor" >> "$GITHUB_ENV"
+      - name: MSVC developer environment (nvcc needs cl.exe in PATH)
+        if: matrix.name == 'windows-cuda'
+        uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: Git for Windows link.exe shadows MSVC link.exe once the MSVC env is on PATH — move it away
+        if: matrix.name == 'windows-cuda'
+        run: |
+          if [ -f /usr/bin/link.exe ]; then mv /usr/bin/link.exe /usr/bin/link_git.exe; echo "moved Git link.exe"; fi
+          where.exe link
+      - name: NVCC_CCBIN = the cl.exe on PATH (cudaforge then passes -ccbin and -allow-unsupported-compiler)
+        if: matrix.name == 'windows-cuda'
+        run: |
+          cl_path="$(where.exe cl | head -1 | tr -d '\r')"
+          echo "cl.exe: $cl_path"
+          echo "NVCC_CCBIN=$cl_path" >> "$GITHUB_ENV"
+      - name: tauri build input (generate_context! needs ../dist)
+        if: matrix.kind == 'app'
+        run: mkdir -p dist && echo '<html></html>' > dist/index.html
+
+      - name: environment report
+        run: .github/scripts/env-report.sh
+
+      # ── run / gpu: 로컬과 같은 스크립트. 단계별 로그는 test_logs/<시각>_<백엔드>/ 에 남는다 ──
+      - name: full test run (test_linux.sh cpu)
+        if: matrix.kind == 'run' && runner.os != 'Windows'
+        timeout-minutes: 270
+        run: bash ./test_linux.sh cpu
+      - name: full test run (test_cpu.bat)
+        if: matrix.kind == 'run' && runner.os == 'Windows'
+        timeout-minutes: 270
+        shell: cmd
+        env:
+          NOPAUSE: "1"
+          # test_runner.bat 의 기본값 2 는 메모리 7 GB 기계 기준이다 (러너는 4 코어 16 GB)
+          CARGO_BUILD_JOBS: "4"
+        run: call test_cpu.bat
+      - name: GPU parity (test_linux.sh vulkan, steps 15-16)
+        if: matrix.kind == 'gpu'
+        timeout-minutes: 120
+        env:
+          ONLY: "15,16"
+        run: bash ./test_linux.sh vulkan
+      - name: publish test results
+        if: always() && (matrix.kind == 'run' || matrix.kind == 'gpu')
+        run: .github/scripts/publish-results.sh "${{ matrix.features || 'cpu' }}"
+
+      # ── build: 시험 실행 파일까지 빌드 ──
+      - name: build (cargo test --no-run)
+        if: matrix.kind == 'build'
+        timeout-minutes: 150
+        run: .github/scripts/cargo-step.sh build cargo test --no-default-features --features "${{ matrix.features }}" --no-run
+
+      # ── check / app: 타입 검사만 ──
+      - name: type check (cargo check — not executed)
+        if: matrix.kind == 'check' || matrix.kind == 'cuda-check'
+        timeout-minutes: 120
+        run: .github/scripts/cargo-step.sh check cargo check --no-default-features --features "${{ matrix.features }}" --all-targets
+      - name: app type check (src-tauri — not executed)
+        if: matrix.kind == 'app'
+        timeout-minutes: 120
+        run: .github/scripts/cargo-step.sh app cargo check --manifest-path src-tauri/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-logs-${{ matrix.name }}
+          path: test_logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # ── 이 작업이 무엇을 다뤘는지 그대로 적는다 (건너뛴 단계는 통과가 아니다) ──
+      - name: scope of this job
+        if: always()
+        run: |
+          case "${{ matrix.kind }}" in
+            run)        msg="전체 단계 실행 (GPU 대조 15 · 16 은 cpu 백엔드라 건너뜀). 실행 안 함: 실제 GPU" ;;
+            gpu)        msg="빌드 + GPU↔CPU 대조 (15 · 16 단계, 러너의 소프트웨어 / 가상 장치). 시뮬레이션 단계는 cpu 작업이 맡는다. 실행 안 함: 실제 GPU" ;;
+            build)      msg="빌드만. 실행 안 함: 모든 테스트 (러너에 소프트웨어 Vulkan 드라이버가 없다)" ;;
+            check)      msg="타입 검사만 (cargo check). 실행 안 함: 시험 실행 파일 빌드, 모든 테스트 (링크 · 실행할 GPU / SDK 가 없다)" ;;
+            cuda-check) msg="타입 검사 + 실제 nvcc 커널 빌드 (CUDA ${{ matrix.cuda || 'apt' }}, sm_${{ matrix.cuda_cap || '80' }}). 실행 안 함: 모든 테스트, GPU 위의 커널" ;;
+            app)        msg="src-tauri 타입 검사만 (cargo check). 실행 안 함: 앱 번들 빌드, 앱 실행" ;;
+          esac
+          echo "::notice title=scope ${{ matrix.name }}::$msg"
