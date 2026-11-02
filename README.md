@@ -310,7 +310,7 @@ notice says what was not run:
 | `windows-vulkan` | build only (no software Vulkan driver on the runner) |
 | `linux-cuda`, `windows-cuda` | type check with a real `nvcc` kernel build, nothing executed |
 | `linux-rocm`, `windows-rocm` | type check only, nothing executed |
-| `mac-app`, `windows-app` | type check of `src-tauri`. Not on Linux: Tauri v1 needs webkit2gtk-4.0, which ubuntu-24.04 no longer ships |
+| `mac-app`, `windows-app` | type check of `src-tauri`. Not on Linux: Tauri v1 needs webkit2gtk-4.0, which Ubuntu dropped after 22.04 |
 
 A line holding only `[targets: windows-cpu,mac-cpu]` in the head commit message runs just those targets, `[skip ci]` runs
 nothing, and the workflow can be started by hand with the same target list. Each job uploads `test_logs/` as the artifact

@@ -6,8 +6,8 @@
 #   vulkan (macOS) : MoltenVK (macos-15, 가상 M1) — 빌드 + GPU↔CPU 대조 (15 · 16 단계)
 #   vulkan (Win)   : 빌드만 (러너에 소프트웨어 Vulkan ICD 가 없다) — "build only" 로 보고
 #   cuda / rocm    : 타입 검사만 (cargo check). 실행하지 않으며 실행 통과로 보고하지 않는다
-#   app            : src-tauri 타입 검사 (macOS · Windows). Linux 는 뺐다 — Tauri v1 이 쓰는 webkit2gtk-4.0 이
-#                    ubuntu-24.04 에 없고, 그것이 있는 ubuntu-22.04 이미지는 폐기 절차에 들어갔다
+#   app            : src-tauri 타입 검사 (macOS · Windows). Linux 는 뺐다 — Tauri v1 이 쓰는 webkit2gtk-4.0 은
+#                    ubuntu-24.04 부터 없고 (ubuntu-latest 는 이미 26.04), 그것이 있는 ubuntu-22.04 이미지는 폐기 절차에 들어갔다
 # 절삭 시뮬레이션은 백엔드와 관계없이 CPU 계산이라 02~14 · 17 단계는 cpu 작업에서만 돌린다.
 # 실제 CUDA / ROCm / Windows GPU 실행은 그 GPU 가 달린 self-hosted 러너가 필요하다 (여기서는 다루지 않는다).
 name: cross-verify
@@ -108,7 +108,7 @@ jobs:
       # cuda: compute capability 를 알아낼 GPU 가 없어 작업마다 지정한다 (기본 sm_80, Ampere).
       CUDA_COMPUTE_CAP: ${{ matrix.cuda_cap || '80' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -222,7 +222,7 @@ jobs:
         timeout-minutes: 120
         run: .github/scripts/cargo-step.sh app cargo check --manifest-path src-tauri/Cargo.toml
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: test-logs-${{ matrix.name }}
