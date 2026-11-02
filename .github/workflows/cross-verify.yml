@@ -62,7 +62,7 @@ jobs:
           t = t.replace(" ", "")
           want = None if t == "all" else set(t.split(","))
           inc = [
-            dict(name="mac-cpu", os="macos-15", kind="run", features=""),
+            dict(name="mac-cpu", os="macos-26", kind="run", features=""),
             dict(name="mac-intel-cpu", os="macos-15-intel", kind="run", features=""),
             dict(name="mac-vulkan", os="macos-15", kind="gpu", features="vulkan"),
             dict(name="mac-app", os="macos-15", kind="app", features=""),
