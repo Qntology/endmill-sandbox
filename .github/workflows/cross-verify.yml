@@ -14,6 +14,7 @@ name: cross-verify
 
 on:
   # 어느 브랜치든 push 마다 전체 대상을 돌린다. 문서만 바뀐 push 는 돌리지 않는다.
+  # 빈 커밋도 경로 필터에 걸려 돌지 않는다. 그대로 다시 돌리려면 Actions 화면의 Re-run 이나 workflow_dispatch 를 쓴다.
   # head 커밋 메시지의 `[skip ci]` 는 실행을 건너뛰고, `[targets: windows-cpu,mac-cpu]` 만 있는 줄은 그 대상만 돌린다
   # (바뀌지 않은 대상을 다시 돌리지 않으려는 것). workflow_dispatch 도 같은 목록을 받는다.
   push:
