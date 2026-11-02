@@ -316,9 +316,10 @@ nothing, and the workflow can be started by hand with the same target list. Each
 `test-logs-<target>`. Tests build with `opt-level=1` and debug assertions on, without debug info.
 
 Since October 2026 GitHub has been short of macOS arm64 runners, most of all for `macos-15`, so the Apple Silicon targets use
-`macos-26`. A Mac job that still gets none ends cancelled with no steps run and the annotation "The job was not acquired
-by Runner". That is not a test result; use **Re-run failed jobs**. `mac-intel-cpu` (`macos-15-intel`) keeps a macOS result on
-those days, but says nothing about Apple Silicon.
+`macos-26` and `mac-app`, a type check that does not depend on the architecture, runs on Intel. A Mac job that gets no
+runner ends cancelled with no steps run and the annotation "The job was not acquired by Runner". That is not a test
+result; use **Re-run failed jobs**. `mac-intel-cpu` (`macos-15-intel`) keeps a macOS result on those days, but says nothing
+about Apple Silicon.
 
 ### Model Weights
 

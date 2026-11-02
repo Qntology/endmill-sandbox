@@ -11,9 +11,10 @@
 # 절삭 시뮬레이션은 백엔드와 관계없이 CPU 계산이라 02~14 · 17 단계는 cpu 작업에서만 돌린다.
 # 실제 CUDA / ROCm / Windows GPU 실행은 그 GPU 가 달린 self-hosted 러너가 필요하다 (여기서는 다루지 않는다).
 #
-# 2026-10 부터 호스팅 macOS arm64 러너가 모자란다. macos-15 는 이 저장소에서 6번 연속 러너를 받지 못했고 같은 시각 macos-26 은
-# 5분 만에 받아서, Apple Silicon 작업은 macos-26 에서 돌린다. 그래도 작업이 단계 하나 없이 cancelled 로 끝나면
-# ("The job was not acquired by Runner" 주석) 코드 문제가 아니므로 Actions 화면의 Re-run failed jobs 로 다시 돌린다.
+# 2026-10 부터 호스팅 macOS arm64 러너가 모자란다. macos-15 는 이 저장소에서 한 번도 러너를 받지 못했고 macos-26 은 받을 때도
+# 못 받을 때도 있어서, Apple Silicon 작업은 macos-26 에서 돌리고 아키텍처를 타지 않는 mac-app 은 러너가 잘 잡히는 Intel 에서 돌린다.
+# 작업이 단계 하나 없이 cancelled 로 끝나면 ("The job was not acquired by Runner" 주석) 코드 문제가 아니므로
+# Actions 화면의 Re-run failed jobs 로 다시 돌린다.
 # mac-intel-cpu (x86_64) 는 그때도 macOS 결과가 남도록 둔 것이다. Apple Silicon 에서 돈다는 증거는 아니다.
 name: cross-verify
 
@@ -66,7 +67,7 @@ jobs:
             dict(name="mac-cpu", os="macos-26", kind="run", features=""),
             dict(name="mac-intel-cpu", os="macos-15-intel", kind="run", features=""),
             dict(name="mac-vulkan", os="macos-26", kind="gpu", features="vulkan"),
-            dict(name="mac-app", os="macos-26", kind="app", features=""),
+            dict(name="mac-app", os="macos-15-intel", kind="app", features=""),
             dict(name="linux-cpu", os="ubuntu-latest", kind="run", features=""),
             dict(name="linux-vulkan", os="ubuntu-latest", kind="gpu", features="vulkan"),
             dict(name="linux-cuda", os="ubuntu-latest", kind="cuda-check", features="cuda"),
