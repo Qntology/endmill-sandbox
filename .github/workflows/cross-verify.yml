@@ -3,7 +3,8 @@
 # GitHub 호스팅 러너에는 GPU 가 없어서 실제로 돌 수 있는 것만 돌린다.
 #   cpu            : 로컬과 같은 진입점(test_linux.sh cpu / test_cpu.bat)으로 전체 단계 실행
 #   vulkan (Linux) : lavapipe(소프트웨어 Vulkan, CPU 장치) — 빌드 + GPU↔CPU 대조 (15 · 16 단계)
-#   vulkan (macOS) : MoltenVK (macos-26 가상 M1, macos-15-intel) — 빌드 + GPU↔CPU 대조 (15 · 16 단계)
+#   vulkan (macOS) : MoltenVK (macos-26, 가상 M1) — 빌드 + GPU↔CPU 대조 (15 · 16 단계)
+#                    Intel 러너는 쓰지 않는다: 가상 Metal 2 위의 MoltenVK 는 첫 Vulkan 호출에서 프로세스가 SIGABRT 로 죽는다
 #   vulkan (Win)   : 빌드만 (러너에 소프트웨어 Vulkan ICD 가 없다) — "build only" 로 보고
 #   cuda / rocm    : 타입 검사만 (cargo check). 실행하지 않으며 실행 통과로 보고하지 않는다
 #   app            : src-tauri 타입 검사 (macOS · Windows). Linux 는 뺐다 — Tauri v1 이 쓰는 webkit2gtk-4.0 은
@@ -27,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       targets:
-        description: "comma list of: mac-cpu, mac-intel-cpu, mac-vulkan, mac-intel-vulkan, mac-app, linux-cpu, linux-vulkan, linux-cuda, linux-rocm, windows-cpu, windows-vulkan, windows-cuda, windows-rocm, windows-app (all = every one)"
+        description: "comma list of: mac-cpu, mac-intel-cpu, mac-vulkan, mac-app, linux-cpu, linux-vulkan, linux-cuda, linux-rocm, windows-cpu, windows-vulkan, windows-cuda, windows-rocm, windows-app (all = every one)"
         default: "all"
 
 env:
@@ -67,7 +68,6 @@ jobs:
             dict(name="mac-cpu", os="macos-26", kind="run", features=""),
             dict(name="mac-intel-cpu", os="macos-15-intel", kind="run", features=""),
             dict(name="mac-vulkan", os="macos-26", kind="gpu", features="vulkan"),
-            dict(name="mac-intel-vulkan", os="macos-15-intel", kind="gpu", features="vulkan"),
             dict(name="mac-app", os="macos-15-intel", kind="app", features=""),
             dict(name="linux-cpu", os="ubuntu-latest", kind="run", features=""),
             dict(name="linux-vulkan", os="ubuntu-latest", kind="gpu", features="vulkan"),
