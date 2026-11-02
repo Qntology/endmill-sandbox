@@ -10,20 +10,22 @@
 #                    ubuntu-24.04 부터 없고 (ubuntu-latest 는 이미 26.04), 그것이 있는 ubuntu-22.04 이미지는 폐기 절차에 들어갔다
 # 절삭 시뮬레이션은 백엔드와 관계없이 CPU 계산이라 02~14 · 17 단계는 cpu 작업에서만 돌린다.
 # 실제 CUDA / ROCm / Windows GPU 실행은 그 GPU 가 달린 self-hosted 러너가 필요하다 (여기서는 다루지 않는다).
+#
+# 2026-10 부터 호스팅 macOS arm64 러너가 모자라, Mac 작업이 단계 하나 없이 cancelled 로 끝나는 일이 잦다
+# ("The job was not acquired by Runner" 주석). 코드 문제가 아니므로 Actions 화면의 Re-run failed jobs 로 다시 돌린다.
+# mac-intel-cpu (x86_64) 는 그때도 macOS 결과가 남도록 둔 것이다. Apple Silicon 에서 돈다는 증거는 아니다.
 name: cross-verify
 
 on:
-  # 어느 브랜치든 push 마다 전체 대상을 돌린다. 문서만 바뀐 push 는 돌리지 않는다.
-  # 빈 커밋도 경로 필터에 걸려 돌지 않는다. 그대로 다시 돌리려면 Actions 화면의 Re-run 이나 workflow_dispatch 를 쓴다.
-  # head 커밋 메시지의 `[skip ci]` 는 실행을 건너뛰고, `[targets: windows-cpu,mac-cpu]` 만 있는 줄은 그 대상만 돌린다
-  # (바뀌지 않은 대상을 다시 돌리지 않으려는 것). workflow_dispatch 도 같은 목록을 받는다.
+  # 어느 브랜치든 push 마다 전체 대상을 돌린다.
+  # head 커밋 메시지의 `[skip ci]` 는 실행을 건너뛰고 (문서만 고친 커밋 등), `[targets: windows-cpu,mac-cpu]` 만 있는 줄은
+  # 그 대상만 돌린다 (바뀌지 않은 대상을 다시 돌리지 않으려는 것). workflow_dispatch 도 같은 목록을 받는다.
   push:
     branches: ["**"]
-    paths-ignore: ["**/*.md", "docs/**"]
   workflow_dispatch:
     inputs:
       targets:
-        description: "comma list of: mac-cpu, mac-vulkan, mac-app, linux-cpu, linux-vulkan, linux-cuda, linux-rocm, windows-cpu, windows-vulkan, windows-cuda, windows-rocm, windows-app (all = every one)"
+        description: "comma list of: mac-cpu, mac-intel-cpu, mac-vulkan, mac-app, linux-cpu, linux-vulkan, linux-cuda, linux-rocm, windows-cpu, windows-vulkan, windows-cuda, windows-rocm, windows-app (all = every one)"
         default: "all"
 
 env:
@@ -61,6 +63,7 @@ jobs:
           want = None if t == "all" else set(t.split(","))
           inc = [
             dict(name="mac-cpu", os="macos-15", kind="run", features=""),
+            dict(name="mac-intel-cpu", os="macos-15-intel", kind="run", features=""),
             dict(name="mac-vulkan", os="macos-15", kind="gpu", features="vulkan"),
             dict(name="mac-app", os="macos-15", kind="app", features=""),
             dict(name="linux-cpu", os="ubuntu-latest", kind="run", features=""),
