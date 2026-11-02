@@ -305,7 +305,7 @@ so each target runs only what can really run, and its `scope` notice says what w
 | --- | --- |
 | `linux-cpu`, `mac-cpu`, `mac-intel-cpu`, `windows-cpu` | every step above, through the same entry point as a local run (`test_linux.sh cpu`, `test_cpu.bat`) |
 | `linux-vulkan` | build + steps 15–16 on lavapipe (software Vulkan) |
-| `mac-vulkan` | build + steps 15–16 on MoltenVK (macos-15, virtual M1) |
+| `mac-vulkan` | build + steps 15–16 on MoltenVK (macos-26, virtual M1) |
 | `windows-vulkan` | build only (no software Vulkan driver on the runner) |
 | `linux-cuda`, `windows-cuda` | type check with a real `nvcc` kernel build, nothing executed |
 | `linux-rocm`, `windows-rocm` | type check only, nothing executed |
@@ -315,9 +315,10 @@ A line holding only `[targets: windows-cpu,mac-cpu]` in the head commit message 
 nothing, and the workflow can be started by hand with the same target list. Each job uploads `test_logs/` as the artifact
 `test-logs-<target>`. Tests build with `opt-level=1` and debug assertions on, without debug info.
 
-Since October 2026 GitHub has been short of macOS arm64 runners: a Mac job that gets none ends cancelled with no steps run
-and the annotation "The job was not acquired by Runner". That is not a test result; use **Re-run failed jobs**.
-`mac-intel-cpu` (`macos-15-intel`) keeps a macOS result on those days, but says nothing about Apple Silicon.
+Since October 2026 GitHub has been short of macOS arm64 runners, most of all for `macos-15`, so the Apple Silicon targets use
+`macos-26`. A Mac job that still gets none ends cancelled with no steps run and the annotation "The job was not acquired
+by Runner". That is not a test result; use **Re-run failed jobs**. `mac-intel-cpu` (`macos-15-intel`) keeps a macOS result on
+those days, but says nothing about Apple Silicon.
 
 ### Model Weights
 

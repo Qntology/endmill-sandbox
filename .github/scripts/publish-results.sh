@@ -22,6 +22,10 @@ echo "::notice title=steps::$(tr -d '\r' < "$summary" | grep -E '^[0-9][0-9]_[a-
 cross="$(tr -d '\r' < "$summary" | sed -n '/^======== /,$p')"
 [ -z "$cross" ] || echo "::notice title=cross-check::$(printf '%s\n' "$cross" | escape)"
 
+# 컴파일 경고는 개수만으로는 알 수 없으니 로그를 받지 않아도 보이도록 종류별로 올린다
+warnings="$(cat "$dir"/[0-9][0-9]_*.log | tr -d '\r' | grep -E '^warning: ' | grep -vE 'generated [0-9]+ warning' | cut -c1-200 | sort | uniq -c | sort -rn | head -12)"
+[ -z "$warnings" ] || echo "::notice title=warnings::$(printf '%s\n' "$warnings" | escape)"
+
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   { echo "### $backend"; echo '```'; tr -d '\r' < "$summary" | head -c 900000; echo; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 fi
