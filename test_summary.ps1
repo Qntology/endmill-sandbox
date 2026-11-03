@@ -31,7 +31,7 @@ foreach ($f in $logs) {
     foreach ($raw in $lines) {
         if ($raw -match '^test (.+) \.\.\. FAILED') { $failedTests.Add("$($f.BaseName): $($Matches[1])") }
         if ($raw -match 'panicked at (.+)$') { $panics.Add("$($f.BaseName): $($Matches[1])") }
-        if ($raw -match '^warning: ' -and $raw -notmatch 'linker stdout' -and $raw -notmatch 'generated \d+ warning') { $warnings++ }
+        if ($raw -match '^warning: ' -and $raw -notmatch 'linker std(out|err)' -and $raw -notmatch 'generated \d+ warning') { $warnings++ }
         # --nocapture 에서는 시험의 첫 출력 줄이 cargo 의 'test <이름> ... ' 뒤에 붙어 나온다 — 그 머리를 떼고 본다
         $l = $raw -replace '^test \S+ \.\.\. ', ''
         if ($l -match $tag) { $picked.Add($l) }

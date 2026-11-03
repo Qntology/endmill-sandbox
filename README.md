@@ -296,6 +296,31 @@ fork's default path and with native GPU shaders forced on. `tests/gpu_backend.rs
 `[GPU]` line per op with the largest relative error, times a 512×512 matmul against the CPU, and checks that
 `flush_device` leaves the device usable — so CUDA and ROCm get the parity check that only Vulkan had.
 
+### CI
+
+`.github/workflows/cross-verify.yml` runs on GitHub-hosted runners on every push to any branch. The runners have no GPU,
+so each target runs only what can really run, and its `scope` notice says what was not run:
+
+| Target | What runs |
+| --- | --- |
+| `linux-cpu`, `mac-cpu`, `mac-intel-cpu`, `windows-cpu` | every step above, through the same entry point as a local run (`test_linux.sh cpu`, `test_cpu.bat`) |
+| `linux-vulkan` | build + steps 15–16 on lavapipe (software Vulkan) |
+| `mac-vulkan` | build + steps 15–16 on MoltenVK (macos-26, virtual M1) |
+| `windows-vulkan` | build only (no software Vulkan driver on the runner) |
+| `linux-cuda`, `windows-cuda` | type check with a real `nvcc` kernel build, nothing executed |
+| `linux-rocm`, `windows-rocm` | type check only, nothing executed |
+| `mac-app`, `windows-app` | type check of `src-tauri`. Not on Linux: Tauri v1 needs webkit2gtk-4.0, which Ubuntu dropped after 22.04 |
+
+A line holding only `[targets: windows-cpu,mac-cpu]` in the head commit message runs just those targets, `[skip ci]` runs
+nothing, and the workflow can be started by hand with the same target list. Each job uploads `test_logs/` as the artifact
+`test-logs-<target>`. Tests build with `opt-level=1` and debug assertions on, without debug info.
+
+Since October 2026 GitHub has been short of macOS arm64 runners, most of all for `macos-15`, so the Apple Silicon targets use
+`macos-26` and `mac-app`, a type check that does not depend on the architecture, runs on Intel. A Mac job that gets no
+runner ends cancelled with no steps run and the annotation "The job was not acquired by Runner". That is not a test
+result; use **Re-run failed jobs**. `mac-intel-cpu` (`macos-15-intel`) keeps a macOS result on those days, but says nothing
+about Apple Silicon.
+
 ### Model Weights
 
 Place safetensors model folders under a root directory (default: `<app_data>/models/`),
@@ -713,7 +738,8 @@ endmill-sandbox/
 ├── run.bat / build.bat         # Windows CUDA helpers
 ├── _env_rocm.bat / _env_vulkan.bat  # shared MSVC / HIP SDK / protoc / Tauri CLI setup
 ├── {run,build,check,test}_{rocm,vulkan}.bat  # Windows ROCm / Vulkan helpers
-├── test_linux.sh               # Linux test runner (cpu | vulkan | rocm | cuda), same steps as test_runner.bat
+├── .github/workflows/cross-verify.yml  # CI on Linux, macOS and Windows (scripts in .github/scripts/)
+├── test_linux.sh               # Linux / macOS test runner (cpu | vulkan | rocm | cuda), same steps as test_runner.bat
 ├── test_runner.bat             # Windows sequential test runner shared by every backend
 ├── test_cuda.bat / test_rocm.bat / test_vulkan.bat / test_cpu.bat   # backend wrappers (toolchain env + test_runner.bat)
 ├── test_summary.ps1            # summary.log / highlights.log / manifest.txt of a test run

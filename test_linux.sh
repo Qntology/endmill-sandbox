@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 리눅스에서 endmill_sandbox 테스트를 백엔드별로 단계마다 실행합니다 — Windows 의 test_runner.bat 와 같은 단계·로그.
+# 리눅스 · macOS 에서 endmill_sandbox 테스트를 백엔드별로 단계마다 실행합니다 — Windows 의 test_runner.bat 와 같은 단계·로그.
 #
 #   ./test_linux.sh [cpu|vulkan|rocm|cuda]              # 전체 단계 → test_logs/<시각>_<백엔드>/
 #   ./test_linux.sh vulkan --test vulkan_backend        # 인자가 더 있으면 cargo test 한 번만 (예전 방식)
@@ -11,6 +11,7 @@
 # 절삭 시뮬레이션은 백엔드와 관계없이 CPU 계산이라 02~14 · 17 결과는 모든 백엔드에서 같아야 합니다.
 #
 # 필요 패키지(Ubuntu 24.04 기준): protobuf-compiler (LanceDB), libvulkan1 mesa-vulkan-drivers (Vulkan)
+# macOS (Homebrew): protobuf (LanceDB), molten-vk vulkan-loader (Vulkan)
 # ROCm 은 /opt/rocm (또는 ROCM_PATH/HIP_PATH) 이 필요합니다.
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -18,7 +19,8 @@ cd "$(dirname "$0")"
 BACKEND="${1:-vulkan}"
 [ $# -gt 0 ] && shift
 case "$BACKEND" in
-  cpu) FEATURE_ARGS=() ;;
+  # macOS 의 bash 3.2 는 set -u 에서 빈 배열을 펼치면 오류로 멈추므로 cpu 도 인자를 하나 둡니다 (default 기능이 없어 같은 빌드)
+  cpu) FEATURE_ARGS=(--no-default-features) ;;
   cuda|vulkan|rocm) FEATURE_ARGS=(--no-default-features --features "$BACKEND") ;;
   *) echo "unknown backend: $BACKEND (cpu|vulkan|rocm|cuda)"; exit 1 ;;
 esac
